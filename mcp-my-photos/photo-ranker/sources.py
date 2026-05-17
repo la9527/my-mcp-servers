@@ -31,11 +31,24 @@ _APPLE_DOWNLOADED_PATHS: dict[str, str] = {}
 _APPLE_PHOTOKIT_DISABLED = False
 _APPLE_FETCH_MODE = os.getenv("PHOTO_RANKER_APPLE_FETCH_MODE", "direct")
 _APP_DIR = Path(__file__).resolve().parent
-_TERMINAL_PYTHON = os.getenv(
-    "PHOTO_RANKER_TERMINAL_PYTHON_BIN",
-    str(_APP_DIR / ".venv/bin/python"),
-)
 _TERMINAL_TIMEOUT_SECS = float(os.getenv("PHOTO_RANKER_TERMINAL_TIMEOUT_SECS", "90"))
+
+
+def _default_terminal_python() -> str:
+    configured = os.getenv("PHOTO_RANKER_TERMINAL_PYTHON_BIN")
+    if configured:
+        return configured
+
+    executable_path = Path(sys.executable).resolve()
+    if executable_path.name == "PhotosMcp" and executable_path.parent.name == "MacOS":
+        bundled_python = executable_path.with_name("python")
+        if bundled_python.exists():
+            return str(bundled_python)
+
+    return str(_APP_DIR / ".venv/bin/python")
+
+
+_TERMINAL_PYTHON = _default_terminal_python()
 
 
 def load_photos(

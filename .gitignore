@@ -4,3 +4,9 @@
 **/.pytest_cache/
 **/.mypy_cache/
 **/.venv/
+**/.model-cache/
+photos-mcp/build/
+photos-mcp/build-*/
+photos-mcp/dist/
+photos-mcp/dist-*/
+photos-mcp/*.egg-info/

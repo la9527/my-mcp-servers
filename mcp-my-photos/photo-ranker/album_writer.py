@@ -11,10 +11,25 @@ import logging
 import os
 from pathlib import Path
 import sys
+import time
 
 from apple_terminal_helper import run_in_terminal
 
 logger = logging.getLogger(__name__)
+
+
+def _default_terminal_python(app_dir: Path) -> str:
+    configured = os.getenv("PHOTO_RANKER_TERMINAL_PYTHON_BIN")
+    if configured:
+        return configured
+
+    executable_path = Path(sys.executable).resolve()
+    if executable_path.name == "PhotosMcp" and executable_path.parent.name == "MacOS":
+        bundled_python = executable_path.with_name("python")
+        if bundled_python.exists():
+            return str(bundled_python)
+
+    return str(app_dir / ".venv/bin/python")
 
 
 class AlbumWriter:
@@ -24,10 +39,7 @@ class AlbumWriter:
         self._lib = None
         self._apple_events_mode = os.getenv("PHOTO_RANKER_APPLE_EVENTS_MODE", "direct")
         self._app_dir = Path(__file__).resolve().parent
-        self._terminal_python = os.getenv(
-            "PHOTO_RANKER_TERMINAL_PYTHON_BIN",
-            str(self._app_dir / ".venv/bin/python"),
-        )
+        self._terminal_python = _default_terminal_python(self._app_dir)
         self._terminal_timeout_secs = float(
             os.getenv("PHOTO_RANKER_TERMINAL_TIMEOUT_SECS", "90")
         )
@@ -117,6 +129,21 @@ class AlbumWriter:
             for a in self._lib.albums()
         ]
 
+    def probe_automation_access(self) -> dict:
+        """Perform a lightweight Apple Events probe without enumerating album contents."""
+        if self._should_use_terminal_helper():
+            result = self._run_terminal_helper("probe_automation_access", {})
+            return dict(result)
+
+        self._ensure_lib()
+        albums = self._lib.albums()
+        sample_album = albums[0] if albums else None
+        return {
+            "album_count": len(albums),
+            "sample_album": getattr(sample_album, "name", ""),
+            "sample_uuid": getattr(sample_album, "uuid", ""),
+        }
+
     def delete_album(self, name: str) -> bool:
         """Delete an album (photos are not deleted)."""
         if self._should_use_terminal_helper():
@@ -125,13 +152,59 @@ class AlbumWriter:
 
         self._ensure_lib()
 
-        album = self._lib.album(name)
-        if not album:
+        matching_albums = []
+        for attempt in range(3):
+            matching_albums = [
+                album
+                for album in self._lib.albums()
+                if getattr(album, "name", None) == name
+            ]
+            if matching_albums:
+                break
+            if attempt < 2:
+                time.sleep(0.5)
+        if not matching_albums:
             return False
 
-        self._lib.delete_album(album)
-        logger.info("Deleted album: %s", name)
+        for album in matching_albums:
+            self._lib.delete_album(album)
+        logger.info("Deleted %d album(s): %s", len(matching_albums), name)
         return True
+
+    def validate_album_roundtrip(self, name: str, folder: str = "") -> dict:
+        """Create, list, and always clean up a temporary validation album."""
+        result = {
+            "album": name,
+            "folder": folder,
+            "visible_in_list": False,
+            "cleanup_deleted": False,
+        }
+        caught_exception: Exception | None = None
+
+        try:
+            result["create_result"] = self.create_album(name, folder)
+            albums = self.list_albums()
+            result["visible_in_list"] = any(
+                album.get("name") == name for album in albums
+            )
+            result["album_count"] = len(albums)
+        except Exception as exc:
+            caught_exception = exc
+            raise
+        finally:
+            try:
+                result["cleanup_deleted"] = self.delete_album(name)
+            except Exception as cleanup_exc:
+                result["cleanup_error"] = str(cleanup_exc)
+                if caught_exception is None:
+                    raise
+                logger.warning(
+                    "Album validation cleanup failed for %s after primary error: %s",
+                    name,
+                    cleanup_exc,
+                )
+
+        return result
 
     # ── Organize existing photos into albums ───────────
 
@@ -227,7 +300,8 @@ class AlbumWriter:
         Returns:
             {"albums_created": list, "photos_organized": int, "skipped": int}
         """
-        self._ensure_lib()
+        if not self._should_use_terminal_helper():
+            self._ensure_lib()
 
         # Group by event_type (and optionally date)
         groups: dict[str, list[str]] = {}

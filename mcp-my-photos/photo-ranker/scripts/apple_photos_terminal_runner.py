@@ -29,6 +29,8 @@ def main() -> int:
     writer = AlbumWriter()
     if operation == "list_albums":
         result = writer.list_albums()
+    elif operation == "probe_automation_access":
+        result = writer.probe_automation_access()
     elif operation == "create_album":
         result = writer.create_album(payload["name"], payload.get("folder", ""))
     elif operation == "delete_album":

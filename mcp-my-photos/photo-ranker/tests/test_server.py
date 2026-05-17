@@ -145,6 +145,46 @@ class TestAlbumToolErrors:
         assert "Terminal.app" in parsed["hint"]
 
 
+class TestVLMToolLifecycle:
+    @pytest.mark.asyncio
+    async def test_describe_scene_releases_vlm_after_call(self):
+        import server
+        from unittest.mock import MagicMock, patch
+
+        mock_vlm = MagicMock()
+        mock_scene = MagicMock()
+        mock_scene.to_dict.return_value = {"scene": "test"}
+        mock_vlm.describe_scene.return_value = mock_scene
+
+        with patch.object(server, "get_vlm", return_value=mock_vlm), patch.object(
+            server, "release_vlm"
+        ) as mock_release:
+            result = await server.describe_scene("abc")
+
+        parsed = json.loads(result)
+        assert parsed["scene"] == "test"
+        mock_release.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_classify_event_releases_vlm_after_call(self):
+        import server
+        from unittest.mock import MagicMock, patch
+        from models import EventType
+
+        mock_vlm = MagicMock()
+        mock_vlm.classify_event.return_value = (EventType.TRAVEL, 0.8)
+
+        with patch.object(server, "get_vlm", return_value=mock_vlm), patch.object(
+            server, "release_vlm"
+        ) as mock_release:
+            result = await server.classify_event("abc")
+
+        parsed = json.loads(result)
+        assert parsed["event_type"] == "travel"
+        assert parsed["confidence"] == 0.8
+        mock_release.assert_called_once()
+
+
 class TestRegisterFaceFromJob:
     """Test register_face_from_job MCP tool logic."""
 
@@ -423,6 +463,90 @@ class TestCurateBestPhotos:
         parsed = json.loads(result)
         assert parsed["selected_photo_ids"] == ["view"]
         assert parsed["selection_policy"]["score_field"] == "total_score"
+
+    @pytest.mark.asyncio
+    async def test_delete_job_rejects_active_jobs(self):
+        import server
+        from jobs import Job, JobStatus
+        from unittest.mock import MagicMock, patch
+
+        job = Job(id="job-running", source="apple", source_path="")
+        job.status = JobStatus.RUNNING
+        mock_db = MagicMock()
+        mock_db.load_job.return_value = job
+        mock_queue = MagicMock()
+
+        with patch.object(server, "_get_job_db", return_value=mock_db), patch.object(
+            server,
+            "_get_job_queue",
+            return_value=mock_queue,
+        ):
+            result = await server.delete_job("job-running")
+
+        parsed = json.loads(result)
+        assert parsed["deleted"] is False
+        assert "active job" in parsed["error"]
+
+    @pytest.mark.asyncio
+    async def test_delete_job_removes_terminal_job_from_db_and_queue(self):
+        import server
+        from jobs import Job, JobStatus
+        from unittest.mock import MagicMock, patch
+
+        job = Job(id="job-done", source="apple", source_path="")
+        job.status = JobStatus.COMPLETED
+        mock_db = MagicMock()
+        mock_db.load_job.return_value = job
+        mock_db.delete_job.return_value = True
+        mock_queue = MagicMock()
+        mock_queue.remove_job.return_value = True
+
+        with patch.object(server, "_get_job_db", return_value=mock_db), patch.object(
+            server,
+            "_get_job_queue",
+            return_value=mock_queue,
+        ):
+            result = await server.delete_job("job-done")
+
+        parsed = json.loads(result)
+        assert parsed == {"job_id": "job-done", "deleted": True}
+        mock_queue.remove_job.assert_called_once_with("job-done")
+        mock_db.delete_job.assert_called_once_with("job-done")
+
+    @pytest.mark.asyncio
+    async def test_clear_job_history_validates_status_filter(self):
+        import server
+
+        result = await server.clear_job_history("running")
+
+        parsed = json.loads(result)
+        assert parsed["deleted_count"] == 0
+        assert parsed["error"] == "status must be one of completed, failed, cancelled"
+
+    @pytest.mark.asyncio
+    async def test_clear_job_history_removes_terminal_rows(self):
+        import server
+        from unittest.mock import MagicMock, patch
+
+        mock_db = MagicMock()
+        mock_db.clear_job_history.return_value = ["job-2", "job-1"]
+        mock_queue = MagicMock()
+        mock_queue.clear_jobs.return_value = ["job-2"]
+
+        with patch.object(server, "_get_job_db", return_value=mock_db), patch.object(
+            server,
+            "_get_job_queue",
+            return_value=mock_queue,
+        ):
+            result = await server.clear_job_history()
+
+        parsed = json.loads(result)
+        assert parsed["deleted_count"] == 2
+        assert parsed["deleted_job_ids"] == ["job-1", "job-2"]
+        assert parsed["status_filter"] == "terminal"
+        mock_db.clear_job_history.assert_called_once_with(
+            statuses=("completed", "failed", "cancelled")
+        )
 
     @pytest.mark.asyncio
     async def test_start_classify_job_persists_selection_profile(self):

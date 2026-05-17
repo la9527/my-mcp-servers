@@ -96,6 +96,13 @@ class Pipeline:
         # Known face embeddings: name -> list of embeddings
         self._known_faces: dict[str, list[list[float]]] = {}
 
+    def _release_vlm_if_needed(self) -> None:
+        if self._vlm is None:
+            return
+        if getattr(self._vlm, "should_auto_unload", False):
+            self._vlm.unload()
+            self._vlm = None
+
     def register_known_face(self, name: str, embedding: list[float]) -> None:
         """Register a known person's face embedding for family scoring."""
         if name not in self._known_faces:
@@ -294,6 +301,8 @@ class Pipeline:
             len(photos), len(ranked), t_total,
             t_s1, t_dedup, t_s2,
         )
+
+        self._release_vlm_if_needed()
 
         return ranked
 

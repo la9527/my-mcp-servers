@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
+import time
 from pathlib import Path
 
 from jobs import Job, JobProgress, JobStatus
@@ -12,6 +14,10 @@ from jobs import Job, JobProgress, JobStatus
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path.home() / ".photo-ranker" / "jobs.db"
+
+
+def _stale_running_job_secs() -> float:
+    return float(os.getenv("PHOTO_RANKER_STALE_RUNNING_JOB_SECS", "900"))
 
 
 class JobDB:
@@ -160,6 +166,36 @@ class JobDB:
         if repaired:
             logger.info("Repaired %d stale pending job records", repaired)
 
+        stale_threshold = max(_stale_running_job_secs(), 0.0)
+        if stale_threshold <= 0:
+            return
+
+        now = time.time()
+        stale_running = self._conn.execute(
+            """
+            UPDATE jobs
+            SET
+                status = 'failed',
+                finished_at = ?,
+                error_message = COALESCE(
+                    error_message,
+                    'Recovered stale running job after restart or cancelled session'
+                )
+            WHERE
+                status = 'running'
+                AND finished_at IS NULL
+                AND result_json IS NULL
+                AND COALESCE(started_at, created_at) < ?
+            """,
+            (now, now - stale_threshold),
+        ).rowcount
+        if stale_running:
+            logger.info(
+                "Repaired %d stale running job records older than %.0fs",
+                stale_running,
+                stale_threshold,
+            )
+
     def save_job(self, job: Job) -> None:
         """Insert or replace a job record."""
         self._conn.execute(
@@ -207,6 +243,54 @@ class JobDB:
                 "SELECT * FROM jobs ORDER BY created_at DESC"
             ).fetchall()
         return [self._row_to_job(r) for r in rows]
+
+    def delete_job(self, job_id: str) -> bool:
+        """Delete one job and all related artifacts."""
+        deleted = self._delete_jobs([job_id])
+        return deleted > 0
+
+    def clear_job_history(self, statuses: tuple[str, ...] | None = None) -> list[str]:
+        """Delete terminal jobs and their related artifacts.
+
+        Returns the deleted job ids in newest-first order.
+        """
+        target_statuses = statuses or ("completed", "failed", "cancelled")
+        if not target_statuses:
+            return []
+
+        placeholders = ", ".join("?" for _ in target_statuses)
+        rows = self._conn.execute(
+            f"SELECT id FROM jobs WHERE status IN ({placeholders}) ORDER BY created_at DESC",
+            target_statuses,
+        ).fetchall()
+        job_ids = [str(row["id"]) for row in rows]
+        if not job_ids:
+            return []
+
+        self._delete_jobs(job_ids)
+        return job_ids
+
+    def _delete_jobs(self, job_ids: list[str]) -> int:
+        if not job_ids:
+            return 0
+
+        placeholders = ", ".join("?" for _ in job_ids)
+        for table_name in (
+            "photo_results",
+            "job_assets",
+            "face_reviews",
+            "stage_checkpoints",
+        ):
+            self._conn.execute(
+                f"DELETE FROM {table_name} WHERE job_id IN ({placeholders})",
+                job_ids,
+            )
+        cursor = self._conn.execute(
+            f"DELETE FROM jobs WHERE id IN ({placeholders})",
+            job_ids,
+        )
+        self._conn.commit()
+        return cursor.rowcount
 
     def save_photo_results(
         self, job_id: str, results: list[dict]

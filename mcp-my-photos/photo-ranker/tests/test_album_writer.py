@@ -125,15 +125,84 @@ class TestListAlbums(_AlbumWriterTestBase):
 class TestDeleteAlbum(_AlbumWriterTestBase):
     def test_delete_existing(self):
         mock_album = MagicMock()
-        self.mock_lib.album.return_value = mock_album
+        mock_album.name = "Travel"
+        self.mock_lib.albums.return_value = [mock_album]
 
         assert self.writer.delete_album("Travel") is True
         self.mock_lib.delete_album.assert_called_once_with(mock_album)
 
     def test_delete_nonexistent(self):
-        self.mock_lib.album.return_value = None
+        self.mock_lib.albums.return_value = []
         assert self.writer.delete_album("Nope") is False
         self.mock_lib.delete_album.assert_not_called()
+
+    def test_delete_retries_until_album_appears(self):
+        mock_album = MagicMock()
+        mock_album.name = "Travel"
+        self.mock_lib.albums.side_effect = [[], [], [mock_album]]
+
+        with patch("album_writer.time.sleep") as mock_sleep:
+            assert self.writer.delete_album("Travel") is True
+
+        assert self.mock_lib.albums.call_count == 3
+        assert mock_sleep.call_count == 2
+        self.mock_lib.delete_album.assert_called_once_with(mock_album)
+
+    def test_delete_removes_all_matching_albums(self):
+        first_album = MagicMock()
+        first_album.name = "ZeroClaw Validation Temp"
+        second_album = MagicMock()
+        second_album.name = "ZeroClaw Validation Temp"
+        other_album = MagicMock()
+        other_album.name = "Other Album"
+        self.mock_lib.albums.return_value = [first_album, other_album, second_album]
+
+        assert self.writer.delete_album("ZeroClaw Validation Temp") is True
+
+        self.mock_lib.delete_album.assert_has_calls([call(first_album), call(second_album)])
+
+
+class TestValidateAlbumRoundtrip(_AlbumWriterTestBase):
+    def test_roundtrip_deletes_temp_album_after_validation(self):
+        self.writer.create_album = MagicMock(
+            return_value={"album": "ZeroClaw Validation Temp", "created": True}
+        )
+        self.writer.list_albums = MagicMock(
+            return_value=[
+                {
+                    "name": "ZeroClaw Validation Temp",
+                    "uuid": "album-uuid-1",
+                    "count": 0,
+                }
+            ]
+        )
+        self.writer.delete_album = MagicMock(return_value=True)
+
+        result = self.writer.validate_album_roundtrip("ZeroClaw Validation Temp")
+
+        assert result["visible_in_list"] is True
+        assert result["cleanup_deleted"] is True
+        self.writer.create_album.assert_called_once_with("ZeroClaw Validation Temp", "")
+        self.writer.delete_album.assert_called_once_with("ZeroClaw Validation Temp")
+
+    def test_roundtrip_deletes_temp_album_even_when_validation_fails(self):
+        self.writer.create_album = MagicMock(return_value={"album": "ZeroClaw Validation Temp"})
+        self.writer.list_albums = MagicMock(side_effect=RuntimeError("list failed"))
+        self.writer.delete_album = MagicMock(return_value=True)
+
+        with self.assertRaisesRegex(RuntimeError, "list failed"):
+            self.writer.validate_album_roundtrip("ZeroClaw Validation Temp")
+
+        self.writer.delete_album.assert_called_once_with("ZeroClaw Validation Temp")
+
+    def test_roundtrip_preserves_primary_error_when_cleanup_also_fails(self):
+        self.writer.create_album = MagicMock(side_effect=RuntimeError("create failed"))
+        self.writer.delete_album = MagicMock(side_effect=RuntimeError("cleanup failed"))
+
+        with self.assertRaisesRegex(RuntimeError, "create failed"):
+            self.writer.validate_album_roundtrip("ZeroClaw Validation Temp")
+
+        self.writer.delete_album.assert_called_once_with("ZeroClaw Validation Temp")
 
 
 class TestTerminalAppleEventsMode(_AlbumWriterTestBase):
@@ -164,6 +233,32 @@ class TestTerminalAppleEventsMode(_AlbumWriterTestBase):
                 "folder": "AI 분류",
             },
         )
+        self.mock_lib.album.assert_not_called()
+
+    def test_organize_by_classification_skips_direct_lib_in_terminal_mode(self):
+        self.writer._apple_events_mode = "terminal"
+        self.writer._run_terminal_helper = MagicMock(
+            return_value={"album": "Events", "added": 2, "failed": 0, "errors": []}
+        )
+
+        results = [
+            {"photo_id": "uuid-1", "event_type": "travel", "total_score": 5.0},
+            {"photo_id": "uuid-2", "event_type": "travel", "total_score": 4.0},
+        ]
+
+        out = self.writer.organize_by_classification(results, "Events", folder="AI 분류")
+
+        assert out["albums_created"] == ["Events - travel"]
+        assert out["photos_organized"] == 2
+        self.writer._run_terminal_helper.assert_called_once_with(
+            "add_photos_to_album",
+            {
+                "photo_uuids": ["uuid-1", "uuid-2"],
+                "album_name": "Events - travel",
+                "folder": "AI 분류",
+            },
+        )
+        self.mock_lib.albums.assert_not_called()
         self.mock_lib.album.assert_not_called()
 
 

@@ -17,6 +17,20 @@ from apple_terminal_helper import run_in_terminal
 logger = logging.getLogger(__name__)
 
 
+def _default_terminal_python(app_dir: Path) -> str:
+    configured = os.getenv("PHOTO_SOURCE_TERMINAL_PYTHON_BIN")
+    if configured:
+        return configured
+
+    executable_path = Path(sys.executable).resolve()
+    if executable_path.name == "PhotosMcp" and executable_path.parent.name == "MacOS":
+        bundled_python = executable_path.with_name("python")
+        if bundled_python.exists():
+            return str(bundled_python)
+
+    return str(app_dir / ".venv/bin/python")
+
+
 class ApplePhotosSource:
     """Access Apple Photos / iCloud library via osxphotos."""
 
@@ -27,10 +41,7 @@ class ApplePhotosSource:
         self._photokit_disabled = False
         self._fetch_mode = os.getenv("PHOTO_SOURCE_APPLE_FETCH_MODE", "direct")
         self._app_dir = Path(__file__).resolve().parent.parent
-        self._terminal_python = os.getenv(
-            "PHOTO_SOURCE_TERMINAL_PYTHON_BIN",
-            str(self._app_dir / ".venv/bin/python"),
-        )
+        self._terminal_python = _default_terminal_python(self._app_dir)
         self._terminal_timeout_secs = float(
             os.getenv("PHOTO_SOURCE_TERMINAL_TIMEOUT_SECS", "90")
         )

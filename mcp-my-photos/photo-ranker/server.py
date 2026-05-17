@@ -54,6 +54,15 @@ def get_vlm() -> VLMEngine:
     return _vlm
 
 
+def release_vlm() -> None:
+    global _vlm
+    if _vlm is None:
+        return
+    if _vlm.should_auto_unload:
+        _vlm.unload()
+        _vlm = None
+
+
 def get_aesthetic() -> AestheticEngine:
     global _aesthetic
     if _aesthetic is None:
@@ -140,8 +149,11 @@ async def describe_scene(image_b64: str, prompt: str = "") -> str:
     Returns:
         JSON with scene description, people count, event type, etc.
     """
-    scene = get_vlm().describe_scene(image_b64, prompt or None)
-    return json.dumps(scene.to_dict())
+    try:
+        scene = get_vlm().describe_scene(image_b64, prompt or None)
+        return json.dumps(scene.to_dict())
+    finally:
+        release_vlm()
 
 
 @mcp.tool()
@@ -154,10 +166,13 @@ async def classify_event(image_b64: str) -> str:
     Returns:
         JSON with event_type and confidence.
     """
-    event_type, confidence = get_vlm().classify_event(image_b64)
-    return json.dumps(
-        {"event_type": event_type.value, "confidence": round(confidence, 3)}
-    )
+    try:
+        event_type, confidence = get_vlm().classify_event(image_b64)
+        return json.dumps(
+            {"event_type": event_type.value, "confidence": round(confidence, 3)}
+        )
+    finally:
+        release_vlm()
 
 
 @mcp.tool()
@@ -681,6 +696,70 @@ async def cancel_job(job_id: str) -> str:
         if job:
             db.save_job(job)
     return json.dumps({"job_id": job_id, "cancelled": success})
+
+
+@mcp.tool()
+async def delete_job(job_id: str) -> str:
+    """Delete one terminal classification job and its persisted artifacts."""
+    queue = _get_job_queue()
+    db = _get_job_db()
+
+    job = db.load_job(job_id) or queue.get_job(job_id)
+    if not job:
+        return json.dumps({"job_id": job_id, "deleted": False, "error": "Job not found"})
+
+    if job.status.value not in {"completed", "failed", "cancelled"}:
+        return json.dumps(
+            {
+                "job_id": job_id,
+                "deleted": False,
+                "error": f"Cannot delete active job in status={job.status.value}",
+            }
+        )
+
+    removed_from_queue = queue.remove_job(job_id)
+    removed_from_db = db.delete_job(job_id)
+    return json.dumps(
+        {
+            "job_id": job_id,
+            "deleted": removed_from_queue or removed_from_db,
+        }
+    )
+
+
+@mcp.tool()
+async def clear_job_history(status: str = "") -> str:
+    """Delete terminal job history, optionally filtered by one terminal status."""
+    normalized_status = status.strip().lower()
+    if normalized_status and normalized_status not in {"completed", "failed", "cancelled"}:
+        return json.dumps(
+            {
+                "deleted_count": 0,
+                "deleted_job_ids": [],
+                "error": "status must be one of completed, failed, cancelled",
+            }
+        )
+
+    target_statuses = (
+        (normalized_status,)
+        if normalized_status
+        else ("completed", "failed", "cancelled")
+    )
+    queue_statuses = {JobStatus(value) for value in target_statuses}
+
+    db = _get_job_db()
+    queue = _get_job_queue()
+    deleted_from_db = db.clear_job_history(statuses=target_statuses)
+    deleted_from_queue = queue.clear_jobs(statuses=queue_statuses)
+    deleted_job_ids = sorted(set(deleted_from_db) | set(deleted_from_queue))
+
+    return json.dumps(
+        {
+            "deleted_count": len(deleted_job_ids),
+            "deleted_job_ids": deleted_job_ids,
+            "status_filter": normalized_status or "terminal",
+        }
+    )
 
 
 @mcp.tool()

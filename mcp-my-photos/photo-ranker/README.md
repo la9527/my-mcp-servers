@@ -66,7 +66,7 @@ uv sync --extra face          # 얼굴 인식 (face-recognition)
 | `find_duplicates` | 해시 기반 중복 사진 그룹핑 | `photo_hashes_json` (해시 딕셔너리), `threshold?` |
 | `rank_best_shots` | 종합 점수로 베스트 샷 랭킹 | `photo_scores_json` (점수 배열), `top_n?`, `selection_profile?` |
 
-### Job 관리 도구 (5개)
+### Job 관리 도구 (8개)
 
 | 도구 | 설명 | 주요 파라미터 |
 |---|---|---|
@@ -75,7 +75,11 @@ uv sync --extra face          # 얼굴 인식 (face-recognition)
 | `get_job_summary` | 진행률/선택 프로필/선택 개수 포함 요약 조회 | `job_id` |
 | `get_job_result` | 완료된 작업의 랭킹 결과 조회 | `job_id`, `top_n?` (기본 20) |
 | `cancel_job` | 실행/대기 중인 작업 취소 | `job_id` |
+| `delete_job` | 완료/실패/취소된 단일 작업 기록 삭제 | `job_id` |
+| `clear_job_history` | terminal 작업 기록 일괄 삭제 | `status?` (`completed`/`failed`/`cancelled`, 빈 값이면 전체 terminal) |
 | `list_jobs` | 작업 목록 조회 | `status?` ("pending"/"running"/"completed"/"failed"/"cancelled") |
+
+`delete_job` 과 `clear_job_history` 는 terminal job 에만 적용한다. 실행 중이거나 대기 중인 job 은 먼저 `cancel_job` 으로 취소해야 하며, 삭제 시 SQLite `jobs`, `photo_results`, `job_assets`, `face_reviews`, `stage_checkpoints` 와 in-memory queue 기록을 함께 정리한다.
 
 ### 인물 관리 도구 (4개)
 
@@ -258,6 +262,9 @@ start_classify_job(
 - 확보된 임시 파일 경로는 해당 작업의 `source_photo_path`로 저장되어 review/export 후속 흐름에서도 재사용된다.
 - VS Code 통합 터미널에서 Photos 권한이 붙지 않는 경우가 있어, 실 iCloud fetch 검증은 `Terminal.app` 에서 `./scripts/validate_icloud_fetch_terminal.sh [UUID]` 로 실행하는 편이 안정적이다.
 - ZeroClaw나 launchd에서 `photo-ranker`를 붙일 때 Apple Photos 앨범 쓰기 권한이 안 붙으면 `PHOTO_RANKER_APPLE_EVENTS_MODE=terminal` 로 Terminal helper 경로를 켜는 편이 안정적이다. 이 모드에서는 album/list/create/add/import 계열 작업을 Terminal.app 안의 별도 Python helper로 실행한다.
+- Apple Photos source fetch 에서도 macOS 접근 허용 프롬프트를 줄이려면 `PHOTO_RANKER_APPLE_FETCH_MODE=terminal` 을 함께 켜는 편이 좋다. 그러면 iCloud missing export 도 Terminal.app 안의 helper 로 우회되어, launchd/VS Code/Python 프로세스마다 별도로 Photos 권한을 다시 묻는 상황을 줄일 수 있다.
+- 그래도 macOS 접근 허용 프롬프트를 코드만으로 완전히 없애지는 못한다. 프롬프트는 TCC(Privacy/Automation) 정책이 결정하므로, 서로 다른 caller app/프로세스(예: VS Code 통합 터미널, launchd Python, Terminal.app)가 Photos 또는 Terminal.app 에 Apple Events 를 보내면 각각 한 번씩 허용이 필요할 수 있다. 현재 구조에서 반복 프롬프트를 줄이는 현실적인 방법은 caller 를 `Terminal.app` helper 로 최대한 통일하는 것이다.
+- 프롬프트를 구조적으로 더 줄이려면 ad-hoc Python 프로세스 대신 서명된 단일 helper app 으로 Apple Events 를 보내도록 패키징하고, `NSAppleEventsUsageDescription` / automation entitlement 를 갖춘 앱으로 고정해야 한다.
 - 현재 터미널 세션에서 바로 보고 싶으면 `uv run --directory . python ./scripts/validate_icloud_fetch.py [UUID]` 를 사용할 수 있다.
 
 ## 테스트
@@ -368,6 +375,25 @@ cd /path/to/mcp-servers/photo-ranker && uv sync --all-extras
 # 또는 경량 설치 (VLM/CLIP 없이 기본 분석만)
 cd /path/to/mcp-servers/photo-ranker && uv sync
 ```
+
+### `openai_compat` fallback smoke 메모
+
+- `PHOTO_RANKER_VLM_BACKEND=openai_compat` 경로에서 local endpoint 를 primary 로 두고 external fallback 을 검증할 때, stdio MCP client 가 서버 subprocess 를 직접 띄우면 `PHOTO_RANKER_VLM_*` 환경변수를 명시적으로 넘겨야 한다. 부모 셸에서 inline 으로만 준 값은 subprocess 에 자동 상속되지 않을 수 있다.
+- 실제 VLM code path 는 입력 이미지를 `64px` 로 줄이지 않는다. `engines/vlm.py` 는 긴 변 기준으로 최대 `512px` 까지만 downscale 한다.
+- 너무 작은 smoke fixture 는 hosted provider 에서 `image_parse_error` 로 거절될 수 있다. external fallback 검증에는 `64x64` 이상, 가능하면 일반적인 JPEG fixture 를 사용하는 편이 안정적이다.
+
+반복 검증용 read-only smoke script:
+
+```bash
+cd /path/to/mcp-servers/photo-ranker
+source ~/.nanobot/nanobot.env
+uv run --python 3.12 python scripts/validate_mcp_openai_compat_fallback.py \
+  --primary-api-base http://127.0.0.1:1248/v1 \
+  --primary-model mlx-community/Qwen3.5-27B-4bit \
+  --fallback-model gpt-5.4-mini-2026-03-17
+```
+
+이 스크립트는 기본적으로 `512x512` JPEG fixture 를 생성하고, primary local endpoint vision probe 결과와 MCP `describe_scene` JSON payload 를 함께 출력한다.
 
 ## 라이선스
 

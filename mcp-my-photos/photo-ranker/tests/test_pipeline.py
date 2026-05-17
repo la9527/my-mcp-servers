@@ -153,6 +153,28 @@ class TestPipeline:
         ranked = await pipe.run([])
         assert ranked == []
 
+    def test_release_vlm_if_needed_unloads_enabled_engine(self):
+        pipe = Pipeline()
+        mock_vlm = MagicMock()
+        mock_vlm.should_auto_unload = True
+        pipe._vlm = mock_vlm
+
+        pipe._release_vlm_if_needed()
+
+        mock_vlm.unload.assert_called_once()
+        assert pipe._vlm is None
+
+    def test_release_vlm_if_needed_keeps_disabled_engine(self):
+        pipe = Pipeline()
+        mock_vlm = MagicMock()
+        mock_vlm.should_auto_unload = False
+        pipe._vlm = mock_vlm
+
+        pipe._release_vlm_if_needed()
+
+        mock_vlm.unload.assert_not_called()
+        assert pipe._vlm is mock_vlm
+
 
 class TestKnownPersonMatching:
     def test_register_known_face(self):

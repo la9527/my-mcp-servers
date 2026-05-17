@@ -162,3 +162,40 @@ class JobQueue:
             job.status = JobStatus.CANCELLED
             return True
         return False
+
+    def remove_job(self, job_id: str) -> bool:
+        """Remove a terminal job from the in-memory queue."""
+        job = self._jobs.get(job_id)
+        if not job or job.status not in {
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+        }:
+            return False
+
+        task = self._tasks.get(job_id)
+        if task and not task.done():
+            return False
+
+        self._tasks.pop(job_id, None)
+        self._jobs.pop(job_id, None)
+        return True
+
+    def clear_jobs(self, statuses: set[JobStatus] | None = None) -> list[str]:
+        """Remove terminal jobs matching the given statuses."""
+        allowed_statuses = statuses or {
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+        }
+        removed: list[str] = []
+        for job_id, job in list(self._jobs.items()):
+            if job.status not in allowed_statuses:
+                continue
+            task = self._tasks.get(job_id)
+            if task and not task.done():
+                continue
+            self._tasks.pop(job_id, None)
+            self._jobs.pop(job_id, None)
+            removed.append(job_id)
+        return removed

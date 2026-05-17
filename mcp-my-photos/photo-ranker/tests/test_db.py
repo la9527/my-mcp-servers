@@ -116,6 +116,57 @@ class TestJobDB:
         assert loaded.progress.stage == "vlm"
         assert loaded.request_options["selection_profile"] == "person"
 
+    def test_delete_job_removes_related_rows(self, db):
+        job = Job(id="delete-me", source="local", source_path="/tmp")
+        job.status = JobStatus.COMPLETED
+        db.save_job(job)
+        db.save_photo_results(
+            job.id,
+            [
+                {
+                    "photo_id": "p1",
+                    "total_score": 91.0,
+                    "quality_score": 80.0,
+                    "family_score": 70.0,
+                    "event_score": 60.0,
+                    "uniqueness_score": 95.0,
+                    "scene_description": "test",
+                    "event_type": "daily",
+                    "faces_detected": 0,
+                    "known_persons": [],
+                }
+            ],
+        )
+        db.save_job_asset(job.id, "p1", "/tmp/p1.jpg", "/photos/p1.jpg")
+        db.save_checkpoint(job.id, "filter", "p1", {"photo_id": "p1"})
+        db.save_face_review(job.id, "p1", 0, bbox=[0, 10, 10, 0], crop_path="/tmp/f0.jpg")
+
+        assert db.delete_job(job.id) is True
+        assert db.load_job(job.id) is None
+        assert db.load_photo_results(job.id) == []
+        assert db.list_job_assets(job.id) == {}
+        assert db.load_checkpoints(job.id, "filter") == {}
+        assert db.list_face_reviews(job.id, "p1") == []
+
+    def test_clear_job_history_filters_terminal_statuses(self, db):
+        for job_id, status in (
+            ("done", JobStatus.COMPLETED),
+            ("failed", JobStatus.FAILED),
+            ("cancelled", JobStatus.CANCELLED),
+            ("running", JobStatus.RUNNING),
+        ):
+            job = Job(id=job_id, source="local", source_path="/tmp")
+            job.status = status
+            db.save_job(job)
+
+        deleted_ids = db.clear_job_history(statuses=("completed", "failed"))
+
+        assert deleted_ids == ["failed", "done"]
+        assert db.load_job("done") is None
+        assert db.load_job("failed") is None
+        assert db.load_job("cancelled") is not None
+        assert db.load_job("running") is not None
+
 
 class TestKnownFaces:
     def test_save_and_load(self, db):
@@ -318,4 +369,27 @@ class TestStaleJobRepair:
         assert loaded.status == JobStatus.COMPLETED
         assert loaded.started_at is not None
         assert loaded.finished_at is not None
+        repaired.close()
+
+    def test_repairs_old_running_jobs_without_result(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "jobs.db"
+        monkeypatch.setenv("PHOTO_RANKER_STALE_RUNNING_JOB_SECS", "60")
+
+        first = JobDB(db_path)
+        job = Job(id="stale-running", source="apple", source_path="")
+        job.status = JobStatus.RUNNING
+        job.created_at = 100.0
+        job.started_at = 100.0
+        first.save_job(job)
+        first.close()
+
+        monkeypatch.setattr("db.time.time", lambda: 1000.0)
+        repaired = JobDB(db_path)
+        loaded = repaired.load_job("stale-running")
+
+        assert loaded is not None
+        assert loaded.status == JobStatus.FAILED
+        assert loaded.finished_at == 1000.0
+        assert loaded.error_message is not None
+        assert "Recovered stale running job" in loaded.error_message
         repaired.close()
