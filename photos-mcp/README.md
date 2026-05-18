@@ -4,23 +4,28 @@
 
 현재 이 디렉터리는 phase-1 기준으로 아래를 포함한다.
 
-- legacy `photo-source`, `photo-ranker` tool 을 하나의 FastMCP server 로 재등록하는 unified MCP layer
+- vendored `photo-source`, `photo-ranker` tool 을 하나의 FastMCP server 로 재등록하는 unified MCP layer
 - localhost `streamable HTTP` daemon 경로
 - `/health` endpoint
 - macOS menu bar popover 기반 app shell
 - job 상태 store 와 active/recent job summary 반영
+- `src/` 기반 package layout 과 내부 vendor tree
 
 포함 내용:
 
-- `photos_mcp/config.py`: app 이름, bundle id, runtime/cache 경로 결정
-- `photos_mcp/legacy_loader.py`: legacy `photo-source`, `photo-ranker` server module 로드
-- `photos_mcp/packaging.py`: `py2app` build kwargs 와 distribution override 정의
-- `photos_mcp/server.py`: FastMCP unified server + `/health` app 구성
-- `photos_mcp/daemon.py`: uvicorn 기반 streamable HTTP daemon controller
-- `photos_mcp/menu_app.py`: macOS menu bar status item / popover UI
-- `photos_mcp/main.py`: `--health`, `--version`, app entrypoint
-- `photos_mcp/state.py`: daemon/job 상태 source of truth
-- `photos_mcp/single_instance.py`: runtime lock 기반 single-instance guard
+- `src/photos_mcp/config.py`: app 이름, bundle id, runtime/cache 경로 결정
+- `src/photos_mcp/vendor_loader.py`: vendored `photo-source`, `photo-ranker` server module 로드
+- `src/photos_mcp/legacy_loader.py`: 기존 import 호환용 shim
+- `src/photos_mcp/packaging.py`: `py2app` build kwargs 와 distribution override 정의
+- `src/photos_mcp/server.py`: FastMCP unified server + `/health` app 구성
+- `src/photos_mcp/daemon.py`: uvicorn 기반 streamable HTTP daemon controller
+- `src/photos_mcp/menu_app.py`: macOS menu bar status item / popover UI
+- `src/photos_mcp/main.py`: `--health`, `--version`, app entrypoint
+- `src/photos_mcp/state.py`: daemon/job 상태 source of truth
+- `src/photos_mcp/single_instance.py`: runtime lock 기반 single-instance guard
+- `src/photos_mcp/vendor/photo-source/`: vendored photo-source runtime
+- `src/photos_mcp/vendor/photo-ranker/`: vendored photo-ranker runtime
+- `src/apple_terminal_helper/`: vendored Terminal helper package
 - `scripts/generate_app_icon.py`: warm photo-tool 성격의 app icon 생성기
 - `scripts/build_framework_standalone.sh`: framework standalone build + ad-hoc codesign 자동화
 - `tests/`: bootstrap 단위 테스트
@@ -31,7 +36,7 @@
 - executable 이름: `PhotosMcp`
 - bundle identifier: `com.nanobot.photos-mcp`
 
-현재 `build_server()` 는 `mcp-my-photos/photo-source/server.py` 와 `mcp-my-photos/photo-ranker/server.py` 의 MCP tool 을 읽어 와 하나의 `PhotosMcp` FastMCP instance 에 재등록한다.
+현재 `build_server()` 는 `src/photos_mcp/vendor/photo-source/server.py` 와 `src/photos_mcp/vendor/photo-ranker/server.py` 의 MCP tool 을 읽어 와 하나의 `PhotosMcp` FastMCP instance 에 재등록한다. 외부 sibling repo 없이 `photos-mcp` 디렉터리 하나만으로 실행/테스트/빌드할 수 있는 구조를 기준으로 유지한다.
 
 현재 재사용 대상인 주요 job/status surface 는 아래와 같다.
 
@@ -62,7 +67,7 @@ Popover 는 아래 정보를 한 화면에서 다룬다.
 
 자동 startup preflight 는 popover 상태만 갱신하고 modal alert 를 띄우지 않는다. Photos Automation warning 이 있어도 daemon 자동 시작을 막지 않기 위해서다. 사용자가 `Run Checks` 를 직접 누른 경우에는 기존처럼 alert 로 상세 warning/success 를 확인할 수 있다.
 
-Recent Jobs 는 terminal 상태(`completed`, `failed`, `cancelled`)만 표시한다. 완료/실패/취소 job 삭제는 legacy `photo-ranker` queue 와 SQLite DB 를 함께 정리하며, running/pending job 삭제는 거부한다. 실행 중 job 은 `Stop` 으로 cancel 한 뒤 terminal history 로 내려간다.
+Recent Jobs 는 terminal 상태(`completed`, `failed`, `cancelled`)만 표시한다. 완료/실패/취소 job 삭제는 vendored `photo-ranker` queue 와 SQLite DB 를 함께 정리하며, running/pending job 삭제는 거부한다. 실행 중 job 은 `Stop` 으로 cancel 한 뒤 terminal history 로 내려간다.
 
 현재 검증된 app build 경로:
 
@@ -73,9 +78,11 @@ Recent Jobs 는 terminal 상태(`completed`, `failed`, `cancelled`)만 표시한
 - 반복 build 기본 경로: `./scripts/build_framework_standalone.sh`
 - standalone 생성 bundle: `dist-framework-standalone/PhotosMcp.app`
 - py2app 가 `photos-mcp.app` 로 생성하더라도 build script 가 최종 산출물을 `PhotosMcp.app` 로 정규화한다.
+- standalone build script 는 `PHOTOS_MCP_FRAMEWORK_RUNTIME_DIR` 가 비어 있으면 `.framework-python-runtime`, `/Library/Frameworks`, Homebrew `python@3.12` framework 경로를 순서대로 탐색한다.
+- standalone build script 는 `PHOTOS_MCP_SITE_PACKAGES_DIR` 가 비어 있으면 `.venv-framework312/.../site-packages` 와 현재 `.venv/.../site-packages` 를 순서대로 재사용한다.
 - build script 는 기본적으로 signed bundle 을 `~/Applications/PhotosMcp.app` 에도 복사해서 live runtime 이 외장 작업 경로를 직접 보지 않게 한다.
 - standalone bundle 은 `resources/PhotosMcp.icns` 를 app icon 으로 포함한다.
-- standalone 후처리: bundle 내부 Mach-O 파일과 app 자체에 ad-hoc `codesign` 을 다시 적용해야 macOS 가 embedded Python / extension module 을 정상 로드한다.
+- standalone 후처리: Homebrew framework 경로에서 들어온 `liblzma.5.dylib` 는 clean copy 로 교체한 뒤 `py2app.util.codesign_adhoc` depth-first signing 을 다시 적용해야 macOS 가 embedded Python / extension module 을 정상 로드한다.
 - standalone 검증: `dist-framework-standalone/PhotosMcp.app/Contents/MacOS/PhotosMcp --health` 와 MCP `initialize` / `list_tools` smoke 통과
 
 런타임 동작:
@@ -109,3 +116,4 @@ repo hygiene:
 - `./.venv/bin/python -m photos_mcp.main --health`
 - app 실행 후 `curl -fsS http://127.0.0.1:18791/health`
 - focused test: `./.venv/bin/pytest tests/test_main.py tests/test_config.py tests/test_state.py tests/test_packaging.py tests/test_preflight.py tests/test_daemon.py -q`
+- 전체 repo test: `uv run pytest -q`

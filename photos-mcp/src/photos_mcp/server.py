@@ -9,8 +9,8 @@ from starlette.responses import JSONResponse
 from starlette.applications import Starlette
 
 from photos_mcp.config import load_config
-from photos_mcp.legacy_loader import iter_legacy_tools, prepare_legacy_runtime
 from photos_mcp.state import PhotosMcpStateStore, TERMINAL_JOB_STATUSES, job_snapshot_from_payload
+from photos_mcp.vendor_loader import iter_vendor_tools, prepare_vendor_runtime
 
 
 JOB_PAYLOAD_KEYS = {"job_id", "id", "status"}
@@ -71,7 +71,7 @@ def _ingest_tool_response(tool_name: str, response: Any, state_store: PhotosMcpS
 
 def _wrap_tool(tool_name: str, tool_fn, state_store: PhotosMcpStateStore | None, server_name: str):
     def _prepare_runtime() -> None:
-        prepare_legacy_runtime(server_name)
+        prepare_vendor_runtime(server_name)
 
     if state_store is None:
         if getattr(tool_fn, "__code__", None) and tool_fn.__code__.co_flags & 0x80:
@@ -137,7 +137,7 @@ def build_server(
         instructions=(
             "Unified Photos MCP server scaffold for Nanobot. "
             "This phase-1 bootstrap exposes diagnostics only and will later "
-            "host photo-source and photo-ranker tools in one executable."
+            "host vendored photo-source and photo-ranker tools in one executable."
         ),
         host=config.host,
         port=config.port,
@@ -154,7 +154,7 @@ def build_server(
     async def http_health_status(_request) -> JSONResponse:
         return JSONResponse(build_health_payload(config, state_store))
 
-    for tool in iter_legacy_tools("photo-source"):
+    for tool in iter_vendor_tools("photo-source"):
         mcp.add_tool(
             _wrap_tool(tool.name, tool.fn, state_store, "photo-source"),
             name=tool.name,
@@ -165,7 +165,7 @@ def build_server(
             meta=tool.meta,
         )
 
-    for tool in iter_legacy_tools("photo-ranker"):
+    for tool in iter_vendor_tools("photo-ranker"):
         mcp.add_tool(
             _wrap_tool(tool.name, tool.fn, state_store, "photo-ranker"),
             name=tool.name,

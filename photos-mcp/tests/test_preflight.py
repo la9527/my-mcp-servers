@@ -19,7 +19,7 @@ def test_check_photos_library_readability_reports_success(monkeypatch) -> None:
             return [SimpleNamespace(photo_id="photo-1")]
 
     fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
-    monkeypatch.setattr("photos_mcp.preflight.load_legacy_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_library_readability()
 
@@ -33,7 +33,7 @@ def test_check_photos_library_readability_reports_failure(monkeypatch) -> None:
             raise RuntimeError("photos db unavailable")
 
     fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
-    monkeypatch.setattr("photos_mcp.preflight.load_legacy_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_library_readability()
 
@@ -47,7 +47,7 @@ def test_check_photos_automation_access_downgrades_permission_error(monkeypatch)
             raise RuntimeError("run_script failed: Not authorized to send Apple events to Photos. (-1743)")
 
     fake_module = SimpleNamespace(AlbumWriter=lambda: FakeWriter())
-    monkeypatch.setattr("photos_mcp.preflight.load_legacy_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_automation_access()
 
@@ -61,7 +61,7 @@ def test_check_photos_automation_access_reports_success(monkeypatch) -> None:
             return [{"name": "album-1"}, {"name": "album-2"}]
 
     fake_module = SimpleNamespace(AlbumWriter=lambda: FakeWriter())
-    monkeypatch.setattr("photos_mcp.preflight.load_legacy_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_automation_access()
 
@@ -78,7 +78,7 @@ def test_check_photos_automation_access_prefers_lightweight_probe(monkeypatch) -
             raise AssertionError("preflight should not enumerate full album counts")
 
     fake_module = SimpleNamespace(AlbumWriter=lambda: FakeWriter())
-    monkeypatch.setattr("photos_mcp.preflight.load_legacy_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_automation_access()
 

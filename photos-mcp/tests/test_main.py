@@ -11,10 +11,10 @@ import json
 
 from photos_mcp.config import load_config
 from photos_mcp.main import run_cli
-from photos_mcp.legacy_loader import LEGACY_ROOT, load_legacy_server, prepare_legacy_runtime
 from photos_mcp.server import build_health_payload, build_http_app, build_server
 from photos_mcp.state import PhotosMcpStateStore
 from photos_mcp.single_instance import AlreadyRunningError
+from photos_mcp.vendor_loader import VENDOR_ROOT, load_vendor_server, prepare_vendor_runtime, resolve_vendor_root
 
 
 def test_health_mode_returns_expected_payload(capsys) -> None:
@@ -49,7 +49,7 @@ def test_run_cli_returns_locked_error_when_instance_is_already_running(monkeypat
 def test_single_instance_lock_rejects_second_process(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(repo_root)
+    env["PYTHONPATH"] = str(repo_root / "src")
     env["NANOBOT_PHOTOS_MCP_RUNTIME_ROOT"] = str(tmp_path)
 
     holder = subprocess.Popen(
@@ -117,7 +117,7 @@ def test_build_server_registers_health_tool() -> None:
     assert "health_status" in mcp._tool_manager._tools
 
 
-def test_build_server_registers_legacy_photo_tools() -> None:
+def test_build_server_registers_vendored_photo_tools() -> None:
     mcp = build_server()
 
     assert "list_photos" in mcp._tool_manager._tools
@@ -161,8 +161,8 @@ def test_build_http_app_serves_health_endpoint() -> None:
     assert body["daemon_status"] == "ready"
 
 
-def test_load_legacy_server_keeps_photo_ranker_runtime_imports_available(monkeypatch) -> None:
-    server_root = str(LEGACY_ROOT / "photo-ranker")
+def test_load_vendor_server_keeps_photo_ranker_runtime_imports_available(monkeypatch) -> None:
+    server_root = str(VENDOR_ROOT / "photo-ranker")
     monkeypatch.setattr(
         sys,
         "path",
@@ -170,19 +170,19 @@ def test_load_legacy_server_keeps_photo_ranker_runtime_imports_available(monkeyp
     )
     monkeypatch.delitem(sys.modules, "sources", raising=False)
     monkeypatch.delitem(sys.modules, "models", raising=False)
-    monkeypatch.delitem(sys.modules, "photos_mcp_legacy_photo_ranker", raising=False)
+    monkeypatch.delitem(sys.modules, "photos_mcp_vendor_photo_ranker", raising=False)
 
-    load_legacy_server("photo-ranker")
+    load_vendor_server("photo-ranker")
     sources_module = importlib.import_module("sources")
     models_module = importlib.import_module("models")
 
-    assert Path(sources_module.__file__).resolve().parent == LEGACY_ROOT / "photo-ranker"
-    assert Path(models_module.__file__).resolve() == LEGACY_ROOT / "photo-ranker" / "models.py"
+    assert Path(sources_module.__file__).resolve().parent == VENDOR_ROOT / "photo-ranker"
+    assert Path(models_module.__file__).resolve() == VENDOR_ROOT / "photo-ranker" / "models.py"
 
 
-def test_prepare_legacy_runtime_switches_sources_namespace_between_servers(monkeypatch) -> None:
-    photo_ranker_root = str(LEGACY_ROOT / "photo-ranker")
-    photo_source_root = str(LEGACY_ROOT / "photo-source")
+def test_prepare_vendor_runtime_switches_sources_namespace_between_servers(monkeypatch) -> None:
+    photo_ranker_root = str(VENDOR_ROOT / "photo-ranker")
+    photo_source_root = str(VENDOR_ROOT / "photo-source")
     monkeypatch.setattr(
         sys,
         "path",
@@ -191,17 +191,27 @@ def test_prepare_legacy_runtime_switches_sources_namespace_between_servers(monke
     for module_name in ["sources", "sources.apple_photos", "models"]:
         monkeypatch.delitem(sys.modules, module_name, raising=False)
 
-    prepare_legacy_runtime("photo-ranker")
+    prepare_vendor_runtime("photo-ranker")
     ranker_sources = importlib.import_module("sources")
     ranker_models = importlib.import_module("models")
 
-    prepare_legacy_runtime("photo-source")
+    prepare_vendor_runtime("photo-source")
     source_package = importlib.import_module("sources")
     apple_module = importlib.import_module("sources.apple_photos")
     source_models = importlib.import_module("models")
 
-    assert Path(ranker_sources.__file__).resolve() == LEGACY_ROOT / "photo-ranker" / "sources.py"
-    assert Path(ranker_models.__file__).resolve() == LEGACY_ROOT / "photo-ranker" / "models.py"
-    assert Path(source_package.__file__).resolve() == LEGACY_ROOT / "photo-source" / "sources" / "__init__.py"
-    assert Path(apple_module.__file__).resolve() == LEGACY_ROOT / "photo-source" / "sources" / "apple_photos.py"
-    assert Path(source_models.__file__).resolve() == LEGACY_ROOT / "photo-source" / "models.py"
+    assert Path(ranker_sources.__file__).resolve() == VENDOR_ROOT / "photo-ranker" / "sources.py"
+    assert Path(ranker_models.__file__).resolve() == VENDOR_ROOT / "photo-ranker" / "models.py"
+    assert Path(source_package.__file__).resolve() == VENDOR_ROOT / "photo-source" / "sources" / "__init__.py"
+    assert Path(apple_module.__file__).resolve() == VENDOR_ROOT / "photo-source" / "sources" / "apple_photos.py"
+    assert Path(source_models.__file__).resolve() == VENDOR_ROOT / "photo-source" / "models.py"
+
+
+def test_resolve_vendor_root_falls_back_to_bundled_resource_layout(tmp_path: Path) -> None:
+    package_root = tmp_path / "Contents" / "Resources" / "lib" / "python3.12" / "photos_mcp"
+    bundled_vendor_root = tmp_path / "Contents" / "Resources" / "lib" / "photos_mcp" / "vendor"
+    bundled_vendor_root.mkdir(parents=True)
+
+    resolved = resolve_vendor_root(package_root)
+
+    assert resolved == bundled_vendor_root

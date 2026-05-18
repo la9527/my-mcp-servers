@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Unified Photos MCP app scaffold for Nanobot"
 requires-python = ">=3.12"
 dependencies = [
-    "apple-terminal-helper",
     "mcp>=1.0.0",
     "numpy>=1.26",
     "imagehash>=4.3",
@@ -27,13 +26,10 @@ dev = [
 photos-mcp = "photos_mcp.main:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["photos_mcp"]
-
-[tool.uv.sources]
-apple-terminal-helper = { path = "../mcp-my-photos/apple-terminal-helper" }
+packages = ["src/photos_mcp", "src/apple_terminal_helper"]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = ["src"]
 testpaths = ["tests"]
 
 [build-system]

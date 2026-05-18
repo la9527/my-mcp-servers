@@ -5,13 +5,6 @@ from pathlib import Path
 import sys
 from typing import Sequence
 
-from photos_mcp import __version__
-from photos_mcp.config import load_config
-from photos_mcp.daemon import PhotosMcpDaemonController
-from photos_mcp.menu_app import run_menu_app
-from photos_mcp.single_instance import AlreadyRunningError, acquire_single_instance_lock
-from photos_mcp.state import PhotosMcpStateStore
-
 
 def ensure_bundled_site_packages() -> None:
     bundled_lib_root = Path(__file__).resolve().parent.parent
@@ -21,6 +14,17 @@ def ensure_bundled_site_packages() -> None:
     bundled_lib_root_str = str(bundled_lib_root)
     if bundled_lib_root_str not in sys.path:
         sys.path.insert(0, bundled_lib_root_str)
+
+
+ensure_bundled_site_packages()
+
+
+from photos_mcp import __version__
+from photos_mcp.config import load_config
+from photos_mcp.daemon import PhotosMcpDaemonController
+from photos_mcp.menu_app import run_menu_app
+from photos_mcp.single_instance import AlreadyRunningError, acquire_single_instance_lock
+from photos_mcp.state import PhotosMcpStateStore
 
 
 def run_cli(argv: Sequence[str] | None = None) -> int:

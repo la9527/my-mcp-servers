@@ -1,15 +1,35 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import suppress
+from pathlib import Path
 from threading import Event, Thread
 import time
 
 import uvicorn
 
 from photos_mcp.config import PhotosMcpConfig
-from photos_mcp.legacy_loader import load_legacy_server
 from photos_mcp.server import build_http_app, build_server
 from photos_mcp.state import PhotosMcpStateStore, job_snapshot_from_payload
+from photos_mcp.vendor_loader import load_vendor_server
+
+
+def _ensure_bundled_uvicorn_package_path() -> None:
+    package_path = getattr(uvicorn, "__path__", None)
+    if package_path is None:
+        return
+
+    bundled_lib_root = Path(__file__).resolve().parent.parent
+    bundled_uvicorn_root = bundled_lib_root / "uvicorn"
+    if not bundled_uvicorn_root.exists():
+        return
+
+    bundled_uvicorn_root_str = str(bundled_uvicorn_root)
+    if bundled_uvicorn_root_str not in package_path:
+        package_path.append(bundled_uvicorn_root_str)
+
+
+_ensure_bundled_uvicorn_package_path()
 
 
 class PhotosMcpDaemonController:
@@ -28,7 +48,16 @@ class PhotosMcpDaemonController:
         self._state_store.set_daemon_status("starting")
         mcp = build_server(config=self._config, state_store=self._state_store)
         app = build_http_app(config=self._config, state_store=self._state_store, mcp=mcp)
-        config = uvicorn.Config(app, host=self._config.host, port=self._config.port, log_level="info")
+        config = uvicorn.Config(
+            app,
+            host=self._config.host,
+            port=self._config.port,
+            log_level="info",
+            loop="asyncio",
+            http="h11",
+            ws="none",
+            lifespan="on",
+        )
         self._server = uvicorn.Server(config)
         self._server_thread = Thread(target=self._serve, name="photos-mcp-http", daemon=True)
         self._server_thread.start()
@@ -71,7 +100,7 @@ class PhotosMcpDaemonController:
 
     def refresh_jobs_once(self) -> None:
         try:
-            module = load_legacy_server("photo-ranker")
+            module = load_vendor_server("photo-ranker")
             db_jobs = {job.id: job.to_dict() for job in module._get_job_db().list_jobs()}
             queue_jobs = {job.id: job.to_dict() for job in module._get_job_queue().list_jobs()}
             merged_jobs = []
@@ -86,7 +115,7 @@ class PhotosMcpDaemonController:
 
     def cancel_job(self, job_id: str) -> bool:
         try:
-            module = load_legacy_server("photo-ranker")
+            module = load_vendor_server("photo-ranker")
             queue = module._get_job_queue()
             db = module._get_job_db()
             success = queue.cancel_job(job_id)
@@ -103,7 +132,7 @@ class PhotosMcpDaemonController:
 
     def delete_job(self, job_id: str) -> bool:
         try:
-            module = load_legacy_server("photo-ranker")
+            module = load_vendor_server("photo-ranker")
             queue = module._get_job_queue()
             db = module._get_job_db()
             job = db.load_job(job_id) or queue.get_job(job_id)
@@ -122,7 +151,7 @@ class PhotosMcpDaemonController:
 
     def clear_job_history(self, statuses: tuple[str, ...] | None = None) -> list[str]:
         try:
-            module = load_legacy_server("photo-ranker")
+            module = load_vendor_server("photo-ranker")
             queue = module._get_job_queue()
             db = module._get_job_db()
             target_statuses = statuses or ("completed", "failed", "cancelled")
@@ -147,7 +176,7 @@ class PhotosMcpDaemonController:
     def _serve(self) -> None:
         assert self._server is not None
         try:
-            self._server.run()
+            asyncio.run(self._server.serve())
         finally:
             self._stop_job_poller()
             self._state_store.set_daemon_status("stopped")

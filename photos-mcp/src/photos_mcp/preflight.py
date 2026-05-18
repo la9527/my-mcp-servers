@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import os
 from threading import Thread
 
-from photos_mcp.legacy_loader import load_legacy_server
+from photos_mcp.vendor_loader import load_vendor_server
 
 
 CHECK_OK = "ok"
@@ -61,7 +61,7 @@ def run_startup_checks() -> list[PreflightCheckResult]:
 
 def check_photos_library_readability() -> PreflightCheckResult:
     try:
-        module = load_legacy_server("photo-source")
+        module = load_vendor_server("photo-source")
         source = module._get_apple_source()
         photos = source.list_photos(limit=1)
     except Exception as exc:
@@ -94,7 +94,7 @@ def check_photos_library_readability() -> PreflightCheckResult:
 
 def check_photos_automation_access() -> PreflightCheckResult:
     try:
-        module = load_legacy_server("photo-ranker")
+        module = load_vendor_server("photo-ranker")
         writer = module.AlbumWriter()
         if hasattr(writer, "probe_automation_access"):
             probe_result = writer.probe_automation_access()
