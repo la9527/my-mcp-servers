@@ -7,6 +7,18 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sys
+
+
+def _find_bundled_lib_root(script_path: Path) -> Path | None:
+    for parent in script_path.parents:
+        if parent.name.startswith("python"):
+            return parent
+        if parent.name == "lib":
+            for child in parent.iterdir():
+                if child.is_dir() and child.name.startswith("python"):
+                    return child
+    return None
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,6 +39,11 @@ def _preferred_filename(photo) -> str | None:
 def main() -> int:
     args = parse_args()
     os.environ["PHOTO_SOURCE_APPLE_FETCH_MODE"] = "direct"
+
+    bundled_lib_root = _find_bundled_lib_root(Path(__file__).resolve())
+    bundled_lib_root_str = str(bundled_lib_root) if bundled_lib_root is not None else ""
+    if bundled_lib_root is not None and bundled_lib_root_str not in sys.path:
+        sys.path.insert(0, bundled_lib_root_str)
 
     import osxphotos
 

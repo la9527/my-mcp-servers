@@ -47,6 +47,7 @@ def _remove_modules(prefixes: tuple[str, ...]) -> None:
 def prepare_vendor_runtime(server_name: str) -> None:
     server_root = VENDOR_ROOT / server_name
     _remove_modules(VENDOR_RUNTIME_MODULE_PREFIXES.get(server_name, ()))
+    _ensure_sys_path(PACKAGE_ROOT.parent)
     _ensure_sys_path(server_root)
 
 
