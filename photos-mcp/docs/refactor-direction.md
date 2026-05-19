@@ -110,7 +110,7 @@ unified server 가 vendor 내부 파일을 직접 만지기보다, 작은 adapte
 - `PHOTO_RANKER_RUNTIME_ROOT=~/.photos-mcp/runtime/photo-ranker`
 - `PHOTO_RANKER_VLM_CACHE_ROOT=~/.photos-mcp/cache/vlm`
 
-`mcp-my-photos` sibling repo 경로는 migration 전용 fallback 이거나 명시적 override 로만 남긴다.
+`mcp-my-photos` sibling repo 경로는 migration fallback 으로 잠시 유지했지만, 현재 기본 runtime/install 경로에서는 제거했다. 남은 언급은 기록용 정리 문맥으로만 본다.
 
 ### 3.4 packaging 은 dependency contract 를 명시해야 한다
 
@@ -226,8 +226,9 @@ helper script 마다 `sys.path` 탐색을 따로 두지 않는다.
 - [x] `PHOTO_RANKER_VLM_CACHE_ROOT` 기본값을 `~/.photos-mcp/cache/vlm` 로 이동한다.
 - [x] app lock 과 app-owned runtime state 기본 위치를 `~/.photos-mcp/runtime` 아래로 이동한다.
 - [x] 현재 남아 있는 `NANOBOT_PHOTOS_MCP_*` env 이름은 compatibility alias 로 유지하고, `PHOTOS_MCP_*` 를 우선한다.
-- [x] 기존 sibling runtime 은 기본값에서 제거하고 명시적 env override 로만 남긴다.
+- [x] 기존 sibling runtime 은 기본값에서 제거했다.
 - [x] Nanobot wrapper dry-run/test 를 갱신한다.
+- [x] Nanobot install script 도 self-contained `photos-mcp` install 로 전환했다.
 
 완료 조건:
 

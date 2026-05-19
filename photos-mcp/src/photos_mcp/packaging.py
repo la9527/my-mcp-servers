@@ -38,7 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_ROOT = Path(__file__).resolve().parent
 STALE_STAGE_ROOTS = (
     PROJECT_ROOT / "src" / "build",
-    PROJECT_ROOT / "build" / "py2app-resources" / "mcp-my-photos",
+    PROJECT_ROOT / "build" / "py2app-resources" / "legacy-vendor-stage",
 )
 CANONICAL_APP_BUNDLE_NAME = "PhotosMcp.app"
 LEGACY_APP_BUNDLE_NAMES = ("photos-mcp.app",)

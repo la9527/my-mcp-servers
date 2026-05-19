@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import plistlib
+import tomllib
 from pathlib import Path
 
 from photos_mcp import packaging
@@ -38,6 +39,24 @@ def test_info_plist_keeps_photos_mcp_visible_as_regular_app() -> None:
 
     assert data["CFBundleDisplayName"] == "PhotosMcp"
     assert data.get("LSUIElement") is None
+
+
+def test_pyproject_declares_self_contained_runtime_extras() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    pyproject = repo_root / "pyproject.toml"
+
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    dependencies = data["project"]["dependencies"]
+    extras = data["project"]["optional-dependencies"]
+
+    assert "uvicorn>=0.30" in dependencies
+    assert "photoscript" in extras["apple"]
+    assert "wurlitzer>=3.0" in extras["apple"]
+    assert "httpx>=0.27" in extras["vlm"]
+    assert "mlx-vlm>=0.1" in extras["vlm"]
+    assert "fastapi>=0.115" in extras["review"]
+    assert "google-cloud-storage>=2.14" in extras["gcs"]
+    assert "requests>=2.31" in extras["google"]
 
 
 def test_bundle_import_smoke_script_exists() -> None:
@@ -107,7 +126,7 @@ def test_cleanup_stale_stage_roots_removes_old_src_build_and_legacy_stage(tmp_pa
     stale_src_build.mkdir(parents=True)
     (stale_src_build / "stale.txt").write_text("x\n", encoding="utf-8")
 
-    stale_legacy_stage = tmp_path / "build" / "py2app-resources" / "mcp-my-photos"
+    stale_legacy_stage = tmp_path / "build" / "py2app-resources" / "legacy-vendor-stage"
     stale_legacy_stage.mkdir(parents=True)
     (stale_legacy_stage / "stale.txt").write_text("x\n", encoding="utf-8")
 
