@@ -15,6 +15,23 @@ def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def job_status_value(status: Any) -> str:
+    value = getattr(status, "value", status)
+    return str(value or "")
+
+
+def is_terminal_job_status(status: Any) -> bool:
+    return job_status_value(status) in TERMINAL_JOB_STATUSES
+
+
+def is_active_job_status(status: Any) -> bool:
+    return job_status_value(status) in ACTIVE_JOB_STATUSES
+
+
+def is_running_job_status(status: Any) -> bool:
+    return job_status_value(status) == "running"
+
+
 @dataclass(slots=True)
 class JobSnapshot:
     job_id: str
@@ -34,7 +51,7 @@ class JobSnapshot:
 
     @property
     def is_terminal(self) -> bool:
-        return self.status in TERMINAL_JOB_STATUSES
+        return is_terminal_job_status(self.status)
 
     @property
     def sort_key(self) -> str:
@@ -110,7 +127,7 @@ class PhotosMcpStateStore:
     def snapshot(self) -> PhotosMcpSnapshot:
         with self._lock:
             active_jobs = sorted(
-                (job for job in self._jobs.values() if job.status in ACTIVE_JOB_STATUSES),
+                (job for job in self._jobs.values() if is_active_job_status(job.status)),
                 key=lambda item: item.sort_key,
                 reverse=True,
             )
@@ -129,13 +146,13 @@ class PhotosMcpStateStore:
                 preflight_checks=[asdict(check) for check in self._preflight_checks.values()],
                 active_jobs=[asdict(job) for job in active_jobs],
                 recent_jobs=[asdict(job) for job in recent_jobs],
-                background_job_running=any(job.status == "running" for job in active_jobs),
+                background_job_running=any(is_running_job_status(job.status) for job in active_jobs),
             )
 
     def _sync_busy_state_locked(self) -> None:
         if self._daemon_status in {"starting", "stopping", "degraded", "stopped"}:
             return
-        if any(job.status == "running" for job in self._jobs.values()):
+        if any(is_running_job_status(job.status) for job in self._jobs.values()):
             self._daemon_status = "busy"
             return
         self._daemon_status = "ready"
@@ -162,9 +179,9 @@ def job_snapshot_from_payload(payload: dict[str, Any]) -> JobSnapshot:
     )
     source = payload.get("source") or payload.get("source_path") or ""
     finished_at = payload.get("finished_at") or ""
-    status = str(payload.get("status") or "unknown")
+    status = job_status_value(payload.get("status") or "unknown")
     result_available = bool(payload.get("result_available", status == "completed"))
-    summary_available = bool(payload.get("summary_available", status in TERMINAL_JOB_STATUSES))
+    summary_available = bool(payload.get("summary_available", is_terminal_job_status(status)))
     reason = str(payload.get("reason") or payload.get("error_message") or "")
     progress_current = None
     progress_total = None

@@ -6,8 +6,8 @@ import logging
 import posixpath
 from datetime import datetime
 
-from models import Photo, PhotoMetadata
-from sources.image_utils import open_image_bytes, thumbnail_to_base64
+from ..models import Photo, PhotoMetadata
+from .image_utils import open_image_bytes, thumbnail_to_base64
 
 logger = logging.getLogger(__name__)
 

@@ -8,9 +8,11 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _script_bootstrap import prepare_photo_ranker_runtime
 
-from album_writer import AlbumWriter
+prepare_photo_ranker_runtime(__file__)
+
+from photos_mcp_vendor_photo_ranker.album_writer import AlbumWriter
 
 
 def main() -> None:

@@ -8,6 +8,8 @@ import json
 import os
 from pathlib import Path
 
+from _script_bootstrap import prepare_photo_ranker_runtime
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -27,6 +29,9 @@ def _preferred_filename(photo) -> str | None:
 def main() -> int:
     args = parse_args()
     os.environ["PHOTO_RANKER_APPLE_FETCH_MODE"] = "direct"
+    prepare_photo_ranker_runtime(__file__)
+
+    from photos_mcp.runtime_paths import photo_ranker_runtime_root
 
     import osxphotos
 
@@ -41,7 +46,7 @@ def main() -> int:
     if isinstance(path, str) and path:
         result = {"path": path}
     else:
-        export_dir = Path.home() / ".photo-ranker" / "terminal-cache" / photo_id
+        export_dir = photo_ranker_runtime_root() / "terminal-cache" / photo_id
         export_dir.mkdir(parents=True, exist_ok=True)
 
         exported_path = ""

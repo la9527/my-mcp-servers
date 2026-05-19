@@ -21,11 +21,12 @@ import sys
 import time
 from pathlib import Path
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _script_bootstrap import prepare_photo_ranker_runtime
 
-from models import EventType
-from pipeline import Pipeline, PipelineConfig
+prepare_photo_ranker_runtime(__file__)
+
+from photos_mcp_vendor_photo_ranker.models import EventType
+from photos_mcp_vendor_photo_ranker.pipeline import Pipeline, PipelineConfig
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)

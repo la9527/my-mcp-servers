@@ -9,8 +9,9 @@ from pathlib import Path
 
 from PIL import Image
 
+from photos_mcp.runtime_paths import photo_ranker_runtime_root
 
-DEFAULT_ARTIFACT_ROOT = Path.home() / ".photo-ranker" / "artifacts"
+DEFAULT_ARTIFACT_ROOT = photo_ranker_runtime_root() / "artifacts"
 
 
 def ensure_job_dirs(job_id: str) -> tuple[Path, Path]:

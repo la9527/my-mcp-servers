@@ -50,7 +50,7 @@ def test_single_instance_lock_rejects_second_process(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
     env["PYTHONPATH"] = str(repo_root / "src")
-    env["NANOBOT_PHOTOS_MCP_RUNTIME_ROOT"] = str(tmp_path)
+    env["PHOTOS_MCP_RUNTIME_ROOT"] = str(tmp_path)
 
     holder = subprocess.Popen(
         [
@@ -138,6 +138,9 @@ def test_build_health_payload_reflects_state_store_status() -> None:
     assert payload["status"] == "ok"
     assert payload["daemon_status"] == "ready"
     assert payload["preflight_status"] == "pending"
+    assert payload["transport"]["status"] == "ok"
+    assert payload["transport"]["daemon_status"] == "ready"
+    assert payload["capabilities"]["status"] == "pending"
     assert payload["endpoint"] == "http://127.0.0.1:18791/mcp"
 
 
@@ -159,28 +162,80 @@ def test_build_http_app_serves_health_endpoint() -> None:
     body = response.json()
     assert body["status"] == "ok"
     assert body["daemon_status"] == "ready"
+    assert body["transport"]["status"] == "ok"
+    assert body["capabilities"]["status"] == "pending"
 
 
-def test_load_vendor_server_keeps_photo_ranker_runtime_imports_available(monkeypatch) -> None:
+def test_build_http_app_serves_capabilities_endpoint() -> None:
+    from starlette.testclient import TestClient
+
+    config = load_config()
+    state_store = PhotosMcpStateStore(
+        endpoint=config.endpoint,
+        health_endpoint=config.health_endpoint,
+    )
+    state_store.set_daemon_status("ready")
+    app = build_http_app(config=config, state_store=state_store)
+
+    with TestClient(app) as client:
+        response = client.get(f"{config.health_path}/capabilities")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "pending"
+    assert body["checks"] == []
+
+
+def test_load_vendor_server_uses_package_namespace_for_photo_ranker(monkeypatch) -> None:
     server_root = str(VENDOR_ROOT / "photo-ranker")
     monkeypatch.setattr(
         sys,
         "path",
         [entry for entry in sys.path if entry != server_root],
     )
-    monkeypatch.delitem(sys.modules, "sources", raising=False)
-    monkeypatch.delitem(sys.modules, "models", raising=False)
-    monkeypatch.delitem(sys.modules, "photos_mcp_vendor_photo_ranker", raising=False)
+    for module_name in [
+        "sources",
+        "models",
+        "photos_mcp_vendor_photo_ranker",
+        "photos_mcp_vendor_photo_ranker.server",
+    ]:
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
 
-    load_vendor_server("photo-ranker")
-    sources_module = importlib.import_module("sources")
-    models_module = importlib.import_module("models")
+    module = load_vendor_server("photo-ranker")
 
-    assert Path(sources_module.__file__).resolve().parent == VENDOR_ROOT / "photo-ranker"
-    assert Path(models_module.__file__).resolve() == VENDOR_ROOT / "photo-ranker" / "models.py"
+    assert module.__name__ == "photos_mcp_vendor_photo_ranker.server"
+    assert module.Pipeline.__module__ == "photos_mcp_vendor_photo_ranker.pipeline"
+    assert "sources" not in sys.modules
+    assert "models" not in sys.modules
+    assert server_root not in sys.path
 
 
-def test_prepare_vendor_runtime_switches_sources_namespace_between_servers(monkeypatch) -> None:
+def test_load_vendor_server_uses_package_namespace_for_photo_source(monkeypatch, tmp_path: Path) -> None:
+    source_root = str(VENDOR_ROOT / "photo-source")
+    monkeypatch.setattr(
+        sys,
+        "path",
+        [entry for entry in sys.path if entry != source_root],
+    )
+    for module_name in [
+        "sources",
+        "models",
+        "photos_mcp_vendor_photo_source",
+        "photos_mcp_vendor_photo_source.server",
+    ]:
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+    module = load_vendor_server("photo-source")
+    local_source = module._get_local_source(str(tmp_path))
+
+    assert module.__name__ == "photos_mcp_vendor_photo_source.server"
+    assert local_source.__class__.__module__ == "photos_mcp_vendor_photo_source.sources.local_folder"
+    assert "sources" not in sys.modules
+    assert "models" not in sys.modules
+    assert source_root not in sys.path
+
+
+def test_prepare_vendor_runtime_keeps_vendors_out_of_top_level_namespace(monkeypatch) -> None:
     photo_ranker_root = str(VENDOR_ROOT / "photo-ranker")
     photo_source_root = str(VENDOR_ROOT / "photo-source")
     monkeypatch.setattr(
@@ -188,23 +243,29 @@ def test_prepare_vendor_runtime_switches_sources_namespace_between_servers(monke
         "path",
         [entry for entry in sys.path if entry not in {photo_ranker_root, photo_source_root}],
     )
-    for module_name in ["sources", "sources.apple_photos", "models"]:
+    for module_name in [
+        "sources",
+        "sources.apple_photos",
+        "models",
+        "photos_mcp_vendor_photo_source",
+        "photos_mcp_vendor_photo_source.server",
+        "photos_mcp_vendor_photo_ranker",
+        "photos_mcp_vendor_photo_ranker.server",
+    ]:
         monkeypatch.delitem(sys.modules, module_name, raising=False)
 
     prepare_vendor_runtime("photo-ranker")
-    ranker_sources = importlib.import_module("sources")
-    ranker_models = importlib.import_module("models")
+    ranker_package = importlib.import_module("photos_mcp_vendor_photo_ranker")
 
     prepare_vendor_runtime("photo-source")
-    source_package = importlib.import_module("sources")
-    apple_module = importlib.import_module("sources.apple_photos")
-    source_models = importlib.import_module("models")
+    source_package = importlib.import_module("photos_mcp_vendor_photo_source")
 
-    assert Path(ranker_sources.__file__).resolve() == VENDOR_ROOT / "photo-ranker" / "sources.py"
-    assert Path(ranker_models.__file__).resolve() == VENDOR_ROOT / "photo-ranker" / "models.py"
-    assert Path(source_package.__file__).resolve() == VENDOR_ROOT / "photo-source" / "sources" / "__init__.py"
-    assert Path(apple_module.__file__).resolve() == VENDOR_ROOT / "photo-source" / "sources" / "apple_photos.py"
-    assert Path(source_models.__file__).resolve() == VENDOR_ROOT / "photo-source" / "models.py"
+    assert ranker_package.__path__ == [str(VENDOR_ROOT / "photo-ranker")]
+    assert source_package.__path__ == [str(VENDOR_ROOT / "photo-source")]
+    assert "sources" not in sys.modules
+    assert "models" not in sys.modules
+    assert photo_ranker_root not in sys.path
+    assert photo_source_root not in sys.path
 
 
 def test_resolve_vendor_root_falls_back_to_bundled_resource_layout(tmp_path: Path) -> None:

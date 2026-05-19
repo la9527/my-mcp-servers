@@ -11,7 +11,9 @@ from pathlib import Path
 
 import numpy as np
 
-from models import FaceResult
+from photos_mcp.runtime_paths import photo_ranker_model_cache_root
+
+from ..models import FaceResult
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,7 @@ _MP_MODEL_URL = (
 
 def _mediapipe_model_path() -> Path:
     """Return the local path for the cached BlazeFace model."""
-    cache = Path.home() / ".cache" / "photo-ranker"
+    cache = photo_ranker_model_cache_root()
     cache.mkdir(parents=True, exist_ok=True)
     return cache / "blaze_face_short_range.tflite"
 

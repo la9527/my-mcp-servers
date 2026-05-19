@@ -25,7 +25,7 @@ _google_photos_source = None
 
 
 def _get_local_source(root_dir: str):
-    from sources.local_folder import LocalFolderSource
+    from .sources.local_folder import LocalFolderSource
 
     global _local_source
     if _local_source is None or _local_source._root != root_dir:
@@ -34,7 +34,7 @@ def _get_local_source(root_dir: str):
 
 
 def _get_apple_source():
-    from sources.apple_photos import ApplePhotosSource
+    from .sources.apple_photos import ApplePhotosSource
 
     global _apple_source
     if _apple_source is None:
@@ -43,7 +43,7 @@ def _get_apple_source():
 
 
 def _get_gcs_source(bucket: str, prefix: str = ""):
-    from sources.gcs import GCSSource
+    from .sources.gcs import GCSSource
 
     global _gcs_source
     if _gcs_source is None or _gcs_source._bucket_name != bucket:
@@ -52,7 +52,7 @@ def _get_gcs_source(bucket: str, prefix: str = ""):
 
 
 def _get_google_photos_source(credentials_path: str = ""):
-    from sources.google_photos import GooglePhotosSource
+    from .sources.google_photos import GooglePhotosSource
 
     global _google_photos_source
     if _google_photos_source is None:

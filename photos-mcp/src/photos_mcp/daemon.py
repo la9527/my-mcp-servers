@@ -9,8 +9,9 @@ import time
 import uvicorn
 
 from photos_mcp.config import PhotosMcpConfig
+from photos_mcp.job_state import PhotoRankerJobStore
 from photos_mcp.server import build_http_app, build_server
-from photos_mcp.state import PhotosMcpStateStore, job_snapshot_from_payload
+from photos_mcp.state import PhotosMcpStateStore
 from photos_mcp.vendor_loader import load_vendor_server
 
 
@@ -100,29 +101,17 @@ class PhotosMcpDaemonController:
 
     def refresh_jobs_once(self) -> None:
         try:
-            module = load_vendor_server("photo-ranker")
-            db_jobs = {job.id: job.to_dict() for job in module._get_job_db().list_jobs()}
-            queue_jobs = {job.id: job.to_dict() for job in module._get_job_queue().list_jobs()}
-            merged_jobs = []
-            for job_id, payload in {**db_jobs, **queue_jobs}.items():
-                normalized = dict(payload)
-                normalized.setdefault("job_id", job_id)
-                merged_jobs.append(job_snapshot_from_payload(normalized))
-            self._state_store.replace_jobs(merged_jobs)
+            job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
+            self._state_store.replace_jobs(job_store.list_snapshots())
         except Exception:
             with suppress(Exception):
                 self._state_store.set_daemon_status("degraded")
 
     def cancel_job(self, job_id: str) -> bool:
         try:
-            module = load_vendor_server("photo-ranker")
-            queue = module._get_job_queue()
-            db = module._get_job_db()
-            success = queue.cancel_job(job_id)
+            job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
+            success = job_store.cancel_job(job_id)
             if success:
-                job = queue.get_job(job_id) or db.load_job(job_id)
-                if job:
-                    db.save_job(job)
                 self.refresh_jobs_once()
             return success
         except Exception:
@@ -132,15 +121,8 @@ class PhotosMcpDaemonController:
 
     def delete_job(self, job_id: str) -> bool:
         try:
-            module = load_vendor_server("photo-ranker")
-            queue = module._get_job_queue()
-            db = module._get_job_db()
-            job = db.load_job(job_id) or queue.get_job(job_id)
-            if not job or job.status.value not in {"completed", "failed", "cancelled"}:
-                return False
-            removed_from_queue = queue.remove_job(job_id)
-            removed_from_db = db.delete_job(job_id)
-            deleted = removed_from_queue or removed_from_db
+            job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
+            deleted = job_store.delete_terminal_job(job_id)
             if deleted:
                 self.refresh_jobs_once()
             return deleted
@@ -151,20 +133,8 @@ class PhotosMcpDaemonController:
 
     def clear_job_history(self, statuses: tuple[str, ...] | None = None) -> list[str]:
         try:
-            module = load_vendor_server("photo-ranker")
-            queue = module._get_job_queue()
-            db = module._get_job_db()
-            target_statuses = statuses or ("completed", "failed", "cancelled")
-            deleted_from_db = db.clear_job_history(statuses=target_statuses)
-
-            deleted_from_queue: list[str] = []
-            for job in queue.list_jobs():
-                if job.status.value not in target_statuses:
-                    continue
-                if queue.remove_job(job.id):
-                    deleted_from_queue.append(job.id)
-
-            deleted_job_ids = sorted(set(deleted_from_db) | set(deleted_from_queue))
+            job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
+            deleted_job_ids = job_store.clear_terminal_history(statuses=statuses)
             if deleted_job_ids:
                 self.refresh_jobs_once()
             return deleted_job_ids

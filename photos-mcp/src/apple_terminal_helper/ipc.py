@@ -11,6 +11,66 @@ import time
 from pathlib import Path
 
 
+def _build_terminal_shell_command(
+    *,
+    python_bin: Path,
+    helper_script: Path,
+    app_dir: Path,
+    request_path: Path,
+    response_path: Path,
+    exit_path: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+    pid_path: Path,
+    env_overrides: dict[str, str] | None,
+) -> str:
+    env_parts = [f"{key}={shlex.quote(value)}" for key, value in (env_overrides or {}).items()]
+    cmd_parts = [
+        f"cd {shlex.quote(str(app_dir))}",
+        "&&",
+        "(",
+        *env_parts,
+        shlex.quote(str(python_bin)),
+        shlex.quote(str(helper_script)),
+        "--request",
+        shlex.quote(str(request_path)),
+        "--response",
+        shlex.quote(str(response_path)),
+        ">",
+        shlex.quote(str(stdout_path)),
+        "2>",
+        shlex.quote(str(stderr_path)),
+        ")",
+        "&",
+        "helper_pid=$!",
+        ";",
+        "printf",
+        "'%s'",
+        '"$helper_pid"',
+        ">",
+        shlex.quote(str(pid_path)),
+        ";",
+        "wait",
+        '"$helper_pid"',
+        ";",
+        "printf",
+        "'%s'",
+        '"$?"',
+        ">",
+        shlex.quote(str(exit_path)),
+    ]
+    return " ".join(cmd_parts)
+
+
+def _terminate_helper_process(pid_path: Path) -> None:
+    if not pid_path.exists():
+        return
+    helper_pid = pid_path.read_text(encoding="utf-8").strip()
+    if not helper_pid.isdigit():
+        return
+    subprocess.run(["/bin/kill", "-TERM", helper_pid], check=False)
+
+
 def run_in_terminal(
     *,
     python_bin: str | Path,
@@ -53,13 +113,12 @@ def run_in_terminal(
     if not python_bin.exists():
         raise RuntimeError(f"Terminal helper python not found: {python_bin}")
 
-    env_parts = [f"{k}={shlex.quote(v)}" for k, v in (env_overrides or {}).items()]
-
     with tempfile.TemporaryDirectory(prefix=tmp_prefix) as tmp_dir:
         tmp_path = Path(tmp_dir)
         request_path = tmp_path / "request.json"
         response_path = tmp_path / "response.json"
         exit_path = tmp_path / "exit_code.txt"
+        pid_path = tmp_path / "helper.pid"
         stdout_path = tmp_path / "stdout.log"
         stderr_path = tmp_path / "stderr.log"
 
@@ -68,28 +127,18 @@ def run_in_terminal(
             encoding="utf-8",
         )
 
-        cmd_parts = [
-            f"cd {shlex.quote(str(app_dir))}",
-            "&&",
-            *env_parts,
-            shlex.quote(str(python_bin)),
-            shlex.quote(str(helper_script)),
-            "--request",
-            shlex.quote(str(request_path)),
-            "--response",
-            shlex.quote(str(response_path)),
-            ">",
-            shlex.quote(str(stdout_path)),
-            "2>",
-            shlex.quote(str(stderr_path)),
-            ";",
-            "printf",
-            "'%s'",
-            "$?",
-            ">",
-            shlex.quote(str(exit_path)),
-        ]
-        shell_command = " ".join(cmd_parts)
+        shell_command = _build_terminal_shell_command(
+            python_bin=python_bin,
+            helper_script=helper_script,
+            app_dir=app_dir,
+            request_path=request_path,
+            response_path=response_path,
+            exit_path=exit_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            pid_path=pid_path,
+            env_overrides=env_overrides,
+        )
         escaped_command = shell_command.replace("\\", "\\\\").replace('"', '\\"')
 
         window_id = subprocess.check_output(
@@ -113,13 +162,17 @@ def run_in_terminal(
             text=True,
         ).strip()
 
+        timed_out = False
         try:
             deadline = time.time() + timeout_secs
             while time.time() < deadline:
                 if exit_path.exists():
                     break
                 time.sleep(0.25)
+            timed_out = not exit_path.exists()
         finally:
+            if timed_out:
+                _terminate_helper_process(pid_path)
             if window_id:
                 subprocess.run(
                     [
@@ -135,7 +188,7 @@ def run_in_terminal(
                     check=False,
                 )
 
-        if not exit_path.exists():
+        if timed_out or not exit_path.exists():
             raise RuntimeError(
                 f"Terminal helper timed out after {timeout_secs:.0f}s"
             )

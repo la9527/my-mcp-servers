@@ -1,22 +1,12 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
 from typing import Sequence
 
+from photos_mcp.runtime_bootstrap import ensure_runtime_import_paths
 
-def ensure_bundled_site_packages() -> None:
-    bundled_lib_root = Path(__file__).resolve().parent.parent
-    if not bundled_lib_root.name.startswith("python"):
-        return
-
-    bundled_lib_root_str = str(bundled_lib_root)
-    if bundled_lib_root_str not in sys.path:
-        sys.path.insert(0, bundled_lib_root_str)
-
-
-ensure_bundled_site_packages()
+ensure_runtime_import_paths(__file__)
 
 
 from photos_mcp import __version__
@@ -30,7 +20,7 @@ from photos_mcp.state import PhotosMcpStateStore
 def run_cli(argv: Sequence[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     config = load_config()
-    ensure_bundled_site_packages()
+    ensure_runtime_import_paths(__file__)
 
     if args == ["--health"]:
         print(

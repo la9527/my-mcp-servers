@@ -9,14 +9,14 @@ import time
 
 from mcp.server.fastmcp import FastMCP
 
-from artifacts import save_face_crop, save_preview
-from album_writer import AlbumWriter
-from local_writer import LocalDirectoryWriter
-from engines.aesthetic import AestheticEngine, score_technical_quality
-from engines.dedup import DedupEngine
-from engines.face import FaceEngine
-from engines.vlm import VLMEngine
-from scoring import (
+from .artifacts import save_face_crop, save_preview
+from .album_writer import AlbumWriter
+from .local_writer import LocalDirectoryWriter
+from .engines.aesthetic import AestheticEngine, score_technical_quality
+from .engines.dedup import DedupEngine
+from .engines.face import FaceEngine
+from .engines.vlm import VLMEngine
+from .scoring import (
     compute_event_score,
     compute_family_score,
     compute_quality_score,
@@ -313,9 +313,9 @@ async def rank_best_shots(
 
 # ── Job Management Tools ──────────────────────────────
 
-from db import JobDB
-from jobs import JobQueue, JobStatus
-from pipeline import Pipeline, PipelineConfig
+from .db import JobDB
+from .jobs import JobQueue, JobStatus
+from .pipeline import Pipeline, PipelineConfig
 
 _job_queue: JobQueue | None = None
 _job_db: JobDB | None = None
@@ -378,7 +378,7 @@ def _selection_profile_error(selection_profile: str) -> str:
 
 async def _run_classify_job(job) -> dict:
     """Handler called by JobQueue to execute classification."""
-    from sources import load_photos
+    from .sources import load_photos
 
     pipe = _get_pipeline()
     db = _get_job_db()
@@ -446,7 +446,7 @@ async def _run_sync_classification(
     limit: int = 100,
     selection_profile: str = "general",
 ) -> tuple[object | None, JobDB, list[dict]]:
-    from sources import load_photos as _load
+    from .sources import load_photos as _load
 
     photos = _load(
         source,

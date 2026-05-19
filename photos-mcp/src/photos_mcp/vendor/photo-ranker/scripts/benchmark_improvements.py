@@ -17,8 +17,9 @@ import time
 import urllib.request
 from pathlib import Path
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _script_bootstrap import prepare_photo_ranker_runtime
+
+prepare_photo_ranker_runtime(__file__)
 
 from PIL import Image
 
@@ -146,7 +147,7 @@ def image_to_b64(path: Path) -> str:
 
 def benchmark_dedup(downloaded: dict[str, list[Path]]) -> dict:
     """Test different dedup strategies on the benchmark images + existing duplicates."""
-    from engines.dedup import DedupEngine
+    from photos_mcp_vendor_photo_ranker.engines.dedup import DedupEngine
 
     print("\n" + "=" * 60)
     print("1-1: DEDUP STRATEGY BENCHMARK")
@@ -275,7 +276,8 @@ def _find_duplicates_dual(
     """Find duplicates requiring BOTH ahash AND phash to be within threshold."""
     import imagehash
     import uuid
-    from models import DuplicateGroup
+
+    from photos_mcp_vendor_photo_ranker.models import DuplicateGroup
 
     ids = list(ahashes.keys())
     ah = {pid: imagehash.hex_to_hash(h) for pid, h in ahashes.items()}
@@ -316,7 +318,7 @@ def _find_duplicates_dual(
 
 def benchmark_face(downloaded: dict[str, list[Path]]) -> dict:
     """Test insightface detection + embedding on diverse images."""
-    from engines.face import FaceEngine
+    from photos_mcp_vendor_photo_ranker.engines.face import FaceEngine
 
     print("\n" + "=" * 60)
     print("1-2: FACE DETECTION + EMBEDDING BENCHMARK")
@@ -422,7 +424,7 @@ def benchmark_face(downloaded: dict[str, list[Path]]) -> dict:
 
 def benchmark_vlm_events(downloaded: dict[str, list[Path]]) -> dict:
     """Test VLM event classification accuracy on diverse images."""
-    from engines.vlm import VLMEngine
+    from photos_mcp_vendor_photo_ranker.engines.vlm import VLMEngine
 
     print("\n" + "=" * 60)
     print("1-3: VLM EVENT CLASSIFICATION BENCHMARK")

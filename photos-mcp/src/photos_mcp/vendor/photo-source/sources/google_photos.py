@@ -20,7 +20,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from models import Photo, PhotoMetadata
+from ..models import Photo, PhotoMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +202,7 @@ class GooglePhotosSource:
 
         try:
             import requests
-            from sources.image_utils import open_image_bytes, thumbnail_to_base64
+            from .image_utils import open_image_bytes, thumbnail_to_base64
 
             item = self._service.mediaItems().get(mediaItemId=photo_id).execute()
             base_url = item.get("baseUrl")

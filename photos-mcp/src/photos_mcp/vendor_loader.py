@@ -27,8 +27,13 @@ def resolve_vendor_root(package_root: Path | None = None) -> Path:
 VENDOR_ROOT = resolve_vendor_root()
 
 VENDOR_RUNTIME_MODULE_PREFIXES: dict[str, tuple[str, ...]] = {
-    "photo-source": ("sources", "models"),
-    "photo-ranker": ("sources", "models"),
+    "photo-source": (),
+    "photo-ranker": (),
+}
+
+VENDOR_PACKAGE_MODULE_NAMES: dict[str, str] = {
+    "photo-source": "photos_mcp_vendor_photo_source",
+    "photo-ranker": "photos_mcp_vendor_photo_ranker",
 }
 
 
@@ -44,25 +49,55 @@ def _remove_modules(prefixes: tuple[str, ...]) -> None:
             sys.modules.pop(module_name, None)
 
 
+def _ensure_vendor_package(server_name: str, server_root: Path) -> str | None:
+    package_name = VENDOR_PACKAGE_MODULE_NAMES.get(server_name)
+    if package_name is None:
+        return None
+
+    existing = sys.modules.get(package_name)
+    if existing is not None and list(getattr(existing, "__path__", [])) == [str(server_root)]:
+        return package_name
+
+    package = ModuleType(package_name)
+    package.__file__ = str(server_root / "__init__.py")
+    package.__path__ = [str(server_root)]
+    package.__package__ = package_name
+    sys.modules[package_name] = package
+    return package_name
+
+
 def prepare_vendor_runtime(server_name: str) -> None:
     server_root = VENDOR_ROOT / server_name
-    _remove_modules(VENDOR_RUNTIME_MODULE_PREFIXES.get(server_name, ()))
     _ensure_sys_path(PACKAGE_ROOT.parent)
+    if _ensure_vendor_package(server_name, server_root) is not None:
+        return
+    _remove_modules(VENDOR_RUNTIME_MODULE_PREFIXES.get(server_name, ()))
     _ensure_sys_path(server_root)
 
 
 def load_vendor_server(server_name: str) -> ModuleType:
     server_root = VENDOR_ROOT / server_name
     prepare_vendor_runtime(server_name)
+    package_name = VENDOR_PACKAGE_MODULE_NAMES.get(server_name)
+    module_name = (
+        f"{package_name}.server"
+        if package_name is not None
+        else f"photos_mcp_vendor_{server_name.replace('-', '_')}"
+    )
     spec = spec_from_file_location(
-        f"photos_mcp_vendor_{server_name.replace('-', '_')}",
+        module_name,
         server_root / "server.py",
     )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load vendored server: {server_name}")
 
     module = module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 

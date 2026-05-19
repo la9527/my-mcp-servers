@@ -7,6 +7,8 @@ import io
 import logging
 from pathlib import Path
 
+from photos_mcp.runtime_paths import photo_ranker_model_cache_root
+
 logger = logging.getLogger(__name__)
 
 # LAION improved-aesthetic-predictor v2.5 weights
@@ -19,7 +21,7 @@ _WEIGHTS_URL = (
 
 def _weights_path() -> Path:
     """Return the local path for cached weights (XDG cache)."""
-    cache = Path.home() / ".cache" / "photo-ranker"
+    cache = photo_ranker_model_cache_root()
     cache.mkdir(parents=True, exist_ok=True)
     return cache / _WEIGHTS_FILENAME
 

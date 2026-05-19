@@ -8,9 +8,27 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
-from artifacts import DEFAULT_ARTIFACT_ROOT
-from db import JobDB
-from server import _build_face_items, _build_review_items
+import sys
+
+
+def _prepare_photo_ranker_runtime() -> None:
+  anchor_path = Path(__file__).resolve()
+  for parent in anchor_path.parents:
+    if (parent / "photos_mcp").is_dir():
+      parent_str = str(parent)
+      if parent_str not in sys.path:
+        sys.path.insert(0, parent_str)
+      break
+  from photos_mcp.vendor_script_bootstrap import prepare_script_vendor_runtime
+
+  prepare_script_vendor_runtime("photo-ranker", anchor_path)
+
+
+_prepare_photo_ranker_runtime()
+
+from photos_mcp_vendor_photo_ranker.artifacts import DEFAULT_ARTIFACT_ROOT
+from photos_mcp_vendor_photo_ranker.db import JobDB
+from photos_mcp_vendor_photo_ranker.server import _build_face_items, _build_review_items
 
 app = FastAPI(title="photo-ranker review", version="0.1.0")
 
@@ -167,7 +185,7 @@ def label_face_api(
 
 @app.post("/api/jobs/{job_id}/export-selected")
 def export_selected_api(job_id: str, payload: ExportSelectedRequest) -> dict:
-    from local_writer import LocalDirectoryWriter
+    from photos_mcp_vendor_photo_ranker.local_writer import LocalDirectoryWriter
 
     db = _get_db()
     try:

@@ -4,17 +4,27 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 
+from photos_mcp.runtime_paths import photos_mcp_cache_root, photos_mcp_runtime_root
+
 
 DEFAULT_APP_NAME = "PhotosMcp"
 DEFAULT_EXECUTABLE_NAME = "PhotosMcp"
 DEFAULT_BUNDLE_ID = "com.nanobot.photos-mcp"
-DEFAULT_BUNDLE_PATH = Path("/Applications/PhotosMcp.app")
+DEFAULT_BUNDLE_PATH = Path.home() / "Applications" / "PhotosMcp.app"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 18791
 DEFAULT_STREAMABLE_HTTP_PATH = "/mcp"
 DEFAULT_HEALTH_PATH = "/health"
 DEFAULT_START_DAEMON_ON_LAUNCH = True
 DEFAULT_JOB_POLL_INTERVAL_SECONDS = 2.0
+
+
+def _env_first(*names: str, default: str) -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None:
+            return value
+    return default
 
 
 @dataclass(frozen=True)
@@ -50,41 +60,35 @@ def _bool_env(name: str, default: bool) -> bool:
 
 def load_config() -> PhotosMcpConfig:
     bundle_path = Path(
-        os.environ.get(
+        _env_first(
+            "PHOTOS_MCP_BUNDLE_PATH",
             "NANOBOT_PHOTOS_MCP_BUNDLE_PATH",
-            str(DEFAULT_BUNDLE_PATH),
+            default=str(DEFAULT_BUNDLE_PATH),
         )
     )
-    runtime_root = Path(
-        os.environ.get(
-            "NANOBOT_PHOTOS_MCP_RUNTIME_ROOT",
-            str(Path.home() / ".nanobot" / "runtime" / "photos-mcp"),
-        )
-    )
-    cache_root = Path(
-        os.environ.get(
-            "NANOBOT_PHOTOS_MCP_CACHE_ROOT",
-            str(Path.home() / ".nanobot" / "cache" / "photos-mcp"),
-        )
-    )
-    host = os.environ.get("NANOBOT_PHOTOS_MCP_HOST", DEFAULT_HOST)
-    port = int(os.environ.get("NANOBOT_PHOTOS_MCP_PORT", str(DEFAULT_PORT)))
-    streamable_http_path = os.environ.get(
+    runtime_root = photos_mcp_runtime_root()
+    cache_root = photos_mcp_cache_root()
+    host = _env_first("PHOTOS_MCP_HOST", "NANOBOT_PHOTOS_MCP_HOST", default=DEFAULT_HOST)
+    port = int(_env_first("PHOTOS_MCP_PORT", "NANOBOT_PHOTOS_MCP_PORT", default=str(DEFAULT_PORT)))
+    streamable_http_path = _env_first(
+        "PHOTOS_MCP_STREAMABLE_HTTP_PATH",
         "NANOBOT_PHOTOS_MCP_STREAMABLE_HTTP_PATH",
-        DEFAULT_STREAMABLE_HTTP_PATH,
+        default=DEFAULT_STREAMABLE_HTTP_PATH,
     )
-    health_path = os.environ.get(
+    health_path = _env_first(
+        "PHOTOS_MCP_HEALTH_PATH",
         "NANOBOT_PHOTOS_MCP_HEALTH_PATH",
-        DEFAULT_HEALTH_PATH,
+        default=DEFAULT_HEALTH_PATH,
     )
     start_daemon_on_launch = _bool_env(
-        "NANOBOT_PHOTOS_MCP_START_DAEMON_ON_LAUNCH",
-        DEFAULT_START_DAEMON_ON_LAUNCH,
+        "PHOTOS_MCP_START_DAEMON_ON_LAUNCH",
+        _bool_env("NANOBOT_PHOTOS_MCP_START_DAEMON_ON_LAUNCH", DEFAULT_START_DAEMON_ON_LAUNCH),
     )
     job_poll_interval_seconds = float(
-        os.environ.get(
+        _env_first(
+            "PHOTOS_MCP_JOB_POLL_INTERVAL_SECONDS",
             "NANOBOT_PHOTOS_MCP_JOB_POLL_INTERVAL_SECONDS",
-            str(DEFAULT_JOB_POLL_INTERVAL_SECONDS),
+            default=str(DEFAULT_JOB_POLL_INTERVAL_SECONDS),
         )
     )
     return PhotosMcpConfig(

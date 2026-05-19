@@ -9,10 +9,12 @@ import sys
 import uuid
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _script_bootstrap import prepare_photo_ranker_runtime
 
-from engines.dedup import DedupEngine
-from models import DuplicateGroup
+prepare_photo_ranker_runtime(__file__)
+
+from photos_mcp_vendor_photo_ranker.engines.dedup import DedupEngine
+from photos_mcp_vendor_photo_ranker.models import DuplicateGroup
 
 
 def find_duplicates_dual(engine, ahashes, phashes, threshold):

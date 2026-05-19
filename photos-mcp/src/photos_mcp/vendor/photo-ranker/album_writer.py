@@ -14,22 +14,9 @@ import sys
 import time
 
 from apple_terminal_helper import run_in_terminal
+from photos_mcp.runtime_bootstrap import default_terminal_python
 
 logger = logging.getLogger(__name__)
-
-
-def _default_terminal_python(app_dir: Path) -> str:
-    configured = os.getenv("PHOTO_RANKER_TERMINAL_PYTHON_BIN")
-    if configured:
-        return configured
-
-    executable_path = Path(sys.executable).resolve()
-    if executable_path.name == "PhotosMcp" and executable_path.parent.name == "MacOS":
-        bundled_python = executable_path.with_name("python")
-        if bundled_python.exists():
-            return str(bundled_python)
-
-    return str(app_dir / ".venv/bin/python")
 
 
 class AlbumWriter:
@@ -39,7 +26,10 @@ class AlbumWriter:
         self._lib = None
         self._apple_events_mode = os.getenv("PHOTO_RANKER_APPLE_EVENTS_MODE", "direct")
         self._app_dir = Path(__file__).resolve().parent
-        self._terminal_python = _default_terminal_python(self._app_dir)
+        self._terminal_python = default_terminal_python(
+            "PHOTO_RANKER_TERMINAL_PYTHON_BIN",
+            self._app_dir,
+        )
         self._terminal_timeout_secs = float(
             os.getenv("PHOTO_RANKER_TERMINAL_TIMEOUT_SECS", "90")
         )
@@ -54,7 +44,10 @@ class AlbumWriter:
             app_dir=self._app_dir,
             request={"operation": operation, "payload": payload},
             timeout_secs=self._terminal_timeout_secs,
-            env_overrides={"PHOTO_RANKER_APPLE_EVENTS_MODE": "direct"},
+            env_overrides={
+                "PHOTO_RANKER_APPLE_EVENTS_MODE": "direct",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
             tmp_prefix="photo-ranker-terminal-",
         )
 

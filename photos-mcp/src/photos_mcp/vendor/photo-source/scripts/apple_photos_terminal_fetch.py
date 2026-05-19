@@ -7,18 +7,8 @@ import argparse
 import json
 import os
 from pathlib import Path
-import sys
 
-
-def _find_bundled_lib_root(script_path: Path) -> Path | None:
-    for parent in script_path.parents:
-        if parent.name.startswith("python"):
-            return parent
-        if parent.name == "lib":
-            for child in parent.iterdir():
-                if child.is_dir() and child.name.startswith("python"):
-                    return child
-    return None
+from _script_bootstrap import prepare_photo_source_runtime
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,11 +29,9 @@ def _preferred_filename(photo) -> str | None:
 def main() -> int:
     args = parse_args()
     os.environ["PHOTO_SOURCE_APPLE_FETCH_MODE"] = "direct"
+    prepare_photo_source_runtime(__file__)
 
-    bundled_lib_root = _find_bundled_lib_root(Path(__file__).resolve())
-    bundled_lib_root_str = str(bundled_lib_root) if bundled_lib_root is not None else ""
-    if bundled_lib_root is not None and bundled_lib_root_str not in sys.path:
-        sys.path.insert(0, bundled_lib_root_str)
+    from photos_mcp.runtime_paths import photo_source_cache_root
 
     import osxphotos
 
@@ -58,7 +46,7 @@ def main() -> int:
     if isinstance(path, str) and path:
         result = {"path": path}
     else:
-        export_dir = Path.home() / ".photo-source-cache" / photo_id
+        export_dir = photo_source_cache_root() / "terminal-cache" / photo_id
         export_dir.mkdir(parents=True, exist_ok=True)
 
         exported_path = ""

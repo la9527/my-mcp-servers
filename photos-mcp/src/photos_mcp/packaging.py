@@ -1,21 +1,36 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from pathlib import Path
 import shutil
 import sys
 
+from photos_mcp.packaging_contract import (
+    APP_PACKAGES,
+    PY2APP_EXCLUDES,
+    PY2APP_INCLUDES,
+    PY2APP_PACKAGES,
+    SITE_PACKAGES_RESOURCE_NAMES,
+    SITE_PACKAGES_RESOURCE_PREFIXES,
+    SITE_PACKAGES_RESOURCE_SUFFIXES,
+)
 from setuptools.dist import Distribution
 
 
 IGNORED_RESOURCE_NAMES = {
     ".DS_Store",
     ".git",
+    ".gitignore",
     ".mypy_cache",
     ".pytest_cache",
+    ".python-version",
     ".ruff_cache",
     ".venv",
     "__pycache__",
+    "pyproject.toml",
+    "tests",
+    "uv.lock",
 }
 
 
@@ -27,8 +42,6 @@ STALE_STAGE_ROOTS = (
 )
 CANONICAL_APP_BUNDLE_NAME = "PhotosMcp.app"
 LEGACY_APP_BUNDLE_NAMES = ("photos-mcp.app",)
-
-
 class Py2AppDistribution(Distribution):
     def __init__(self, attrs=None):
         super().__init__(attrs)
@@ -133,6 +146,25 @@ def build_vendor_resources() -> list[tuple[str, list[str]]]:
     ]
 
 
+def _is_allowed_site_packages_resource(
+    path: Path,
+    *,
+    names: Iterable[str] = SITE_PACKAGES_RESOURCE_NAMES,
+    prefixes: Iterable[str] = SITE_PACKAGES_RESOURCE_PREFIXES,
+    suffixes: Iterable[str] = SITE_PACKAGES_RESOURCE_SUFFIXES,
+) -> bool:
+    if path.name == "__pycache__":
+        return False
+
+    allowed_names = set(names)
+    if path.name in allowed_names:
+        return True
+
+    return any(path.name.startswith(prefix) for prefix in prefixes) or any(
+        path.name.endswith(suffix) for suffix in suffixes
+    )
+
+
 def build_site_packages_resources() -> list[tuple[str, list[str]]]:
     site_package_entries: list[str] = []
     seen_paths: set[Path] = set()
@@ -146,7 +178,7 @@ def build_site_packages_resources() -> list[tuple[str, list[str]]]:
 
         seen_paths.add(entry_path)
         for child in entry_path.iterdir():
-            if child.name == "__pycache__":
+            if not _is_allowed_site_packages_resource(child):
                 continue
             site_package_entries.append(str(child))
 
@@ -165,7 +197,7 @@ def build_py2app_setup_kwargs() -> dict:
         "cmdclass": _build_py2app_cmdclass(),
         "install_requires": [],
         "package_dir": {"": "src"},
-        "packages": ["photos_mcp", "apple_terminal_helper"],
+        "packages": APP_PACKAGES,
         "distclass": Py2AppDistribution,
         "setup_requires": ["py2app>=0.28"],
         "options": {
@@ -176,14 +208,9 @@ def build_py2app_setup_kwargs() -> dict:
                 "argv_emulation": False,
                 "iconfile": "resources/PhotosMcp.icns",
                 "plist": "Info.plist",
-                "packages": ["photos_mcp", "apple_terminal_helper"],
-                "excludes": ["_tkinter", "idlelib", "tkinter"],
-                "includes": [
-                    "apple_terminal_helper",
-                    "anyio._backends._asyncio",
-                    "photos_mcp",
-                    "sqlite3",
-                ],
+                "packages": PY2APP_PACKAGES,
+                "excludes": PY2APP_EXCLUDES,
+                "includes": PY2APP_INCLUDES,
                 "resources": resources,
             }
         },

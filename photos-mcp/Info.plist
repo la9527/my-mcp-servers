@@ -8,8 +8,6 @@
 	<string>PhotosMcp</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.nanobot.photos-mcp</string>
-	<key>LSUIElement</key>
-	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>PhotosMcp needs Apple Events access to read and organize photos in Apple Photos.</string>
 </dict>

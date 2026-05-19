@@ -13,8 +13,8 @@ try:
 except ImportError:
     pass  # HEIC support unavailable
 
-from models import Photo, PhotoMetadata
-from sources.image_utils import open_image_path, thumbnail_to_base64
+from ..models import Photo, PhotoMetadata
+from .image_utils import open_image_path, thumbnail_to_base64
 
 logger = logging.getLogger(__name__)
 

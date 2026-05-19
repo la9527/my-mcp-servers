@@ -19,14 +19,14 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-import db as db_module
-from engines.aesthetic import score_technical_quality
-from engines.dedup import DedupEngine
-from engines.exif import ExifEngine
-from engines.face import FaceEngine
-from jobs import Job, JobProgress
-from models import DuplicateGroup, EventType, QualityScore, RankedPhoto
-from scoring import (
+from . import db as db_module
+from .engines.aesthetic import score_technical_quality
+from .engines.dedup import DedupEngine
+from .engines.exif import ExifEngine
+from .engines.face import FaceEngine
+from .jobs import Job, JobProgress
+from .models import DuplicateGroup, EventType, QualityScore, RankedPhoto
+from .scoring import (
     compute_event_score,
     compute_family_score,
     compute_quality_score,
@@ -368,7 +368,7 @@ class Pipeline:
     async def _stage2(self, cand: PhotoCandidate) -> None:
         """Heavy VLM inference: scene description + event classification."""
         try:
-            from engines.vlm import VLMEngine
+            from .engines.vlm import VLMEngine
 
             if self._vlm is None:
                 t_init = time.perf_counter()
@@ -442,7 +442,7 @@ class Pipeline:
 
             # Re-score quality with real aesthetic if available
             try:
-                from engines.aesthetic import AestheticEngine
+                from .engines.aesthetic import AestheticEngine
 
                 if self._aesthetic is None:
                     t_ae = time.perf_counter()

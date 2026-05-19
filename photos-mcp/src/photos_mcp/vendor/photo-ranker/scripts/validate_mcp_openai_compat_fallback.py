@@ -33,9 +33,11 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from _script_bootstrap import prepare_photo_ranker_runtime
 
-from engines.vlm import probe_openai_compat_vision_support
+prepare_photo_ranker_runtime(__file__)
+
+from photos_mcp_vendor_photo_ranker.engines.vlm import probe_openai_compat_vision_support
 
 
 def parse_args() -> argparse.Namespace:

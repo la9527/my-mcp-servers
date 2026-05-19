@@ -7,18 +7,8 @@ import argparse
 import json
 import os
 from pathlib import Path
-import sys
 
-
-def _find_bundled_lib_root(script_path: Path) -> Path | None:
-    for parent in script_path.parents:
-        if parent.name.startswith("python"):
-            return parent
-        if parent.name == "lib":
-            for child in parent.iterdir():
-                if child.is_dir() and child.name.startswith("python"):
-                    return child
-    return None
+from _script_bootstrap import prepare_photo_ranker_runtime
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,18 +22,9 @@ def main() -> int:
     args = parse_args()
     os.environ["PHOTO_RANKER_APPLE_EVENTS_MODE"] = "direct"
 
-    script_dir = Path(__file__).resolve().parent
-    bundled_lib_root = _find_bundled_lib_root(script_dir)
-    package_root = script_dir.parent
-    if bundled_lib_root is not None:
-        bundled_lib_root_str = str(bundled_lib_root)
-        if bundled_lib_root_str not in sys.path:
-            sys.path.insert(0, bundled_lib_root_str)
-    package_root_str = str(package_root)
-    if package_root_str not in sys.path:
-        sys.path.insert(0, package_root_str)
+    prepare_photo_ranker_runtime(__file__)
 
-    from album_writer import AlbumWriter
+    from photos_mcp_vendor_photo_ranker.album_writer import AlbumWriter
 
     request = json.loads(Path(args.request).read_text(encoding="utf-8"))
     operation = request["operation"]

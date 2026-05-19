@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from models import (
+from .models import (
     DuplicateGroup,
     EventType,
     FaceResult,

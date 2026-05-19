@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from models import EventType, SceneDescription
+from ..models import EventType, SceneDescription
 
 logger = logging.getLogger(__name__)
 

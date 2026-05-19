@@ -7,7 +7,7 @@ import io
 import logging
 import uuid
 
-from models import DuplicateGroup
+from ..models import DuplicateGroup
 
 logger = logging.getLogger(__name__)
 

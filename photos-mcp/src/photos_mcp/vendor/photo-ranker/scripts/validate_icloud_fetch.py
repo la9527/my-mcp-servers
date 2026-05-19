@@ -6,7 +6,11 @@ import logging
 import sys
 
 import osxphotos
-import sources
+from _script_bootstrap import prepare_photo_ranker_runtime
+
+prepare_photo_ranker_runtime(__file__)
+
+from photos_mcp_vendor_photo_ranker import sources
 
 
 def main() -> None:

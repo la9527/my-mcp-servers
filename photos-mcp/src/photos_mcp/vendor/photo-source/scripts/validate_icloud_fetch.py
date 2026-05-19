@@ -5,7 +5,11 @@ import json
 import logging
 import sys
 
-from sources.apple_photos import ApplePhotosSource
+from _script_bootstrap import prepare_photo_source_runtime
+
+prepare_photo_source_runtime(__file__)
+
+from photos_mcp_vendor_photo_source.sources.apple_photos import ApplePhotosSource
 
 
 def main() -> None:

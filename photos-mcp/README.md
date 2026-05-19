@@ -2,6 +2,14 @@
 
 `PhotosMcp` 는 Apple Photos 관련 read/write MCP 기능을 하나의 macOS app bundle 과 하나의 Python entrypoint 로 수렴시키기 위한 새 코드베이스다.
 
+전반적인 구조 설명과 디버깅 기준 문서는 `docs/` 아래에 정리했다.
+
+- `docs/README.md`
+- `docs/architecture.md`
+- `docs/feature-map.md`
+- `docs/debugging-guide.md`
+- `docs/refactor-direction.md`
+
 현재 이 디렉터리는 phase-1 기준으로 아래를 포함한다.
 
 - vendored `photo-source`, `photo-ranker` tool 을 하나의 FastMCP server 로 재등록하는 unified MCP layer
@@ -21,8 +29,10 @@
 - `src/photos_mcp/daemon.py`: uvicorn 기반 streamable HTTP daemon controller
 - `src/photos_mcp/menu_app.py`: macOS menu bar status item / popover UI
 - `src/photos_mcp/main.py`: `--health`, `--version`, app entrypoint
-- `src/photos_mcp/state.py`: daemon/job 상태 source of truth
+- `src/photos_mcp/state.py`: daemon/preflight/job 상태 projection cache
+- `src/photos_mcp/job_state.py`: vendored `photo-ranker` DB/queue 접근 adapter
 - `src/photos_mcp/single_instance.py`: runtime lock 기반 single-instance guard
+- `src/photos_mcp/runtime_bootstrap.py`: source/bundle import path 와 Terminal helper Python 선택 공통 계약
 - `src/photos_mcp/vendor/photo-source/`: vendored photo-source runtime
 - `src/photos_mcp/vendor/photo-ranker/`: vendored photo-ranker runtime
 - `src/apple_terminal_helper/`: vendored Terminal helper package
@@ -35,6 +45,8 @@
 - app 이름: `PhotosMcp`
 - executable 이름: `PhotosMcp`
 - bundle identifier: `com.nanobot.photos-mcp`
+
+runtime/cache 경로의 정리 방향은 Nanobot 하위 경로가 아니라 앱 전용 root 인 `~/.photos-mcp` 아래로 수렴하는 것이다. `PhotosMcp` 는 Nanobot 을 포함한 여러 MCP client 에 연결될 수 있는 독립 app 이므로, 기본 runtime/cache ownership 은 client 가 아니라 app 기준으로 둔다.
 
 현재 `build_server()` 는 `src/photos_mcp/vendor/photo-source/server.py` 와 `src/photos_mcp/vendor/photo-ranker/server.py` 의 MCP tool 을 읽어 와 하나의 `PhotosMcp` FastMCP instance 에 재등록한다. 외부 sibling repo 없이 `photos-mcp` 디렉터리 하나만으로 실행/테스트/빌드할 수 있는 구조를 기준으로 유지한다.
 
@@ -69,6 +81,8 @@ Popover 는 아래 정보를 한 화면에서 다룬다.
 
 Recent Jobs 는 terminal 상태(`completed`, `failed`, `cancelled`)만 표시한다. 완료/실패/취소 job 삭제는 vendored `photo-ranker` queue 와 SQLite DB 를 함께 정리하며, running/pending job 삭제는 거부한다. 실행 중 job 은 `Stop` 으로 cancel 한 뒤 terminal history 로 내려간다.
 
+`PhotosMcp.app` 은 `~/Applications/PhotosMcp.app` 에 설치되는 일반 macOS app 이다. Finder, Launchpad, Dock 에서 보일 수 있고, 동시에 menu bar status item UI 도 유지한다.
+
 현재 검증된 app build 경로:
 
 - 개발용 alias mode build: `uv run --extra app python setup.py py2app -A`
@@ -80,7 +94,10 @@ Recent Jobs 는 terminal 상태(`completed`, `failed`, `cancelled`)만 표시한
 - py2app 가 `photos-mcp.app` 로 생성하더라도 build script 가 최종 산출물을 `PhotosMcp.app` 로 정규화한다.
 - standalone build script 는 `PHOTOS_MCP_FRAMEWORK_RUNTIME_DIR` 가 비어 있으면 `.framework-python-runtime`, `/Library/Frameworks`, Homebrew `python@3.12` framework 경로를 순서대로 탐색한다.
 - standalone build script 는 `PHOTOS_MCP_SITE_PACKAGES_DIR` 가 비어 있으면 `.venv-framework312/.../site-packages` 와 현재 `.venv/.../site-packages` 를 순서대로 재사용한다.
-- build script 는 기본적으로 signed bundle 을 `~/Applications/PhotosMcp.app` 에도 복사해서 live runtime 이 외장 작업 경로를 직접 보지 않게 한다.
+- py2app 포함 계약은 `src/photos_mcp/packaging.py` 의 `PY2APP_PACKAGES`, `PY2APP_INCLUDES`, site-packages resource allowlist 로 관리한다.
+- bundle import smoke 는 `uv run python scripts/smoke_bundle_imports.py` 로 source 환경에서 먼저 확인하고, bundle 생성 후에는 `--bundle dist-framework-standalone/PhotosMcp.app` 로 확인한다.
+- build script 는 기본적으로 signed bundle 을 `~/Applications/PhotosMcp.app` 에 복사한다.
+- Nanobot wrapper 기본 bundle 경로도 `~/Applications/PhotosMcp.app` 를 기준으로 맞춘다. local build bundle 을 찾았고 explicit override 가 없으면 사용자 앱 폴더 설치본을 자동 갱신한 뒤 그 경로를 사용한다.
 - standalone bundle 은 `resources/PhotosMcp.icns` 를 app icon 으로 포함한다.
 - standalone 후처리: Homebrew framework 경로에서 들어온 `liblzma.5.dylib` 는 clean copy 로 교체한 뒤 `py2app.util.codesign_adhoc` depth-first signing 을 다시 적용해야 macOS 가 embedded Python / extension module 을 정상 로드한다.
 - standalone 검증: `dist-framework-standalone/PhotosMcp.app/Contents/MacOS/PhotosMcp --health` 와 MCP `initialize` / `list_tools` smoke 통과
@@ -88,7 +105,7 @@ Recent Jobs 는 terminal 상태(`completed`, `failed`, `cancelled`)만 표시한
 런타임 동작:
 
 - `PhotosMcp` 는 기본적으로 `runtime_root/photos-mcp.lock` 파일 잠금으로 single-instance 를 강제한다.
-- 기본 entrypoint 는 macOS menu bar app 이며, launch 시 daemon 을 자동 시작한다.
+- 기본 entrypoint 는 일반 macOS app 이며, launch 시 daemon 을 자동 시작하고 menu bar status item 도 함께 띄운다.
 - menu UI 에서 `Start`, `Stop`, `Run Checks`, `Refresh`, `Quit`, active job `Stop`, recent job `Delete`, recent history `Clear` action 을 제공한다.
 - `Stop` 은 MCP daemon 만 내리고, `Quit` 은 app 전체를 종료한다.
 - 테스트/디버그에서만 `PHOTOS_MCP_SINGLE_INSTANCE=0` 으로 lock 을 끌 수 있다.
@@ -97,7 +114,14 @@ health/runtime 기본값:
 
 - MCP endpoint: `http://127.0.0.1:18791/mcp`
 - health endpoint: `http://127.0.0.1:18791/health`
+- capabilities endpoint: `http://127.0.0.1:18791/health/capabilities`
 - app status 는 `stopped`, `starting`, `ready`, `busy`, `degraded`, `stopping` 으로 관리된다.
+
+health payload 해석:
+
+- top-level `status` 는 transport readiness 기준이다.
+- top-level `preflight_*` 필드는 compatibility 용으로 유지된다.
+- 새 client 나 운영 확인은 `transport` 와 `capabilities` nested field 를 우선 사용한다.
 
 repo hygiene:
 

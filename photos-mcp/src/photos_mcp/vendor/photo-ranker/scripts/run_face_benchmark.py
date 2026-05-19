@@ -12,9 +12,11 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _script_bootstrap import prepare_photo_ranker_runtime
 
-from engines.face import FaceEngine
+prepare_photo_ranker_runtime(__file__)
+
+from photos_mcp_vendor_photo_ranker.engines.face import FaceEngine
 
 
 def main():

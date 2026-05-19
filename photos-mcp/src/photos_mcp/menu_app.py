@@ -11,7 +11,7 @@ from AppKit import (
     NSAlertStyleInformational,
     NSAlertStyleWarning,
     NSApplication,
-    NSApplicationActivationPolicyAccessory,
+    NSApplicationActivationPolicyRegular,
     NSButton,
     NSColor,
     NSFont,
@@ -681,7 +681,7 @@ def run_menu_app(
     global _APP_CONTROLLER
 
     app = NSApplication.sharedApplication()
-    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+    app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
     controller = PhotosMcpMenuController.alloc().initWithConfig_stateStore_daemonController_(
         config,
         state_store,

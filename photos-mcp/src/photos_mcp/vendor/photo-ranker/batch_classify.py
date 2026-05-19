@@ -16,11 +16,28 @@ import json
 import logging
 import sys
 import time
+from pathlib import Path
 
-from db import JobDB
-from jobs import Job, JobQueue, JobStatus
-from pipeline import Pipeline, PipelineConfig
-from sources import load_photos
+
+def _prepare_photo_ranker_runtime() -> None:
+    anchor_path = Path(__file__).resolve()
+    for parent in anchor_path.parents:
+        if (parent / "photos_mcp").is_dir():
+            parent_str = str(parent)
+            if parent_str not in sys.path:
+                sys.path.insert(0, parent_str)
+            break
+    from photos_mcp.vendor_script_bootstrap import prepare_script_vendor_runtime
+
+    prepare_script_vendor_runtime("photo-ranker", anchor_path)
+
+
+_prepare_photo_ranker_runtime()
+
+from photos_mcp_vendor_photo_ranker.db import JobDB
+from photos_mcp_vendor_photo_ranker.jobs import Job, JobQueue, JobStatus
+from photos_mcp_vendor_photo_ranker.pipeline import Pipeline, PipelineConfig
+from photos_mcp_vendor_photo_ranker.sources import load_photos
 
 logging.basicConfig(
     level=logging.INFO,

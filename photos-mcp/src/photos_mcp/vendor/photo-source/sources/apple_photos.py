@@ -10,9 +10,10 @@ import tempfile
 from datetime import datetime, time
 from pathlib import Path
 
-from models import Photo, PhotoMetadata
-from sources.image_utils import open_image_path, thumbnail_to_base64
+from ..models import Photo, PhotoMetadata
+from .image_utils import open_image_path, thumbnail_to_base64
 from apple_terminal_helper import run_in_terminal
+from photos_mcp.runtime_bootstrap import default_terminal_python
 
 logger = logging.getLogger(__name__)
 
@@ -60,20 +61,6 @@ def _matches_date_filters(
     return True
 
 
-def _default_terminal_python(app_dir: Path) -> str:
-    configured = os.getenv("PHOTO_SOURCE_TERMINAL_PYTHON_BIN")
-    if configured:
-        return configured
-
-    executable_path = Path(sys.executable).resolve()
-    if executable_path.name == "PhotosMcp" and executable_path.parent.name == "MacOS":
-        bundled_python = executable_path.with_name("python")
-        if bundled_python.exists():
-            return str(bundled_python)
-
-    return str(app_dir / ".venv/bin/python")
-
-
 class ApplePhotosSource:
     """Access Apple Photos / iCloud library via osxphotos."""
 
@@ -84,7 +71,10 @@ class ApplePhotosSource:
         self._photokit_disabled = False
         self._fetch_mode = os.getenv("PHOTO_SOURCE_APPLE_FETCH_MODE", "direct")
         self._app_dir = Path(__file__).resolve().parent.parent
-        self._terminal_python = _default_terminal_python(self._app_dir)
+        self._terminal_python = default_terminal_python(
+            "PHOTO_SOURCE_TERMINAL_PYTHON_BIN",
+            self._app_dir,
+        )
         self._terminal_timeout_secs = float(
             os.getenv("PHOTO_SOURCE_TERMINAL_TIMEOUT_SECS", "90")
         )
@@ -274,7 +264,10 @@ class ApplePhotosSource:
             app_dir=self._app_dir,
             request={"photo_id": photo_id},
             timeout_secs=self._terminal_timeout_secs,
-            env_overrides={"PHOTO_SOURCE_APPLE_FETCH_MODE": "direct"},
+            env_overrides={
+                "PHOTO_SOURCE_APPLE_FETCH_MODE": "direct",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
             tmp_prefix="photo-source-terminal-",
         )
         return response.get("path") or None  # type: ignore[union-attr]

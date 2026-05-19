@@ -110,12 +110,26 @@ def _wrap_tool(tool_name: str, tool_fn, state_store: PhotosMcpStateStore | None,
 def build_health_payload(config, state_store: PhotosMcpStateStore | None) -> dict[str, Any]:
     snapshot = state_store.snapshot() if state_store is not None else None
     daemon_status = snapshot.daemon_status if snapshot else "stopped"
+    preflight_status = snapshot.preflight_status if snapshot else "pending"
+    transport_status = "ok" if daemon_status in {"ready", "busy"} else daemon_status
+    capabilities = {
+        "status": preflight_status,
+        "checks": snapshot.preflight_checks if snapshot else [],
+        "last_checked_at": snapshot.last_preflight_at if snapshot else "",
+    }
     return {
-        "status": "ok" if daemon_status in {"ready", "busy"} else daemon_status,
+        "status": transport_status,
         "daemon_status": daemon_status,
-        "preflight_status": snapshot.preflight_status if snapshot else "pending",
-        "preflight_checks": snapshot.preflight_checks if snapshot else [],
-        "last_preflight_at": snapshot.last_preflight_at if snapshot else "",
+        "preflight_status": preflight_status,
+        "preflight_checks": capabilities["checks"],
+        "last_preflight_at": capabilities["last_checked_at"],
+        "transport": {
+            "status": transport_status,
+            "daemon_status": daemon_status,
+            "endpoint": config.endpoint,
+            "health_endpoint": config.health_endpoint,
+        },
+        "capabilities": capabilities,
         "app_name": config.app_name,
         "bundle_id": config.bundle_id,
         "endpoint": config.endpoint,
@@ -153,6 +167,10 @@ def build_server(
     @mcp.custom_route(config.health_path, methods=["GET"], include_in_schema=False)
     async def http_health_status(_request) -> JSONResponse:
         return JSONResponse(build_health_payload(config, state_store))
+
+    @mcp.custom_route(f"{config.health_path}/capabilities", methods=["GET"], include_in_schema=False)
+    async def http_health_capabilities(_request) -> JSONResponse:
+        return JSONResponse(build_health_payload(config, state_store)["capabilities"])
 
     for tool in iter_vendor_tools("photo-source"):
         mcp.add_tool(

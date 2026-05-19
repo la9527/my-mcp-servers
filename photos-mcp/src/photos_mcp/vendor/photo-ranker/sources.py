@@ -16,6 +16,7 @@ from datetime import datetime, time
 from pathlib import Path
 
 from apple_terminal_helper import run_in_terminal
+from photos_mcp.runtime_bootstrap import default_terminal_python
 
 try:
     from pillow_heif import register_heif_opener
@@ -35,21 +36,7 @@ _APP_DIR = Path(__file__).resolve().parent
 _TERMINAL_TIMEOUT_SECS = float(os.getenv("PHOTO_RANKER_TERMINAL_TIMEOUT_SECS", "90"))
 
 
-def _default_terminal_python() -> str:
-    configured = os.getenv("PHOTO_RANKER_TERMINAL_PYTHON_BIN")
-    if configured:
-        return configured
-
-    executable_path = Path(sys.executable).resolve()
-    if executable_path.name == "PhotosMcp" and executable_path.parent.name == "MacOS":
-        bundled_python = executable_path.with_name("python")
-        if bundled_python.exists():
-            return str(bundled_python)
-
-    return str(_APP_DIR / ".venv/bin/python")
-
-
-_TERMINAL_PYTHON = _default_terminal_python()
+_TERMINAL_PYTHON = default_terminal_python("PHOTO_RANKER_TERMINAL_PYTHON_BIN", _APP_DIR)
 
 
 def _parse_filter_bound(value: str, *, is_end: bool) -> datetime:
@@ -336,7 +323,10 @@ def _run_terminal_fetch_helper(photo_id: str) -> str | None:
         app_dir=_APP_DIR,
         request={"photo_id": photo_id},
         timeout_secs=_TERMINAL_TIMEOUT_SECS,
-        env_overrides={"PHOTO_RANKER_APPLE_FETCH_MODE": "direct"},
+        env_overrides={
+            "PHOTO_RANKER_APPLE_FETCH_MODE": "direct",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
         tmp_prefix="photo-ranker-terminal-",
     )
     return response.get("path") or None  # type: ignore[union-attr]

@@ -9,11 +9,14 @@ import sqlite3
 import time
 from pathlib import Path
 
-from jobs import Job, JobProgress, JobStatus
+from photos_mcp.runtime_paths import photo_ranker_runtime_root
+
+from .jobs import Job, JobProgress, JobStatus
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DB_PATH = Path.home() / ".photo-ranker" / "jobs.db"
+def default_db_path() -> Path:
+    return photo_ranker_runtime_root() / "jobs.db"
 
 
 def _stale_running_job_secs() -> float:
@@ -24,7 +27,7 @@ class JobDB:
     """Lightweight SQLite store for job state and results."""
 
     def __init__(self, db_path: str | Path | None = None) -> None:
-        self._path = Path(db_path) if db_path else DEFAULT_DB_PATH
+        self._path = Path(db_path) if db_path else default_db_path()
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: sqlite3.Connection | None = None
         self._init_db()

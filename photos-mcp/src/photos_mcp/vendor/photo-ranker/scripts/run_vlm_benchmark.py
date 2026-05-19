@@ -9,9 +9,11 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _script_bootstrap import prepare_photo_ranker_runtime
 
-from engines.vlm import VLMEngine
+prepare_photo_ranker_runtime(__file__)
+
+from photos_mcp_vendor_photo_ranker.engines.vlm import VLMEngine
 
 
 def main():

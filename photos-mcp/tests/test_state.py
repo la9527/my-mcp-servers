@@ -2,9 +2,17 @@ from __future__ import annotations
 
 from photos_mcp.state import (
     PhotosMcpStateStore,
+    is_active_job_status,
+    is_running_job_status,
+    is_terminal_job_status,
     job_snapshot_from_payload,
     preflight_check_snapshot_from_payload,
 )
+
+
+class _Status:
+    def __init__(self, value: str) -> None:
+        self.value = value
 
 
 def test_state_store_splits_active_and_recent_jobs() -> None:
@@ -59,6 +67,13 @@ def test_job_snapshot_defaults_terminal_fields_from_status() -> None:
     assert job.started_at == "2026-05-18T00:00:00+00:00"
     assert job.summary_available is True
     assert job.result_available is True
+
+
+def test_job_status_helpers_accept_enum_like_values() -> None:
+    assert is_terminal_job_status(_Status("completed")) is True
+    assert is_terminal_job_status(_Status("running")) is False
+    assert is_active_job_status(_Status("pending")) is True
+    assert is_running_job_status(_Status("running")) is True
 
 
 def test_job_snapshot_maps_pipeline_progress_fields() -> None:
