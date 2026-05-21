@@ -8,6 +8,7 @@ import math
 import time
 
 from mcp.server.fastmcp import FastMCP
+from photos_mcp.logging_setup import ToolLogContext, log_context
 
 from .artifacts import save_face_crop, save_preview
 from .album_writer import AlbumWriter
@@ -28,6 +29,40 @@ from .scoring import (
 )
 
 logger = logging.getLogger(__name__)
+
+CURATE_TOTAL_STEPS = 9
+
+
+def _workflow_context(tool_name: str, step_index: int, total_steps: int) -> ToolLogContext:
+    return ToolLogContext(tool_name=tool_name, step_index=step_index, total_steps=total_steps)
+
+
+def _log_workflow_step(
+    level: int,
+    tool_name: str,
+    step_index: int,
+    total_steps: int,
+    message: str,
+    *args: object,
+) -> None:
+    log_context(logger, level, _workflow_context(tool_name, step_index, total_steps), message, *args)
+
+SCREEN_CAPTURE_KEYWORDS = (
+    "screenshot",
+    "screen shot",
+    "screen-shot",
+    "screen_capture",
+    "screen capture",
+    "screenrecord",
+    "screen recording",
+    "screen_recording",
+    "desktop screenshot",
+    "phone screenshot",
+    "mobile screenshot",
+    "monitor screenshot",
+    "browser window",
+    "application window",
+)
 
 mcp = FastMCP(
     "photo-ranker",
@@ -376,6 +411,40 @@ def _selection_profile_error(selection_profile: str) -> str:
     )
 
 
+def _looks_like_screen_capture(result: dict[str, object], source_photo_path: str) -> bool:
+    parts = [
+        str(result.get("photo_id") or ""),
+        source_photo_path,
+        str(result.get("scene_description") or ""),
+        str(result.get("note") or ""),
+    ]
+    combined = " ".join(parts).lower()
+    return any(keyword in combined for keyword in SCREEN_CAPTURE_KEYWORDS)
+
+
+def _exclude_screen_capture_results(
+    db: JobDB,
+    job_id: str,
+    results: list[dict],
+) -> tuple[list[dict], list[str]]:
+    if not results:
+        return [], []
+
+    assets = db.list_job_assets(job_id)
+    filtered: list[dict] = []
+    excluded_photo_ids: list[str] = []
+    for result in results:
+        photo_id = str(result.get("photo_id") or "")
+        asset = assets.get(photo_id, {}) if isinstance(assets, dict) else {}
+        source_photo_path = str(asset.get("source_photo_path") or "")
+        if _looks_like_screen_capture(result, source_photo_path):
+            if photo_id:
+                excluded_photo_ids.append(photo_id)
+            continue
+        filtered.append(result)
+    return filtered, excluded_photo_ids
+
+
 async def _run_classify_job(job) -> dict:
     """Handler called by JobQueue to execute classification."""
     from .sources import load_photos
@@ -445,9 +514,30 @@ async def _run_sync_classification(
     date_to: str = "",
     limit: int = 100,
     selection_profile: str = "general",
+    log_tool_name: str = "",
+    log_total_steps: int = 0,
+    load_step_index: int = 0,
+    cache_step_index: int = 0,
+    stage1_step_index: int = 0,
+    stage2_step_index: int = 0,
 ) -> tuple[object | None, JobDB, list[dict]]:
     from .sources import load_photos as _load
 
+    load_started = time.perf_counter()
+    if log_tool_name and load_step_index and log_total_steps:
+        _log_workflow_step(
+            logging.INFO,
+            log_tool_name,
+            load_step_index,
+            log_total_steps,
+            "loading source=%s album=%s person=%s date_from=%s date_to=%s limit=%s",
+            source,
+            source_path,
+            person or "-",
+            date_from or "-",
+            date_to or "-",
+            limit,
+        )
     photos = _load(
         source,
         source_path,
@@ -458,6 +548,16 @@ async def _run_sync_classification(
         limit=limit,
     )
     db = _get_job_db()
+    if log_tool_name and load_step_index and log_total_steps:
+        _log_workflow_step(
+            logging.INFO,
+            log_tool_name,
+            load_step_index,
+            log_total_steps,
+            "loaded photos=%d in %.2fs",
+            len(photos),
+            time.perf_counter() - load_started,
+        )
     if not photos:
         return None, db, []
 
@@ -474,11 +574,39 @@ async def _run_sync_classification(
         date_to=date_to,
         limit=limit,
     )
+    if log_tool_name and log_total_steps:
+        job.request_options.update(
+            {
+                "log_tool_name": log_tool_name,
+                "log_total_steps": log_total_steps,
+                "log_stage1_step": stage1_step_index,
+                "log_stage2_step": stage2_step_index,
+            }
+        )
     job.status = JobStatus.RUNNING
     job.started_at = time.time()
     db.save_job(job)
 
+    preview_started = time.perf_counter()
+    if log_tool_name and cache_step_index and log_total_steps:
+        _log_workflow_step(
+            logging.INFO,
+            log_tool_name,
+            cache_step_index,
+            log_total_steps,
+            "caching preview assets photos=%d",
+            len(photos),
+        )
     _cache_job_review_assets(job, photos)
+    if log_tool_name and cache_step_index and log_total_steps:
+        _log_workflow_step(
+            logging.INFO,
+            log_tool_name,
+            cache_step_index,
+            log_total_steps,
+            "cached preview assets in %.2fs",
+            time.perf_counter() - preview_started,
+        )
     ranked = await pipe.run(photos, job, selection_profile=selection_profile)
     _cache_face_review_assets(job, photos)
 
@@ -1104,6 +1232,7 @@ async def curate_best_photos(
     limit: int = 30,
     quality_top_percent: int = 30,
     selection_profile: str = "general",
+    exclude_screenshots: bool = False,
 ) -> str:
     """최신/필터된 사진에서 잘 나온 사진만 골라 review 또는 Apple Photos 앨범에 반영합니다.
 
@@ -1120,10 +1249,24 @@ async def curate_best_photos(
         limit: 최신/필터 결과에서 처리할 최대 사진 수
         quality_top_percent: 상위 몇 퍼센트를 잘 나온 사진으로 볼지 결정
         selection_profile: Ranking profile — "general", "person", "landscape"
+        exclude_screenshots: 화면 캡처로 보이는 결과를 선별 대상에서 제외할지 여부
 
     Returns:
         JSON with job_id, quality threshold, selected photo ids, and optional album write-back result.
     """
+    workflow_started = time.perf_counter()
+    tool_name = "photos_run.curate"
+    _log_workflow_step(
+        logging.INFO,
+        tool_name,
+        1,
+        CURATE_TOTAL_STEPS,
+        "request accepted source=%s selection_profile=%s writeback_mode=%s limit=%s",
+        source,
+        selection_profile,
+        writeback_mode,
+        limit,
+    )
     normalized_mode = writeback_mode.strip().lower() or "review"
     if normalized_mode not in {"review", "album"}:
         return json.dumps({
@@ -1159,9 +1302,49 @@ async def curate_best_photos(
         date_to=date_to,
         limit=limit,
         selection_profile=normalized_profile,
+        log_tool_name=tool_name,
+        log_total_steps=CURATE_TOTAL_STEPS,
+        load_step_index=2,
+        cache_step_index=3,
+        stage1_step_index=4,
+        stage2_step_index=5,
     )
     if job is None or not results:
+        _log_workflow_step(
+            logging.WARNING,
+            tool_name,
+            CURATE_TOTAL_STEPS,
+            CURATE_TOTAL_STEPS,
+            "no photos found from source after %.2fs",
+            time.perf_counter() - workflow_started,
+        )
         return json.dumps({"error": "No photos found from source"}, ensure_ascii=False)
+
+    excluded_screen_capture_ids: list[str] = []
+    if exclude_screenshots:
+        results, excluded_screen_capture_ids = _exclude_screen_capture_results(
+            db,
+            job.id,
+            results,
+        )
+        _log_workflow_step(
+            logging.INFO,
+            tool_name,
+            6,
+            CURATE_TOTAL_STEPS,
+            "excluded screen captures=%d remaining=%d",
+            len(excluded_screen_capture_ids),
+            len(results),
+        )
+        if not results:
+            return json.dumps(
+                {
+                    "error": "No photos remained after screenshot exclusion",
+                    "job_id": job.id,
+                    "excluded_screen_capture_ids": excluded_screen_capture_ids,
+                },
+                ensure_ascii=False,
+            )
 
     normalized_percent, quality_min_score, selected = _select_top_quality_results(
         results,
@@ -1181,18 +1364,55 @@ async def curate_best_photos(
         selection_profile=normalized_profile,
         score_field=score_field,
     )
+    _log_workflow_step(
+        logging.INFO,
+        tool_name,
+        7,
+        CURATE_TOTAL_STEPS,
+        "selected photos=%d/%d threshold=%.2f score_field=%s",
+        len(selected_photo_ids),
+        len(results),
+        quality_min_score,
+        score_field,
+    )
 
     album_result: dict[str, object] | None = None
     if normalized_mode == "album" and selected_photo_ids:
+        _log_workflow_step(
+            logging.INFO,
+            tool_name,
+            8,
+            CURATE_TOTAL_STEPS,
+            "writing selected photos to album=%s count=%d",
+            target_album_name,
+            len(selected_photo_ids),
+        )
         try:
             album_result = _get_album_writer().add_photos_to_album(
                 sorted(selected_photo_ids),
                 target_album_name,
                 folder,
             )
+            _log_workflow_step(
+                logging.INFO,
+                tool_name,
+                8,
+                CURATE_TOTAL_STEPS,
+                "album write-back finished added=%s failed=%s",
+                album_result.get("added", 0) if isinstance(album_result, dict) else 0,
+                album_result.get("failed", 0) if isinstance(album_result, dict) else 0,
+            )
         except Exception as exc:
             logger.exception("curate_best_photos album write-back failed")
             return _format_album_writer_error("curate_best_photos", exc)
+    elif normalized_mode == "album":
+        _log_workflow_step(
+            logging.WARNING,
+            tool_name,
+            8,
+            CURATE_TOTAL_STEPS,
+            "album write-back skipped because no selected photos remained",
+        )
 
     summary = {
         "job_id": job.id,
@@ -1208,6 +1428,7 @@ async def curate_best_photos(
             "score_field": score_field,
             "top_percent": normalized_percent,
             "min_score": round(quality_min_score, 2),
+            "exclude_screenshots": exclude_screenshots,
         },
         "quality_policy": {
             "mode": "quality_top_percent" if score_field == "quality_score" else "profile_top_percent",
@@ -1216,12 +1437,39 @@ async def curate_best_photos(
             "selection_profile": normalized_profile,
             "score_field": score_field,
         },
+        "excluded_screen_capture_count": len(excluded_screen_capture_ids),
+        "excluded_screen_capture_ids": excluded_screen_capture_ids,
         "writeback_mode": normalized_mode,
         "target_album_name": target_album_name,
         "album_result": album_result,
     }
     _finalize_sync_job(job, db, summary)
+    _log_workflow_step(
+        logging.INFO,
+        tool_name,
+        9,
+        CURATE_TOTAL_STEPS,
+        "finished job_id=%s ranked=%d selected=%d elapsed=%.2fs",
+        job.id,
+        len(results),
+        len(selected_photo_ids),
+        time.perf_counter() - workflow_started,
+    )
     return json.dumps(summary, ensure_ascii=False)
+
+
+@mcp.tool()
+async def delete_photo_album(name: str, folder: str = "") -> str:
+    """Apple Photos validation album 을 삭제합니다."""
+    del folder
+
+    writer = _get_album_writer()
+    try:
+        deleted = writer.delete_album(name)
+    except Exception as exc:
+        logger.exception("delete_photo_album failed")
+        return _format_album_writer_error("delete_photo_album", exc)
+    return json.dumps({"album": name, "deleted": deleted}, ensure_ascii=False)
 
 
 @mcp.tool()

@@ -22,6 +22,7 @@ def test_load_config_uses_default_names(monkeypatch, tmp_path: Path) -> None:
     assert config.bundle_path == bundle_path
     assert config.runtime_root == Path.home() / ".photos-mcp" / "runtime"
     assert config.cache_root == Path.home() / ".photos-mcp" / "cache"
+    assert config.logs_root == Path.home() / ".photos-mcp" / "logs"
     assert config.host == "127.0.0.1"
     assert config.port == 18791
     assert config.streamable_http_path == "/mcp"
@@ -64,22 +65,28 @@ def test_load_config_reads_http_overrides(monkeypatch, tmp_path: Path) -> None:
 def test_load_config_keeps_legacy_nanobot_env_as_fallback(monkeypatch, tmp_path: Path) -> None:
     runtime_root = tmp_path / "legacy-runtime"
     cache_root = tmp_path / "legacy-cache"
+    logs_root = tmp_path / "logs"
     monkeypatch.delenv("PHOTOS_MCP_RUNTIME_ROOT", raising=False)
     monkeypatch.delenv("PHOTOS_MCP_CACHE_ROOT", raising=False)
+    monkeypatch.delenv("PHOTOS_MCP_LOGS_ROOT", raising=False)
     monkeypatch.setenv("NANOBOT_PHOTOS_MCP_RUNTIME_ROOT", str(runtime_root))
     monkeypatch.setenv("NANOBOT_PHOTOS_MCP_CACHE_ROOT", str(cache_root))
+    monkeypatch.setenv("PHOTOS_MCP_HOME", str(tmp_path))
 
     config = load_config()
 
     assert config.runtime_root == runtime_root
     assert config.cache_root == cache_root
+    assert config.logs_root == logs_root
 
 
 def test_load_config_prefers_app_env_over_legacy_nanobot_env(monkeypatch, tmp_path: Path) -> None:
     runtime_root = tmp_path / "app-runtime"
     cache_root = tmp_path / "app-cache"
+    logs_root = tmp_path / "app-logs"
     monkeypatch.setenv("PHOTOS_MCP_RUNTIME_ROOT", str(runtime_root))
     monkeypatch.setenv("PHOTOS_MCP_CACHE_ROOT", str(cache_root))
+    monkeypatch.setenv("PHOTOS_MCP_LOGS_ROOT", str(logs_root))
     monkeypatch.setenv("NANOBOT_PHOTOS_MCP_RUNTIME_ROOT", str(tmp_path / "legacy-runtime"))
     monkeypatch.setenv("NANOBOT_PHOTOS_MCP_CACHE_ROOT", str(tmp_path / "legacy-cache"))
 
@@ -87,3 +94,4 @@ def test_load_config_prefers_app_env_over_legacy_nanobot_env(monkeypatch, tmp_pa
 
     assert config.runtime_root == runtime_root
     assert config.cache_root == cache_root
+    assert config.logs_root == logs_root

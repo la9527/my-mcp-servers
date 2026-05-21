@@ -19,6 +19,8 @@ import logging
 import time
 from dataclasses import dataclass, field
 
+from photos_mcp.logging_setup import ToolLogContext, log_context
+
 from . import db as db_module
 from .engines.aesthetic import score_technical_quality
 from .engines.dedup import DedupEngine
@@ -109,6 +111,23 @@ class Pipeline:
             self._known_faces[name] = []
         self._known_faces[name].append(embedding)
 
+    @staticmethod
+    def _workflow_context(job: Job | None, step_index: int) -> ToolLogContext | None:
+        if job is None or not isinstance(job.request_options, dict):
+            return None
+        tool_name = str(job.request_options.get("log_tool_name") or "")
+        total_steps = int(job.request_options.get("log_total_steps") or 0)
+        if not tool_name or total_steps < 1:
+            return None
+        return ToolLogContext(tool_name=tool_name, step_index=step_index, total_steps=total_steps)
+
+    def _log_workflow(self, level: int, job: Job | None, step_index: int, message: str, *args: object) -> None:
+        context = self._workflow_context(job, step_index)
+        if context is None:
+            logger.log(level, message, *args)
+            return
+        log_context(logger, level, context, message, *args)
+
     def _identify_known_persons(
         self, face_embeddings: list[list[float] | None],
     ) -> list[str]:
@@ -161,11 +180,16 @@ class Pipeline:
             Ranked list of photos.
         """
         t_start = time.perf_counter()
+        stage1_step = int(job.request_options.get("log_stage1_step") or 0) if job and isinstance(job.request_options, dict) else 0
+        stage2_step = int(job.request_options.get("log_stage2_step") or 0) if job and isinstance(job.request_options, dict) else 0
 
         if job:
             job.progress = JobProgress(total=len(photos), stage="filter")
 
-        logger.info("Pipeline start: %d photos", len(photos))
+        if stage1_step:
+            self._log_workflow(logging.INFO, job, stage1_step, "pipeline start photos=%d", len(photos))
+        else:
+            logger.info("Pipeline start: %d photos", len(photos))
 
         # Load existing checkpoints for resume support
         s1_done: dict[str, dict] = {}
@@ -174,9 +198,13 @@ class Pipeline:
             s1_done = self._db.load_checkpoints(job.id, "filter")
             s2_done = self._db.load_checkpoints(job.id, "vlm")
             if s1_done or s2_done:
-                logger.info(
-                    "Resuming: %d filter checkpoints, %d vlm checkpoints",
-                    len(s1_done), len(s2_done),
+                self._log_workflow(
+                    logging.INFO,
+                    job,
+                    stage1_step or stage2_step or 1,
+                    "resume checkpoints filter=%d vlm=%d",
+                    len(s1_done),
+                    len(s2_done),
                 )
 
         # ── Stage 1: Filter ──
@@ -195,9 +223,19 @@ class Pipeline:
             if job:
                 job.progress.completed = i + 1
                 job.progress.current_file = pid
+            if stage1_step and ((i + 1) % 5 == 0 or i + 1 == len(photos)):
+                self._log_workflow(
+                    logging.INFO,
+                    job,
+                    stage1_step,
+                    "stage1 progress %d/%d current=%s",
+                    i + 1,
+                    len(photos),
+                    pid,
+                )
 
         t_s1 = time.perf_counter() - t_start
-        logger.info("Stage1 done: %d candidates in %.2fs", len(candidates), t_s1)
+        self._log_workflow(logging.INFO, job, stage1_step or 1, "stage1 done candidates=%d in %.2fs", len(candidates), t_s1)
 
         # Duplicate detection across all
         t_dedup_start = time.perf_counter()
@@ -218,9 +256,13 @@ class Pipeline:
                 c.passed_stage1 = False
 
         t_dedup = time.perf_counter() - t_dedup_start
-        logger.info(
-            "Dedup done: %d duplicates found in %.2fs",
-            len(dup_photo_ids), t_dedup,
+        self._log_workflow(
+            logging.INFO,
+            job,
+            stage1_step or 1,
+            "dedup done duplicates=%d in %.2fs",
+            len(dup_photo_ids),
+            t_dedup,
         )
 
         # Compute uniqueness for all
@@ -229,9 +271,13 @@ class Pipeline:
 
         passed_count = sum(1 for c in candidates if c.passed_stage1)
         filtered_count = len(candidates) - passed_count
-        logger.info(
-            "Stage1 filter: %d passed, %d filtered (quality=%d, dup=%d)",
-            passed_count, filtered_count,
+        self._log_workflow(
+            logging.INFO,
+            job,
+            stage1_step or 1,
+            "stage1 filter passed=%d filtered=%d quality_filtered=%d duplicates=%d",
+            passed_count,
+            filtered_count,
             sum(1 for c in candidates if c.technical_score < self.config.min_technical_score),
             len(dup_photo_ids),
         )
@@ -252,7 +298,7 @@ class Pipeline:
             job.progress.completed = 0
             job.progress.total = len(stage2_candidates)
 
-        logger.info("Stage2 start: %d candidates for VLM", len(stage2_candidates))
+        self._log_workflow(logging.INFO, job, stage2_step or stage1_step or 1, "stage2 start candidates=%d", len(stage2_candidates))
 
         for i, cand in enumerate(stage2_candidates):
             if cand.photo_id in s2_done:
@@ -267,9 +313,19 @@ class Pipeline:
             if job:
                 job.progress.completed = i + 1
                 job.progress.current_file = cand.photo_id
+            if stage2_step:
+                self._log_workflow(
+                    logging.INFO,
+                    job,
+                    stage2_step,
+                    "stage2 progress %d/%d current=%s",
+                    i + 1,
+                    len(stage2_candidates),
+                    cand.photo_id,
+                )
 
         t_s2 = time.perf_counter() - t_s2_start
-        logger.info("Stage2 done: %d processed in %.2fs", len(stage2_candidates), t_s2)
+        self._log_workflow(logging.INFO, job, stage2_step or stage1_step or 1, "stage2 done processed=%d in %.2fs", len(stage2_candidates), t_s2)
 
         # ── Rank results ──
         ranked = self._rank(candidates, dup_groups, selection_profile)
@@ -295,11 +351,17 @@ class Pipeline:
         if self._db and job:
             self._db.clear_checkpoints(job.id)
 
-        logger.info(
-            "Pipeline complete: %d→%d ranked in %.2fs "
-            "(s1=%.2fs, dedup=%.2fs, s2=%.2fs)",
-            len(photos), len(ranked), t_total,
-            t_s1, t_dedup, t_s2,
+        self._log_workflow(
+            logging.INFO,
+            job,
+            stage2_step or stage1_step or 1,
+            "pipeline complete input=%d ranked=%d total=%.2fs s1=%.2fs dedup=%.2fs s2=%.2fs",
+            len(photos),
+            len(ranked),
+            t_total,
+            t_s1,
+            t_dedup,
+            t_s2,
         )
 
         self._release_vlm_if_needed()

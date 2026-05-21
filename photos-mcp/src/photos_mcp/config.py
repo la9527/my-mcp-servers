@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 
-from photos_mcp.runtime_paths import photos_mcp_cache_root, photos_mcp_runtime_root
+from photos_mcp.runtime_paths import photos_mcp_cache_root, photos_mcp_logs_root, photos_mcp_runtime_root
 
 
 DEFAULT_APP_NAME = "PhotosMcp"
@@ -35,6 +35,7 @@ class PhotosMcpConfig:
     bundle_path: Path
     runtime_root: Path
     cache_root: Path
+    logs_root: Path
     host: str
     port: int
     streamable_http_path: str
@@ -68,6 +69,7 @@ def load_config() -> PhotosMcpConfig:
     )
     runtime_root = photos_mcp_runtime_root()
     cache_root = photos_mcp_cache_root()
+    logs_root = photos_mcp_logs_root()
     host = _env_first("PHOTOS_MCP_HOST", "NANOBOT_PHOTOS_MCP_HOST", default=DEFAULT_HOST)
     port = int(_env_first("PHOTOS_MCP_PORT", "NANOBOT_PHOTOS_MCP_PORT", default=str(DEFAULT_PORT)))
     streamable_http_path = _env_first(
@@ -98,6 +100,7 @@ def load_config() -> PhotosMcpConfig:
         bundle_path=bundle_path,
         runtime_root=runtime_root,
         cache_root=cache_root,
+        logs_root=logs_root,
         host=host,
         port=port,
         streamable_http_path=streamable_http_path,

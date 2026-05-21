@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+import logging
 from pathlib import Path
 from threading import Event, Thread
 import time
@@ -33,6 +34,9 @@ def _ensure_bundled_uvicorn_package_path() -> None:
 _ensure_bundled_uvicorn_package_path()
 
 
+logger = logging.getLogger(__name__)
+
+
 class PhotosMcpDaemonController:
     def __init__(self, config: PhotosMcpConfig, state_store: PhotosMcpStateStore) -> None:
         self._config = config
@@ -44,9 +48,11 @@ class PhotosMcpDaemonController:
 
     def start(self) -> bool:
         if self.is_running:
+            logger.info("daemon start skipped: already running")
             return False
 
         self._state_store.set_daemon_status("starting")
+        logger.info("daemon starting host=%s port=%s", self._config.host, self._config.port)
         mcp = build_server(config=self._config, state_store=self._state_store)
         app = build_http_app(config=self._config, state_store=self._state_store, mcp=mcp)
         config = uvicorn.Config(
@@ -67,6 +73,7 @@ class PhotosMcpDaemonController:
         while time.time() < deadline:
             if self._server.started:
                 self._state_store.set_daemon_status("ready")
+                logger.info("daemon started endpoint=%s", self._config.endpoint)
                 self.refresh_jobs_once()
                 self._start_job_poller()
                 return True
@@ -75,14 +82,17 @@ class PhotosMcpDaemonController:
             time.sleep(0.05)
 
         self._state_store.set_daemon_status("degraded")
+        logger.warning("daemon start timed out before ready state")
         return False
 
     def stop(self) -> bool:
         if not self._server:
             self._state_store.set_daemon_status("stopped")
+            logger.info("daemon stop skipped: not running")
             return False
 
         self._state_store.set_daemon_status("stopping")
+        logger.info("daemon stopping")
         self._stop_job_poller()
         self._server.should_exit = True
         if self._server_thread:
@@ -90,6 +100,7 @@ class PhotosMcpDaemonController:
         self._server = None
         self._server_thread = None
         self._state_store.set_daemon_status("stopped")
+        logger.info("daemon stopped")
         return True
 
     def close(self) -> None:
@@ -103,7 +114,9 @@ class PhotosMcpDaemonController:
         try:
             job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
             self._state_store.replace_jobs(job_store.list_snapshots())
+            logger.debug("job snapshot refreshed")
         except Exception:
+            logger.exception("failed to refresh job snapshots")
             with suppress(Exception):
                 self._state_store.set_daemon_status("degraded")
 
@@ -112,9 +125,11 @@ class PhotosMcpDaemonController:
             job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
             success = job_store.cancel_job(job_id)
             if success:
+                logger.info("cancelled job %s", job_id)
                 self.refresh_jobs_once()
             return success
         except Exception:
+            logger.exception("failed to cancel job %s", job_id)
             with suppress(Exception):
                 self._state_store.set_daemon_status("degraded")
             return False
@@ -124,9 +139,11 @@ class PhotosMcpDaemonController:
             job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
             deleted = job_store.delete_terminal_job(job_id)
             if deleted:
+                logger.info("deleted terminal job %s", job_id)
                 self.refresh_jobs_once()
             return deleted
         except Exception:
+            logger.exception("failed to delete job %s", job_id)
             with suppress(Exception):
                 self._state_store.set_daemon_status("degraded")
             return False
@@ -135,10 +152,17 @@ class PhotosMcpDaemonController:
         try:
             job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
             deleted_job_ids = job_store.clear_terminal_history(statuses=statuses)
+            deleted_synthetic_ids = self._state_store.clear_synthetic_history(statuses=statuses)
             if deleted_job_ids:
                 self.refresh_jobs_once()
-            return deleted_job_ids
+            logger.info(
+                "cleared terminal history statuses=%s deleted=%d",
+                statuses,
+                len(set(deleted_job_ids) | set(deleted_synthetic_ids)),
+            )
+            return sorted(set(deleted_job_ids) | set(deleted_synthetic_ids))
         except Exception:
+            logger.exception("failed to clear terminal history statuses=%s", statuses)
             with suppress(Exception):
                 self._state_store.set_daemon_status("degraded")
             return []
@@ -146,10 +170,12 @@ class PhotosMcpDaemonController:
     def _serve(self) -> None:
         assert self._server is not None
         try:
+            logger.info("uvicorn serve loop entering")
             asyncio.run(self._server.serve())
         finally:
             self._stop_job_poller()
             self._state_store.set_daemon_status("stopped")
+            logger.info("uvicorn serve loop exited")
 
     def _start_job_poller(self) -> None:
         if self._poll_thread and self._poll_thread.is_alive():
@@ -157,12 +183,14 @@ class PhotosMcpDaemonController:
         self._poll_stop_event.clear()
         self._poll_thread = Thread(target=self._poll_jobs, name="photos-mcp-job-poller", daemon=True)
         self._poll_thread.start()
+        logger.info("job poller started interval=%.2fs", max(self._config.job_poll_interval_seconds, 0.5))
 
     def _stop_job_poller(self) -> None:
         self._poll_stop_event.set()
         if self._poll_thread and self._poll_thread.is_alive():
             self._poll_thread.join(timeout=5)
         self._poll_thread = None
+        logger.info("job poller stopped")
 
     def _poll_jobs(self) -> None:
         interval = max(self._config.job_poll_interval_seconds, 0.5)
