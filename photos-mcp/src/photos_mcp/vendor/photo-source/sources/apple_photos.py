@@ -69,6 +69,7 @@ class ApplePhotosSource:
         self._cache_dir: Path | None = None
         self._downloaded_paths: dict[str, str] = {}
         self._photokit_disabled = False
+        self._terminal_helper_disabled = False
         self._fetch_mode = os.getenv("PHOTO_SOURCE_APPLE_FETCH_MODE", "direct")
         self._app_dir = Path(__file__).resolve().parent.parent
         self._terminal_python = default_terminal_python(
@@ -255,7 +256,20 @@ class ApplePhotosSource:
         return strategies
 
     def _should_use_terminal_helper(self) -> bool:
-        return sys.platform == "darwin" and self._fetch_mode == "terminal"
+        return (
+            sys.platform == "darwin"
+            and self._fetch_mode == "terminal"
+            and not self._terminal_helper_disabled
+        )
+
+    @staticmethod
+    def _should_disable_terminal_helper_after_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return (
+            "no module named 'fsevents'" in message
+            or "terminal helper timed out" in message
+            or "terminal helper python not found" in message
+        )
 
     def _run_terminal_helper(self, photo_id: str) -> str | None:
         response = run_in_terminal(
@@ -292,6 +306,11 @@ class ApplePhotosSource:
                     photo.uuid,
                     exc,
                 )
+                if self._should_disable_terminal_helper_after_error(exc):
+                    self._terminal_helper_disabled = True
+                    logger.warning(
+                        "Disabling Terminal helper for remaining Apple fetches in this process."
+                    )
             else:
                 if fetched_path:
                     self._downloaded_paths[photo.uuid] = fetched_path

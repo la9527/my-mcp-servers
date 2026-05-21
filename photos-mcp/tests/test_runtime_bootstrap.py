@@ -45,6 +45,22 @@ def test_ensure_runtime_import_paths_adds_bundled_python_root(tmp_path: Path, mo
     assert str(python_root) in sys.path
 
 
+def test_ensure_runtime_import_paths_adds_bundled_lib_dynload(tmp_path: Path, monkeypatch) -> None:
+    python_root = tmp_path / "PhotosMcp.app" / "Contents" / "Resources" / "lib" / "python3.12"
+    lib_dynload = python_root / "lib-dynload"
+    script_path = python_root / "photos_mcp" / "vendor" / "photo-ranker" / "scripts" / "helper.py"
+    script_path.parent.mkdir(parents=True)
+    script_path.write_text("", encoding="utf-8")
+    lib_dynload.mkdir(parents=True)
+    monkeypatch.setattr("photos_mcp.runtime_bootstrap.sys.path", [])
+
+    ensure_runtime_import_paths(script_path)
+
+    import sys
+
+    assert str(lib_dynload) in sys.path
+
+
 def test_default_terminal_python_prefers_configured_env(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("PHOTO_RANKER_TERMINAL_PYTHON_BIN", "/custom/python")
 

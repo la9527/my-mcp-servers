@@ -31,6 +31,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".tiff", ".bmp"}
 _APPLE_DOWNLOAD_CACHE_DIR: Path | None = None
 _APPLE_DOWNLOADED_PATHS: dict[str, str] = {}
 _APPLE_PHOTOKIT_DISABLED = False
+_APPLE_TERMINAL_HELPER_DISABLED = False
 _APPLE_FETCH_MODE = os.getenv("PHOTO_RANKER_APPLE_FETCH_MODE", "direct")
 _APP_DIR = Path(__file__).resolve().parent
 _TERMINAL_TIMEOUT_SECS = float(os.getenv("PHOTO_RANKER_TERMINAL_TIMEOUT_SECS", "90"))
@@ -313,7 +314,21 @@ def _apple_export_strategies() -> list[tuple[str, dict[str, bool]]]:
 
 
 def _should_use_terminal_helper() -> bool:
-    return sys.platform == "darwin" and _APPLE_FETCH_MODE == "terminal"
+    return (
+        sys.platform == "darwin"
+        and _APPLE_FETCH_MODE == "terminal"
+        and not _APPLE_TERMINAL_HELPER_DISABLED
+    )
+
+
+def _should_disable_terminal_helper_after_error(exc: Exception) -> bool:
+    message = str(exc)
+    lowered = message.lower()
+    return (
+        "no module named 'fsevents'" in lowered
+        or "terminal helper timed out" in lowered
+        or "terminal helper python not found" in lowered
+    )
 
 
 def _run_terminal_fetch_helper(photo_id: str) -> str | None:
@@ -338,7 +353,7 @@ def _is_photokit_auth_error(exc: Exception) -> bool:
 
 
 def _download_missing_apple_photo(photo) -> str | None:
-    global _APPLE_PHOTOKIT_DISABLED
+    global _APPLE_PHOTOKIT_DISABLED, _APPLE_TERMINAL_HELPER_DISABLED
 
     try:
         import osxphotos
@@ -354,6 +369,11 @@ def _download_missing_apple_photo(photo) -> str | None:
                 photo.uuid,
                 exc,
             )
+            if _should_disable_terminal_helper_after_error(exc):
+                _APPLE_TERMINAL_HELPER_DISABLED = True
+                logger.warning(
+                    "Disabling Terminal helper for remaining Apple fetches in this process."
+                )
         else:
             if fetched_path:
                 _APPLE_DOWNLOADED_PATHS[photo.uuid] = fetched_path

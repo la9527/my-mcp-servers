@@ -17,6 +17,18 @@ def find_bundled_lib_root(anchor_file: str | Path) -> Path | None:
     return None
 
 
+def find_bundled_lib_dynload_root(anchor_file: str | Path) -> Path | None:
+    bundled_lib_root = find_bundled_lib_root(anchor_file)
+    if bundled_lib_root is None:
+        return None
+
+    lib_dynload = bundled_lib_root / "lib-dynload"
+    if lib_dynload.is_dir():
+        return lib_dynload
+
+    return None
+
+
 def find_photos_mcp_parent(anchor_file: str | Path) -> Path | None:
     anchor_path = Path(anchor_file).resolve()
     for parent in anchor_path.parents:
@@ -35,6 +47,10 @@ def ensure_runtime_import_paths(anchor_file: str | Path) -> None:
     bundled_lib_root = find_bundled_lib_root(anchor_file)
     if bundled_lib_root is not None:
         _prepend_sys_path(bundled_lib_root)
+
+    bundled_lib_dynload = find_bundled_lib_dynload_root(anchor_file)
+    if bundled_lib_dynload is not None:
+        _prepend_sys_path(bundled_lib_dynload)
 
     photos_mcp_parent = find_photos_mcp_parent(anchor_file)
     if photos_mcp_parent is not None:

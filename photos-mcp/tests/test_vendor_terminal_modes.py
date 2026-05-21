@@ -61,6 +61,31 @@ def test_photo_ranker_fetch_helper_disables_bytecode(monkeypatch) -> None:
     assert captured["env_overrides"]["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
+def test_photo_ranker_terminal_helper_disables_after_timeout() -> None:
+    load_vendor_server("photo-ranker")
+    sources_module = importlib.import_module("photos_mcp_vendor_photo_ranker.sources")
+
+    assert sources_module._should_disable_terminal_helper_after_error(
+        RuntimeError("Terminal helper timed out after 90s")
+    ) is True
+    assert sources_module._should_disable_terminal_helper_after_error(
+        RuntimeError("ModuleNotFoundError: No module named 'FSEvents'")
+    ) is True
+
+
+def test_photo_source_terminal_helper_disables_after_timeout() -> None:
+    load_vendor_server("photo-source")
+    apple_photos_module = importlib.import_module("photos_mcp_vendor_photo_source.sources.apple_photos")
+    source = apple_photos_module.ApplePhotosSource()
+
+    assert source._should_disable_terminal_helper_after_error(
+        RuntimeError("Terminal helper timed out after 90s")
+    ) is True
+    assert source._should_disable_terminal_helper_after_error(
+        RuntimeError("ModuleNotFoundError: No module named 'FSEvents'")
+    ) is True
+
+
 def test_photo_source_terminal_helper_disables_bytecode(monkeypatch) -> None:
     load_vendor_server("photo-source")
     apple_photos_module = importlib.import_module("photos_mcp_vendor_photo_source.sources.apple_photos")
