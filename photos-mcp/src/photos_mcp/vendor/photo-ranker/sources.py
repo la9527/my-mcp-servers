@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".tiff", ".bmp"}
 _APPLE_DOWNLOAD_CACHE_DIR: Path | None = None
 _APPLE_DOWNLOADED_PATHS: dict[str, str] = {}
+_APPLE_DB = None
 _APPLE_PHOTOKIT_DISABLED = False
 _APPLE_TERMINAL_HELPER_DISABLED = False
 _APPLE_FETCH_MODE = os.getenv("PHOTO_RANKER_APPLE_FETCH_MODE", "direct")
@@ -38,6 +39,43 @@ _TERMINAL_TIMEOUT_SECS = float(os.getenv("PHOTO_RANKER_TERMINAL_TIMEOUT_SECS", "
 
 
 _TERMINAL_PYTHON = default_terminal_python("PHOTO_RANKER_TERMINAL_PYTHON_BIN", _APP_DIR)
+
+
+def _apple_media_type(photo) -> str:
+    if bool(getattr(photo, "ismovie", False)):
+        return "video"
+
+    is_photo = getattr(photo, "isphoto", None)
+    if is_photo is not None:
+        return "photo" if bool(is_photo) else "video"
+
+    uti = str(getattr(photo, "uti", "") or "").lower()
+    if uti.startswith("public.image"):
+        return "photo"
+    if uti.startswith("public.movie") or uti.startswith("public.video"):
+        return "video"
+
+    filename = str(getattr(photo, "filename", "") or "").lower()
+    if filename.endswith((".mov", ".mp4", ".m4v", ".avi", ".mkv")):
+        return "video"
+
+    return "photo"
+
+
+def _is_supported_apple_photo(photo) -> bool:
+    return _apple_media_type(photo) == "photo"
+
+
+def _get_apple_db():
+    global _APPLE_DB
+
+    if _APPLE_DB is None:
+        import osxphotos
+
+        _APPLE_DB = osxphotos.PhotosDB()
+        logger.info("Apple Photos DB: initialized shared database handle")
+
+    return _APPLE_DB
 
 
 def _parse_filter_bound(value: str, *, is_end: bool) -> datetime:
@@ -182,7 +220,7 @@ def _load_apple(
 
     from PIL import Image
 
-    db = osxphotos.PhotosDB()
+    db = _get_apple_db()
     photos = db.photos()
     logger.info("Apple Photos DB: %d total photos", len(photos))
 
@@ -219,6 +257,8 @@ def _load_apple(
                 if pn.name
             )
         ]
+
+    photos = [p for p in photos if _is_supported_apple_photo(p)]
 
     # Sort by date descending (newest first)
     photos.sort(key=lambda p: p.date or datetime.min, reverse=True)

@@ -274,6 +274,47 @@ async def test_mock_mcp_client_photos_run_reports_structured_thumbnail_error(mon
 
 
 @pytest.mark.asyncio
+async def test_mock_mcp_client_photos_run_blocks_video_analyze(monkeypatch) -> None:
+    async def fake_get_thumbnail(*_args, **_kwargs):
+        return None
+
+    async def fake_get_metadata(*_args, **_kwargs):
+        return {
+            "filename": "sample.mov",
+            "date_taken": "2026-05-20T00:00:00+09:00",
+            "media_type": "video",
+        }
+
+    photo_source_module = SimpleNamespace(
+        get_thumbnail=fake_get_thumbnail,
+        get_metadata=fake_get_metadata,
+        _get_apple_source=lambda: SimpleNamespace(
+            _find_photo=lambda photo_id: SimpleNamespace(uuid=photo_id, path=""),
+            _resolve_photo_path=lambda _photo, download_missing=False: "",
+        ),
+    )
+
+    def fake_load_vendor_server(name: str):
+        assert name == "photo-source"
+        return photo_source_module
+
+    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fake_load_vendor_server)
+
+    mcp = build_server(config=load_config(), state_store=None)
+    client = MockMcpClient(mcp)
+
+    payload = await client.call_tool(
+        "photos_run",
+        {"intent": "analyze", "source": "apple", "photo_id": "video-123"},
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["error_code"] == "unsupported_media_type"
+    assert payload["next_suggested_action"] == "photos_library"
+    assert payload["can_retry"] is False
+
+
+@pytest.mark.asyncio
 async def test_mock_mcp_client_photos_run_waits_for_local_download_and_completes(monkeypatch) -> None:
     call_state = {"thumbnail_calls": 0}
 

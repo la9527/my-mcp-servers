@@ -59,6 +59,13 @@ validator 는 LLM reasoning 자체를 평가하지 않는다. 대신 위 프롬�
 
 해당 날짜에 person metadata 가 없으면 세 번째 시나리오는 skip 처리한다.
 
+### 2.4 photo-only asset 정책
+
+- Apple Photos source 에서는 still photo 만 후보로 취급한다.
+- `.mov`, `.mp4` 같은 video asset 은 list/search/curate 후보에서 제외한다.
+- iCloud 원본 download 가 필요한 경우에도 image asset 에만 helper/export fallback 을 시도한다.
+- 따라서 validator 의 Apple 시나리오 결과 수는 동일 date range 여도 video 비중에 따라 줄 수 있지만, 그 대신 불필요한 video download 지연은 줄어드는 것이 정상이다.
+
 ## 3. 시나리오별 tool route
 
 ### scenario 0. 연결 상태 요약
@@ -84,7 +91,7 @@ validator 는 LLM reasoning 자체를 평가하지 않는다. 대신 위 프롬�
   - `selection_profile="general"`
   - `exclude_screenshots=true`
 - 검증 목표:
-  Apple Photos write-back 이 실제로 성공하고, validation 용 앨범이 바로 cleanup 되는지 확인한다.
+  Apple still photo write-back 이 실제로 성공하고, validation 용 앨범이 바로 cleanup 되는지 확인한다.
 
 ### scenario 2. `~/SamplePhotos` 에서 best photo 를 골라 iCloud 앨범에 저장
 
@@ -116,7 +123,7 @@ validator 는 LLM reasoning 자체를 평가하지 않는다. 대신 위 프롬�
   - `exclude_screenshots=true`
   - `output_dir=~/temp/<generated-subdir>`
 - 검증 목표:
-  특정인 필터 + best-shot 선별 결과 중 selected photo 를 local directory 로 export 한다.
+  특정인 필터 + best-shot 선별 결과 중 selected still photo 를 local directory 로 export 한다.
 
 ## 4. validator 사용법
 
@@ -158,7 +165,7 @@ cd /Volumes/ExtData/my-mcp-servers/photos-mcp
 
 1. `PhotosMcp.app` 이 최신 source 변경을 반영한 설치본이어야 한다.
 2. `http://127.0.0.1:18791/health` 가 `status=ok` 여야 한다.
-4. target date range 인 `작년 4월 16일~4월 30일` 에 실제 Apple Photos asset 이 있어야 한다.
+4. target date range 인 `작년 4월 16일~4월 30일` 에 실제 Apple Photos still photo asset 이 있어야 한다.
 4. `~/SamplePhotos` 가 존재해야 한다.
 5. target date asset 에서 person metadata 를 발견할 수 있거나 `--target-person` 이 지정되어야 한다.
 

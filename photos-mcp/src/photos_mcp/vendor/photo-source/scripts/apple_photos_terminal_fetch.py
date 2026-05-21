@@ -26,6 +26,22 @@ def _preferred_filename(photo) -> str | None:
     return None
 
 
+def _is_supported_photo_asset(photo) -> bool:
+    if bool(getattr(photo, "ismovie", False)):
+        return False
+
+    is_photo = getattr(photo, "isphoto", None)
+    if is_photo is not None:
+        return bool(is_photo)
+
+    uti = str(getattr(photo, "uti", "") or "").lower()
+    if uti.startswith("public.movie") or uti.startswith("public.video"):
+        return False
+
+    filename = str(getattr(photo, "filename", "") or "").lower()
+    return not filename.endswith((".mov", ".mp4", ".m4v", ".avi", ".mkv"))
+
+
 def main() -> int:
     args = parse_args()
     os.environ["PHOTO_SOURCE_APPLE_FETCH_MODE"] = "direct"
@@ -41,6 +57,12 @@ def main() -> int:
     photo = next((p for p in osxphotos.PhotosDB().photos() if p.uuid == photo_id), None)
     if photo is None:
         raise RuntimeError(f"Apple photo not found: {photo_id}")
+    if not _is_supported_photo_asset(photo):
+        Path(args.response).write_text(
+            json.dumps({"path": ""}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return 0
 
     path = getattr(photo, "path", None)
     if isinstance(path, str) and path:

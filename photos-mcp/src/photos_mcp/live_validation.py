@@ -27,6 +27,7 @@ FAIL = "fail"
 SKIP = "skip"
 
 EXPECTED_TOOLS = ["photos_library", "photos_result", "photos_run", "photos_status"]
+VIDEO_SUFFIXES = (".mov", ".mp4", ".m4v", ".avi", ".mkv")
 
 
 @dataclass(slots=True)
@@ -138,6 +139,22 @@ def pick_local_source_path(item: dict[str, Any] | None) -> str:
         return ""
     path = Path(candidate)
     return str(path) if path.is_file() else ""
+
+
+def apple_items_are_photo_only(items: list[dict[str, Any]]) -> bool:
+    if not items:
+        return False
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        media_type = str(item.get("media_type") or "photo").strip().lower()
+        filename = str(item.get("filename") or "").strip().lower()
+        if media_type != "photo":
+            return False
+        if filename.endswith(VIDEO_SUFFIXES):
+            return False
+    return True
 
 
 def is_workflow_classify_start_payload(payload: Any) -> bool:
@@ -384,6 +401,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
         title="photos_library",
         checks=[
             CheckResult("library-list", "list action returns items with source aliases"),
+            CheckResult("library-photo-only", "apple list excludes video assets from candidates"),
             CheckResult("library-ready-only", "ready_only keeps only analyze-ready items"),
             CheckResult("library-search", "search action returns stable shape"),
             CheckResult("library-inspect", "inspect action returns metadata/thumbnail shape"),
@@ -521,6 +539,11 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                     PASS if items and all("photo_id" in item for item in items if isinstance(item, dict)) else FAIL,
                     _json_preview(library_list),
                 )
+                set_check(
+                    library_section.checks[1],
+                    PASS if apple_items_are_photo_only(items) else FAIL,
+                    _json_preview(items[:5]),
+                )
 
                 progress("photos_library: checking ready_only")
                 ready_only_payload = await _call_tool(
@@ -532,7 +555,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                 ready_items = ready_items if isinstance(ready_items, list) else []
                 ready_ok = bool(ready_items) and all(item.get("local_path_available") is True for item in ready_items if isinstance(item, dict))
                 set_check(
-                    library_section.checks[1],
+                    library_section.checks[2],
                     PASS if ready_ok else PARTIAL,
                     _json_preview(ready_only_payload),
                     note="partial when no analyze-ready items are currently available",
@@ -546,9 +569,9 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                         {"action": "search", "source": "apple", "query": search_seed, "limit": 10},
                     )
                     search_ok = isinstance(search_payload, dict) and search_payload.get("action") == "search" and "items" in search_payload
-                    set_check(library_section.checks[2], PASS if search_ok else FAIL, _json_preview(search_payload))
+                    set_check(library_section.checks[3], PASS if search_ok else FAIL, _json_preview(search_payload))
                 else:
-                    set_check(library_section.checks[2], SKIP, note="could not derive a stable search seed from current library items")
+                    set_check(library_section.checks[3], SKIP, note="could not derive a stable search seed from current library items")
 
                 inspect_target = config.local_photo_id or (local_item or {}).get("photo_id") or (items[0].get("photo_id") if items else "")
                 if inspect_target:
@@ -566,16 +589,16 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                     )
                     inspect_item = inspect_payload.get("item") if isinstance(inspect_payload, dict) else {}
                     inspect_ok = isinstance(inspect_item, dict) and "metadata" in inspect_item
-                    set_check(library_section.checks[3], PASS if inspect_ok else FAIL, _json_preview(inspect_payload))
+                    set_check(library_section.checks[4], PASS if inspect_ok else FAIL, _json_preview(inspect_payload))
                 else:
-                    set_check(library_section.checks[3], SKIP, note="no inspect target available from current library list")
+                    set_check(library_section.checks[4], SKIP, note="no inspect target available from current library list")
 
                 guidance_ok = bool(items) and all(
                     ("local_path_available" in item and "analyze_recommended" in item and "recommended_next_action" in item)
                     for item in items
                     if isinstance(item, dict)
                 )
-                set_check(library_section.checks[4], PASS if guidance_ok else FAIL, _json_preview(items[:2]))
+                set_check(library_section.checks[5], PASS if guidance_ok else FAIL, _json_preview(items[:2]))
 
                 local_photo_id = config.local_photo_id or ((local_item or {}).get("photo_id") or "")
                 non_local_photo_id = config.non_local_photo_id or ((non_local_item or {}).get("photo_id") or "")

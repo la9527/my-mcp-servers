@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from photos_mcp.live_validation import PASS, PARTIAL, SKIP, CheckResult, ReportSection, ValidationConfig, build_parser, derive_search_seed, format_progress_message, is_workflow_classify_start_payload, pick_library_candidates, pick_local_source_path, render_markdown_report, wait_timeout_terminal_rounds
+from photos_mcp.live_validation import PASS, PARTIAL, SKIP, CheckResult, ReportSection, ValidationConfig, apple_items_are_photo_only, build_parser, derive_search_seed, format_progress_message, is_workflow_classify_start_payload, pick_library_candidates, pick_local_source_path, render_markdown_report, wait_timeout_terminal_rounds
 
 
 def test_pick_library_candidates_prefers_local_and_non_local_items() -> None:
@@ -53,6 +53,29 @@ def test_pick_local_source_path_requires_existing_file(tmp_path: Path) -> None:
     assert pick_local_source_path({"path": str(sample)}) == str(sample)
     assert pick_local_source_path({"path": str(tmp_path / "missing.jpeg")}) == ""
     assert pick_local_source_path({}) == ""
+
+
+def test_apple_items_are_photo_only_rejects_video_candidates() -> None:
+    assert apple_items_are_photo_only(
+        [
+            {"filename": "sample.jpeg", "media_type": "photo"},
+            {"filename": "clip.mov", "media_type": "video"},
+        ]
+    ) is False
+
+    assert apple_items_are_photo_only(
+        [
+            {"filename": "sample.jpeg", "media_type": "photo"},
+            {"filename": "clip.mov"},
+        ]
+    ) is False
+
+    assert apple_items_are_photo_only(
+        [
+            {"filename": "sample.jpeg", "media_type": "photo"},
+            {"filename": "sample2.png", "media_type": "photo"},
+        ]
+    ) is True
 
 
 def test_format_progress_message_uses_timestamp_prefix() -> None:

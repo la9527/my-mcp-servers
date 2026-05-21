@@ -229,6 +229,13 @@ site-packages 탐색 순서:
 
 runtime checklist 를 반복 실행할 때는 아래 validator 를 우선 사용한다.
 
+Apple source / workflow validation 기준:
+
+- Apple candidate set 은 현재 still photo 만 대상으로 본다.
+- `.mov`, `.mp4` 같은 video asset 은 `photos_library(action="list"|"ready_only")` 와 `photos_run(intent="curate")` 후보에서 먼저 제외한다.
+- 따라서 live validator 의 Apple library/workflow 검증도 "영상이 안 섞이는지" 를 함께 본다.
+- iCloud download 가 필요할 때도 helper / export fallback 은 photo asset 에만 적용하고, video asset 은 download 대상에서 건너뛴다.
+
 기본 facade + wait-run validation:
 
 1. `./.venv/bin/python scripts/live_validate.py --bundle-path "$HOME/Applications/PhotosMcp.app" --report-path docs/live-validation-report-latest.md`
@@ -250,6 +257,7 @@ workflow validation 까지 포함한 validation:
 주의:
 
 - `--include-workflows` 는 안전한 live 경로만 검증한다.
+- Apple workflow 는 photo-only contract 기준으로 동작한다. target date range 안에 video 비중이 높아도 still photo 만 후보로 계산한다.
 - `classify` 는 실제 local sample background run 으로 검증한다.
 - `curate` 는 `writeback_mode=review` 로 검증한다.
 - `organize` 는 Apple Photos write-back 대신 local output directory 로 검증한다.

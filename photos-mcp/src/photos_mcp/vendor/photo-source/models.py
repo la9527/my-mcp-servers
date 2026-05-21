@@ -15,6 +15,7 @@ class Photo:
     path: str
     width: int
     height: int
+    media_type: str = "photo"
     albums: list[str] = field(default_factory=list)
     persons: list[str] = field(default_factory=list)
     gps: dict | None = None  # {"lat": float, "lon": float}
@@ -28,6 +29,7 @@ class Photo:
             "path": self.path,
             "width": self.width,
             "height": self.height,
+            "media_type": self.media_type,
             "albums": self.albums,
             "persons": self.persons,
         }
@@ -41,6 +43,7 @@ class PhotoMetadata:
     photo_id: str
     filename: str
     date_taken: str
+    media_type: str = "photo"
     camera_make: str = ""
     camera_model: str = ""
     focal_length: float = 0.0
@@ -56,6 +59,7 @@ class PhotoMetadata:
             "photo_id": self.photo_id,
             "filename": self.filename,
             "date_taken": self.date_taken,
+            "media_type": self.media_type,
             "camera_make": self.camera_make,
             "camera_model": self.camera_model,
             "focal_length": self.focal_length,

@@ -448,6 +448,24 @@ async def _resolve_analyze_thumbnail(
             can_retry=False,
         )
 
+    media_type = str(metadata.get("media_type") or "photo").strip().lower()
+    if source == "apple" and media_type != "photo":
+        filename = str(metadata.get("filename") or "")
+        detail_parts = ["PhotosMcp currently supports still-photo analyze only."]
+        if filename:
+            detail_parts.append(f"filename={filename}")
+        detail_parts.append(f"media_type={media_type}")
+        return None, _build_analyze_error(
+            error_code="unsupported_media_type",
+            error="Selected asset is not a still photo",
+            photo_id=photo_id,
+            source=source,
+            detail=" ".join(detail_parts),
+            hint='Choose a photo item from photos_library(action="list"|"ready_only") instead of a video asset.',
+            next_suggested_action="photos_library",
+            can_retry=False,
+        )
+
     photo_probe = await _selected_photo_probe(source, photo_id, path_or_bucket)
     thumbnail_check = _preflight_check(state_store, "photos_thumbnail") or {}
     filename = str(metadata.get("filename") or "")

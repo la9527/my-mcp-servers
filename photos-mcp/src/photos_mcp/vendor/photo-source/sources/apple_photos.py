@@ -18,6 +18,31 @@ from photos_mcp.runtime_bootstrap import default_terminal_python
 logger = logging.getLogger(__name__)
 
 
+def _apple_media_type(photo) -> str:
+    if bool(getattr(photo, "ismovie", False)):
+        return "video"
+
+    is_photo = getattr(photo, "isphoto", None)
+    if is_photo is not None:
+        return "photo" if bool(is_photo) else "video"
+
+    uti = str(getattr(photo, "uti", "") or "").lower()
+    if uti.startswith("public.image"):
+        return "photo"
+    if uti.startswith("public.movie") or uti.startswith("public.video"):
+        return "video"
+
+    filename = str(getattr(photo, "filename", "") or "").lower()
+    if filename.endswith((".mov", ".mp4", ".m4v", ".avi", ".mkv")):
+        return "video"
+
+    return "photo"
+
+
+def _is_supported_photo_asset(photo) -> bool:
+    return _apple_media_type(photo) == "photo"
+
+
 def _parse_filter_bound(value: str, *, is_end: bool) -> datetime:
     bound = datetime.fromisoformat(value)
     if "T" in value or " " in value:
@@ -138,6 +163,8 @@ class ApplePhotosSource:
                 if any(person_lower in pn.name.lower() for pn in p.person_info if pn.name)
             ]
 
+        photos = [p for p in photos if _is_supported_photo_asset(p)]
+
         # Limit
         photos = photos[:limit]
 
@@ -155,6 +182,7 @@ class ApplePhotosSource:
             photo_id=p.uuid,
             filename=p.filename or "",
             date_taken=p.date.isoformat() if p.date else "",
+            media_type=_apple_media_type(p),
             camera_make=getattr(exif, "camera_make", "") or "",
             camera_model=getattr(exif, "camera_model", "") or "",
             focal_length=getattr(exif, "focal_length", 0.0) or 0.0,
@@ -178,6 +206,8 @@ class ApplePhotosSource:
         p = self._find_photo(photo_id)
         if p is None:
             return None
+        if not _is_supported_photo_asset(p):
+            return None
         path = self._resolve_photo_path(p, download_missing=True)
         if not path:
             return None
@@ -192,6 +222,8 @@ class ApplePhotosSource:
         results = []
 
         for p in self._db.photos():
+            if not _is_supported_photo_asset(p):
+                continue
             text_parts = [
                 p.filename or "",
                 *(a.title for a in p.album_info if a.title),
@@ -390,6 +422,7 @@ class ApplePhotosSource:
             path=self._resolve_photo_path(p, download_missing=False) or "",
             width=p.width or 0,
             height=p.height or 0,
+            media_type=_apple_media_type(p),
             albums=[a.title for a in p.album_info if a.title],
             persons=[pn.name for pn in p.person_info if pn.name],
             gps=(
