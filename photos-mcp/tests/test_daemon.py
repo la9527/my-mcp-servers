@@ -73,3 +73,45 @@ def test_clear_job_history_removes_terminal_queue_and_db_rows(monkeypatch) -> No
 
     assert deleted_ids == ["job-done", "job-failed"]
     assert removed_ids == ["job-done", "job-failed"]
+
+
+def test_clear_job_history_removes_terminal_synthetic_runs_from_state(monkeypatch) -> None:
+    controller = _build_controller()
+    controller._state_store.upsert_synthetic_run(
+        {
+            "run_id": "analyze-done",
+            "job_id": "analyze-done",
+            "request_kind": "photos_run",
+            "source": "apple",
+            "status": "completed",
+            "summary_available": True,
+            "result_available": True,
+            "started_at": "2026-05-20T00:00:00+00:00",
+            "finished_at": "2026-05-20T00:00:05+00:00",
+        }
+    )
+    controller._state_store.upsert_synthetic_run(
+        {
+            "run_id": "analyze-running",
+            "job_id": "analyze-running",
+            "request_kind": "photos_run",
+            "source": "apple",
+            "status": "running",
+            "summary_available": True,
+            "result_available": False,
+            "started_at": "2026-05-20T00:01:00+00:00",
+        }
+    )
+
+    queue = SimpleNamespace(list_jobs=lambda: [])
+    db = SimpleNamespace(clear_job_history=lambda statuses: [])
+    fake_module = SimpleNamespace(_get_job_queue=lambda: queue, _get_job_db=lambda: db)
+
+    monkeypatch.setattr("photos_mcp.daemon.load_vendor_server", lambda _name: fake_module)
+
+    deleted_ids = controller.clear_job_history(("completed",))
+    snapshot = controller._state_store.snapshot()
+
+    assert deleted_ids == ["analyze-done"]
+    assert [job["job_id"] for job in snapshot.recent_jobs] == []
+    assert [job["job_id"] for job in snapshot.active_jobs] == ["analyze-running"]

@@ -12,7 +12,7 @@
 
 이 순서를 건너뛰면 서로 다른 문제를 한 덩어리로 섞어서 보게 된다.
 
-현재는 개별 증상보다 구조적 import/runtime 문제가 더 큰 원인이다. 원인 수정의 장기 순서는 `refactor-direction.md` 를 먼저 따른다.
+현재는 개별 증상보다 구조적 import/runtime 문제가 더 큰 원인이다. 원인 수정의 장기 순서는 `15-refactor-direction.md` 를 먼저 따른다.
 
 ## 2. 기본 체크리스트
 
@@ -27,8 +27,9 @@
 
 - `PhotosMcp --health` 는 lightweight self-report 다.
 - `curl http://127.0.0.1:18791/health` 는 실제 HTTP daemon 이 떠 있는지 확인하는 단계다.
+- `curl http://127.0.0.1:18791/health/capabilities` 는 Apple Photos read/write readiness 만 따로 보는 단계다.
 
-두 검사는 의미가 다르다. 전자는 app binary/entrypoint 확인, 후자는 daemon bind 와 app runtime 확인이다.
+세 검사는 의미가 다르다. 첫 번째는 app binary/entrypoint 확인, 두 번째는 daemon bind 와 app runtime 확인, 세 번째는 capability readiness 확인이다.
 
 ### MCP handshake
 
@@ -95,7 +96,12 @@ app bundle 안에도 `photos_mcp/*.py` 가 복사돼 있고, `build/` 아래에�
 우선 볼 곳:
 
 - `daemon.py`
-- wrapper launch 로그
+- app launch stderr / traceback
+- Nanobot wrapper 로 띄운 경우에만 wrapper launch 로그
+
+보조 확인:
+
+- `PHOTOS_MCP_START_DAEMON_ON_LAUNCH=0` 또는 compatibility alias 로 auto-start 가 꺼져 있지 않은지 본다.
 
 ### 증상 B: `/health` 는 되는데 `/mcp` initialize 가 500 난다
 
@@ -108,7 +114,8 @@ app bundle 안에도 `photos_mcp/*.py` 가 복사돼 있고, `build/` 아래에�
 
 - `server.py`
 - `daemon.py`
-- wrapper 로그의 traceback
+- app stderr / traceback
+- Nanobot wrapper 로 띄운 경우에만 wrapper 로그의 traceback
 
 ### 증상 C: MCP tool registration 은 되는데 preflight 만 실패한다
 
@@ -129,6 +136,13 @@ app bundle 안에도 `photos_mcp/*.py` 가 복사돼 있고, `build/` 아래에�
 - `apple_terminal_helper` import
 - Apple Events permission prompt / timeout
 
+`photos_thumbnail`:
+
+- sample asset local path 존재 여부
+- iCloud 원본 다운로드 가능 여부
+- `photo-source` 의 `get_thumbnail()` export 경로
+- Photos export permission / PhotoKit fallback 상태
+
 ### 증상 D: direct source 실행은 되는데 app bundle 에서만 깨진다
 
 의미:
@@ -148,6 +162,7 @@ app bundle 안에도 `photos_mcp/*.py` 가 복사돼 있고, `build/` 아래에�
 
 - app 이 먼저 떠 있는가
 - `http://127.0.0.1:18791/mcp` 가 열리는가
+- 필요하면 `http://127.0.0.1:18791/health/capabilities` 로 capability 상태를 분리해서 보는가
 - `connect_mcp_servers()` 에서 tool 이 등록되는가
 
 여기서 통과하면 Nanobot 측 transport 설정은 대체로 정상이고, 남은 문제는 `photos-mcp` 내부다.

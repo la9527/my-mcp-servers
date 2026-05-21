@@ -10,6 +10,9 @@ from photos_mcp.vendor_loader import load_vendor_server
 CHECK_OK = "ok"
 CHECK_WARNING = "warning"
 CHECK_ERROR = "error"
+DEFAULT_THUMBNAIL_PREFLIGHT_CANDIDATE_LIMIT = int(
+    os.getenv("NANOBOT_PHOTOS_MCP_THUMBNAIL_PREFLIGHT_CANDIDATE_LIMIT", "20")
+)
 DEFAULT_PREFLIGHT_TIMEOUT_SECONDS = float(
     os.getenv("NANOBOT_PHOTOS_MCP_PREFLIGHT_TIMEOUT_SECONDS", "10")
 )
@@ -53,6 +56,20 @@ def run_startup_checks() -> list[PreflightCheckResult]:
                 hint=(
                     "A macOS permission prompt may still be waiting, or Apple Events access "
                     "is not responding yet."
+                ),
+            ),
+        ),
+        _run_check_with_timeout(
+            check_photos_thumbnail_access,
+            timeout_secs=DEFAULT_PREFLIGHT_TIMEOUT_SECONDS,
+            timeout_result=PreflightCheckResult(
+                key="photos_thumbnail",
+                title="Photos Thumbnail Access",
+                status=CHECK_WARNING,
+                summary="Apple Photos thumbnail check timed out.",
+                hint=(
+                    "Analyze needs thumbnail bytes. A permission prompt may still be waiting, "
+                    "or the sample asset could not be exported yet."
                 ),
             ),
         ),
@@ -134,6 +151,122 @@ def check_photos_automation_access() -> PreflightCheckResult:
     )
 
 
+def check_photos_thumbnail_access() -> PreflightCheckResult:
+    try:
+        module = load_vendor_server("photo-source")
+        source = module._get_apple_source()
+        photos = source.list_photos(limit=max(DEFAULT_THUMBNAIL_PREFLIGHT_CANDIDATE_LIMIT, 1))
+    except Exception as exc:
+        return PreflightCheckResult(
+            key="photos_thumbnail",
+            title="Photos Thumbnail Access",
+            status=CHECK_ERROR,
+            summary="Apple Photos thumbnail access could not be checked.",
+            detail=str(exc),
+            hint="Thumbnail export must work before photos_run(intent=\"analyze\") can succeed.",
+        )
+
+    if not photos:
+        return PreflightCheckResult(
+            key="photos_thumbnail",
+            title="Photos Thumbnail Access",
+            status=CHECK_WARNING,
+            summary="No sample photo was available to validate thumbnail access.",
+            hint="Add or sync at least one photo before relying on analyze-ready health checks.",
+        )
+
+    ordered_photos = sorted(
+        photos,
+        key=lambda photo: 0 if (getattr(photo, "path", "") or "") else 1,
+    )
+    failures: list[str] = []
+    permission_denied_seen = False
+    local_path_missing_seen = False
+
+    for index, sample_photo in enumerate(ordered_photos):
+        sample_id = getattr(sample_photo, "photo_id", "") or getattr(sample_photo, "id", "") or "unknown"
+        sample_path = getattr(sample_photo, "path", "") or ""
+        if not sample_path:
+            local_path_missing_seen = True
+
+        try:
+            thumbnail_b64 = source.get_thumbnail(sample_id, 64)
+        except Exception as exc:
+            message = str(exc)
+            permission_denied_seen = permission_denied_seen or _is_thumbnail_permission_denied(message)
+            failures.append(f"sample_photo={sample_id} {message}")
+            if index < len(ordered_photos) - 1:
+                continue
+            status = CHECK_WARNING if _is_thumbnail_access_warning(message) else CHECK_ERROR
+            hint = (
+                "Ensure PhotosMcp can export photo bytes and the sample asset is available locally."
+            )
+            if status == CHECK_WARNING:
+                hint = (
+                    "Grant Photos export access if macOS prompts for it, and keep the source asset "
+                    "downloaded locally if it is stored in iCloud."
+                )
+            detail = _thumbnail_probe_detail(
+                failures[-1],
+                fallback_used=False,
+                candidates_tried=len(failures),
+                permission_denied_seen=permission_denied_seen,
+                local_path_missing_seen=local_path_missing_seen,
+            )
+            return PreflightCheckResult(
+                key="photos_thumbnail",
+                title="Photos Thumbnail Access",
+                status=status,
+                summary="Apple Photos thumbnail export is not ready.",
+                detail=detail,
+                hint=hint,
+            )
+
+        permission_denied_seen = permission_denied_seen or bool(
+            getattr(source, "_photokit_disabled", False)
+        )
+
+        if thumbnail_b64:
+            detail = _thumbnail_probe_detail(
+                f"Sample thumbnail exported successfully: {sample_id}",
+                fallback_used=bool(failures),
+                candidates_tried=len(failures) + 1,
+                permission_denied_seen=permission_denied_seen,
+                local_path_missing_seen=local_path_missing_seen,
+            )
+            return PreflightCheckResult(
+                key="photos_thumbnail",
+                title="Photos Thumbnail Access",
+                status=CHECK_OK,
+                summary="Apple Photos thumbnail export is available.",
+                detail=detail,
+            )
+
+        failure_detail = f"sample_photo={sample_id} thumbnail export returned no bytes."
+        if not sample_path:
+            failure_detail += " The sample asset does not currently expose a local path."
+        failures.append(failure_detail)
+
+    detail = _thumbnail_probe_detail(
+        failures[-1],
+        fallback_used=False,
+        candidates_tried=len(failures),
+        permission_denied_seen=permission_denied_seen,
+        local_path_missing_seen=local_path_missing_seen,
+    )
+    return PreflightCheckResult(
+        key="photos_thumbnail",
+        title="Photos Thumbnail Access",
+        status=CHECK_WARNING,
+        summary="Apple Photos thumbnail export is not ready.",
+        detail=detail,
+        hint=(
+            "Analyze needs thumbnail bytes. Ensure the asset is downloaded locally and PhotosMcp "
+            "has permission to export photo data."
+        ),
+    )
+
+
 def aggregate_check_status(checks: list[PreflightCheckResult]) -> str:
     if any(check.status == CHECK_ERROR for check in checks):
         return CHECK_ERROR
@@ -152,6 +285,45 @@ def _is_automation_permission_error(message: str) -> bool:
         or "apple_events_permission_denied" in lowered
         or "terminal.app" in lowered
         or "automation" in lowered
+    )
+
+
+def _is_thumbnail_access_warning(message: str) -> bool:
+    lowered = message.lower()
+    return (
+        _is_automation_permission_error(message)
+        or "auth_status" in lowered
+        or "photokit" in lowered
+        or "icloud" in lowered
+        or "download_missing" in lowered
+        or "photos" in lowered
+    )
+
+
+def _is_thumbnail_permission_denied(message: str) -> bool:
+    lowered = message.lower()
+    return (
+        "auth_status" in lowered
+        or "photokit export is not authorized" in lowered
+        or "could not get authorizaton to use photos" in lowered
+        or "grant photos access" in lowered
+    )
+
+
+def _thumbnail_probe_detail(
+    detail: str,
+    *,
+    fallback_used: bool,
+    candidates_tried: int,
+    permission_denied_seen: bool,
+    local_path_missing_seen: bool,
+) -> str:
+    return (
+        f"{detail} "
+        f"(fallback_used={'true' if fallback_used else 'false'}, "
+        f"candidates_tried={candidates_tried}, "
+        f"permission_denied_seen={'true' if permission_denied_seen else 'false'}, "
+        f"local_path_missing_seen={'true' if local_path_missing_seen else 'false'})"
     )
 
 

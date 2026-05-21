@@ -7,6 +7,7 @@ from pathlib import Path
 from photos_mcp import packaging
 from photos_mcp.packaging_contract import PY2APP_INCLUDES, PY2APP_PACKAGES
 from photos_mcp.packaging import (
+    build_app_packages,
     build_py2app_setup_kwargs,
     build_site_packages_resources,
     cleanup_stale_stage_roots,
@@ -24,11 +25,20 @@ def test_build_py2app_setup_kwargs_uses_photos_mcp_bundle_defaults() -> None:
     assert kwargs["options"]["py2app"]["plist"] == "Info.plist"
     assert kwargs["options"]["py2app"]["argv_emulation"] is False
     assert "photos_mcp" in kwargs["packages"]
+    assert "photos_mcp.facade" in kwargs["packages"]
     assert "mcp" not in kwargs["packages"]
     assert "mcp" in kwargs["options"]["py2app"]["packages"]
     assert "uvicorn" in kwargs["options"]["py2app"]["packages"]
     assert "anyio._backends._asyncio" in kwargs["options"]["py2app"]["includes"]
     assert "uvicorn.protocols.http.h11_impl" in kwargs["options"]["py2app"]["includes"]
+
+
+def test_build_app_packages_discovers_nested_photos_packages() -> None:
+    packages = build_app_packages()
+
+    assert "photos_mcp" in packages
+    assert "photos_mcp.facade" in packages
+    assert "apple_terminal_helper" in packages
 
 
 def test_info_plist_keeps_photos_mcp_visible_as_regular_app() -> None:
@@ -39,6 +49,12 @@ def test_info_plist_keeps_photos_mcp_visible_as_regular_app() -> None:
 
     assert data["CFBundleDisplayName"] == "PhotosMcp"
     assert data.get("LSUIElement") is None
+    assert data["NSPhotoLibraryUsageDescription"] == (
+        "PhotosMcp needs Photos library access to export thumbnails and analyze selected photos."
+    )
+    assert data["NSAppleEventsUsageDescription"] == (
+        "PhotosMcp needs Apple Events access to read and organize photos in Apple Photos."
+    )
 
 
 def test_pyproject_declares_self_contained_runtime_extras() -> None:

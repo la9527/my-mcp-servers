@@ -174,8 +174,8 @@ helper script 마다 `sys.path` 탐색을 따로 두지 않는다.
 
 완료 조건:
 
-- [x] `docs/refactor-direction.md` 가 현재 진단과 작업 순서를 담는다.
-- [x] `docs/architecture.md`, `docs/debugging-guide.md` 가 이 문서를 기준 문서로 연결한다.
+- [x] `docs/15-refactor-direction.md` 가 현재 진단과 작업 순서를 담는다.
+- [x] `docs/01-architecture.md`, `docs/14-debugging-guide.md` 가 이 문서를 기준 문서로 연결한다.
 - [x] runtime/cache root 목표를 `~/.photos-mcp` 앱 전용 home 으로 문서화한다.
 
 완료 메모:
@@ -207,7 +207,7 @@ helper script 마다 `sys.path` 탐색을 따로 두지 않는다.
 
 진행 메모:
 
-- 2026-05-19: `docs/vendor-import-inventory.md` 와 `tests/test_vendor_import_inventory.py` 로 현재 top-level local import 기준선을 고정했다.
+- 2026-05-19: `docs/16-vendor-import-inventory.md` 와 `tests/test_vendor_import_inventory.py` 로 현재 top-level local import 기준선을 고정했다.
 - 2026-05-19: `photo-source` 의 운영 runtime 경로(`server.py`, `sources/*.py`)를 package-relative import 로 전환하고, loader 에 `photos_mcp_vendor_photo_source` package alias 를 추가했다. `photo-source` script 와 `photo-ranker` 는 아직 남아 있으므로 Phase 1 전체 완료는 아님.
 - 2026-05-19: `photo-ranker` 의 MCP server runtime 경로(`server.py`, `pipeline.py`, `db.py`, `scoring.py`, `engines/*.py`)를 package-relative import 로 전환하고, loader 에 `photos_mcp_vendor_photo_ranker` package alias 를 추가했다. 직접 실행용 CLI/script/review app import 는 아직 남아 있으므로 Phase 1 전체 완료는 아님.
 - 2026-05-19: `uv run pytest -q` 기준 전체 source test 34개 통과. 남은 top-level local import 는 `batch_classify.py`, `review_app.py`, `scripts/*` 로 제한됨.

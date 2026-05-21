@@ -9,6 +9,7 @@ from photos_mcp.preflight import (
     aggregate_check_status,
     check_photos_automation_access,
     check_photos_library_readability,
+    check_photos_thumbnail_access,
 )
 
 
@@ -85,6 +86,164 @@ def test_check_photos_automation_access_prefers_lightweight_probe(monkeypatch) -
     assert result.status == CHECK_OK
     assert "2 albums" in result.detail
     assert "album-1" in result.detail
+
+
+def test_check_photos_thumbnail_access_reports_success(monkeypatch) -> None:
+    class FakeSource:
+        def list_photos(self, limit: int = 1):
+            assert limit >= 1
+            return [SimpleNamespace(photo_id="photo-1", path="/tmp/photo-1.jpeg")]
+
+        def get_thumbnail(self, photo_id: str, max_size: int = 64):
+            assert photo_id == "photo-1"
+            assert max_size == 64
+            return "thumb-b64"
+
+    fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
+    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+
+    result = check_photos_thumbnail_access()
+
+    assert result.status == CHECK_OK
+    assert "photo-1" in result.detail
+    assert "fallback_used=false" in result.detail
+    assert "candidates_tried=1" in result.detail
+    assert "permission_denied_seen=false" in result.detail
+    assert "local_path_missing_seen=false" in result.detail
+
+
+def test_check_photos_thumbnail_access_reports_warning_when_thumbnail_missing(monkeypatch) -> None:
+    class FakeSource:
+        def list_photos(self, limit: int = 1):
+            assert limit >= 1
+            return [SimpleNamespace(photo_id="photo-1", path="")]
+
+        def get_thumbnail(self, photo_id: str, max_size: int = 64):
+            assert photo_id == "photo-1"
+            assert max_size == 64
+            return None
+
+    fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
+    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+
+    result = check_photos_thumbnail_access()
+
+    assert result.status == CHECK_WARNING
+    assert "returned no bytes" in result.detail
+    assert "fallback_used=false" in result.detail
+    assert "candidates_tried=1" in result.detail
+    assert "permission_denied_seen=false" in result.detail
+    assert "local_path_missing_seen=true" in result.detail
+    assert "downloaded locally" in result.hint
+
+
+def test_check_photos_thumbnail_access_uses_fallback_candidate(monkeypatch) -> None:
+    class FakeSource:
+        def list_photos(self, limit: int = 1):
+            assert limit >= 1
+            return [
+                SimpleNamespace(photo_id="photo-1", path="/tmp/photo-1.jpeg"),
+                SimpleNamespace(photo_id="photo-2", path="/tmp/photo-2.jpeg"),
+            ]
+
+        def get_thumbnail(self, photo_id: str, max_size: int = 64):
+            assert max_size == 64
+            if photo_id == "photo-1":
+                return None
+            if photo_id == "photo-2":
+                return "thumb-b64"
+            raise AssertionError(f"unexpected photo_id {photo_id}")
+
+    fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
+    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+
+    result = check_photos_thumbnail_access()
+
+    assert result.status == CHECK_OK
+    assert "photo-2" in result.detail
+    assert "fallback_used=true" in result.detail
+    assert "candidates_tried=2" in result.detail
+    assert "permission_denied_seen=false" in result.detail
+    assert "local_path_missing_seen=false" in result.detail
+
+
+def test_check_photos_thumbnail_access_requests_enough_candidates_for_late_local_match(monkeypatch) -> None:
+    class FakeSource:
+        def list_photos(self, limit: int = 1):
+            assert limit >= 6
+            return [
+                SimpleNamespace(photo_id=f"photo-{index}", path="")
+                for index in range(1, 6)
+            ] + [SimpleNamespace(photo_id="photo-6", path="/tmp/photo-6.jpeg")]
+
+        def get_thumbnail(self, photo_id: str, max_size: int = 64):
+            assert max_size == 64
+            if photo_id == "photo-6":
+                return "thumb-b64"
+            return None
+
+    fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
+    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+
+    result = check_photos_thumbnail_access()
+
+    assert result.status == CHECK_OK
+    assert "photo-6" in result.detail
+    assert "fallback_used=false" in result.detail
+    assert "candidates_tried=1" in result.detail
+
+
+def test_check_photos_thumbnail_access_reports_permission_denied_context(monkeypatch) -> None:
+    class FakeSource:
+        def list_photos(self, limit: int = 1):
+            assert limit >= 1
+            return [SimpleNamespace(photo_id="photo-1", path="")]
+
+        def get_thumbnail(self, photo_id: str, max_size: int = 64):
+            assert photo_id == "photo-1"
+            assert max_size == 64
+            raise RuntimeError(
+                "PhotoKit export is not authorized for this process. "
+                "Grant Photos access in System Settings > Privacy & Security > Photos. "
+                "auth_status = 2"
+            )
+
+    fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
+    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+
+    result = check_photos_thumbnail_access()
+
+    assert result.status == CHECK_WARNING
+    assert "auth_status = 2" in result.detail
+    assert "permission_denied_seen=true" in result.detail
+    assert "local_path_missing_seen=true" in result.detail
+    assert "candidates_tried=1" in result.detail
+
+
+def test_check_photos_thumbnail_access_reports_silent_photokit_permission_denied(monkeypatch) -> None:
+    class FakeSource:
+        def __init__(self) -> None:
+            self._photokit_disabled = False
+
+        def list_photos(self, limit: int = 1):
+            assert limit >= 1
+            return [SimpleNamespace(photo_id="photo-1", path="")]
+
+        def get_thumbnail(self, photo_id: str, max_size: int = 64):
+            assert photo_id == "photo-1"
+            assert max_size == 64
+            self._photokit_disabled = True
+            return None
+
+    fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
+    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+
+    result = check_photos_thumbnail_access()
+
+    assert result.status == CHECK_WARNING
+    assert "permission_denied_seen=true" in result.detail
+    assert "local_path_missing_seen=true" in result.detail
+    assert "candidates_tried=1" in result.detail
 
 
 def test_aggregate_check_status_prioritizes_error_then_warning() -> None:

@@ -111,19 +111,13 @@ def test_single_instance_lock_rejects_second_process(tmp_path: Path) -> None:
         holder.wait(timeout=5)
 
 
-def test_build_server_registers_health_tool() -> None:
+def test_build_server_registers_facade_tools() -> None:
     mcp = build_server()
 
-    assert "health_status" in mcp._tool_manager._tools
-
-
-def test_build_server_registers_vendored_photo_tools() -> None:
-    mcp = build_server()
-
-    assert "list_photos" in mcp._tool_manager._tools
-    assert "get_metadata" in mcp._tool_manager._tools
-    assert "score_quality" in mcp._tool_manager._tools
-    assert "classify_and_organize" in mcp._tool_manager._tools
+    assert "photos_status" in mcp._tool_manager._tools
+    assert "photos_library" in mcp._tool_manager._tools
+    assert "photos_run" in mcp._tool_manager._tools
+    assert "photos_result" in mcp._tool_manager._tools
 
 
 def test_build_health_payload_reflects_state_store_status() -> None:

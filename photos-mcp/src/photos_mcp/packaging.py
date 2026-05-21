@@ -15,6 +15,7 @@ from photos_mcp.packaging_contract import (
     SITE_PACKAGES_RESOURCE_PREFIXES,
     SITE_PACKAGES_RESOURCE_SUFFIXES,
 )
+from setuptools import find_packages
 from setuptools.dist import Distribution
 
 
@@ -188,6 +189,14 @@ def build_site_packages_resources() -> list[tuple[str, list[str]]]:
     return [(f"lib/python{sys.version_info.major}.{sys.version_info.minor}", site_package_entries)]
 
 
+def build_app_packages() -> list[str]:
+    includes: list[str] = []
+    for package_name in APP_PACKAGES:
+        includes.extend([package_name, f"{package_name}.*"])
+
+    return find_packages(where="src", include=includes)
+
+
 def build_py2app_setup_kwargs() -> dict:
     resources = build_vendor_resources() + build_site_packages_resources()
 
@@ -197,7 +206,7 @@ def build_py2app_setup_kwargs() -> dict:
         "cmdclass": _build_py2app_cmdclass(),
         "install_requires": [],
         "package_dir": {"": "src"},
-        "packages": APP_PACKAGES,
+        "packages": build_app_packages(),
         "distclass": Py2AppDistribution,
         "setup_requires": ["py2app>=0.28"],
         "options": {

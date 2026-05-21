@@ -51,6 +51,6 @@
 
 의도적으로 import 표면을 바꾸는 경우에는 아래를 함께 갱신한다.
 
-- `docs/vendor-import-inventory.md`
+- `docs/16-vendor-import-inventory.md`
 - `tests/test_vendor_import_inventory.py`
-- `docs/refactor-direction.md` 의 Phase 1 checkbox / 완료 메모
+- `docs/15-refactor-direction.md` 의 Phase 1 checkbox / 완료 메모

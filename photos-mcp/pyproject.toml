@@ -59,6 +59,7 @@ dev = [
 
 [project.scripts]
 photos-mcp = "photos_mcp.main:main"
+photos-mcp-live-validate = "photos_mcp.live_validation:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/photos_mcp", "src/apple_terminal_helper"]

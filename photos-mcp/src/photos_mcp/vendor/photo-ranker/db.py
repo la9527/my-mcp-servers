@@ -169,6 +169,25 @@ class JobDB:
         if repaired:
             logger.info("Repaired %d stale pending job records", repaired)
 
+        repaired_running_with_results = self._conn.execute(
+            """
+            UPDATE jobs
+            SET
+                status = 'completed',
+                started_at = COALESCE(started_at, created_at),
+                finished_at = COALESCE(finished_at, started_at, created_at),
+                error_message = NULL
+            WHERE
+                status = 'running'
+                AND result_json IS NOT NULL
+            """
+        ).rowcount
+        if repaired_running_with_results:
+            logger.info(
+                "Repaired %d stale running job records with saved results",
+                repaired_running_with_results,
+            )
+
         stale_threshold = max(_stale_running_job_secs(), 0.0)
         if stale_threshold <= 0:
             return

@@ -8,6 +8,8 @@
 	<string>PhotosMcp</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.nanobot.photos-mcp</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>PhotosMcp needs Photos library access to export thumbnails and analyze selected photos.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>PhotosMcp needs Apple Events access to read and organize photos in Apple Photos.</string>
 </dict>

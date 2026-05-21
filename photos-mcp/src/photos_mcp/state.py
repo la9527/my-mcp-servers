@@ -88,6 +88,8 @@ class PhotosMcpStateStore:
         self._health_endpoint = health_endpoint
         self._daemon_status = "stopped"
         self._jobs: dict[str, JobSnapshot] = {}
+        self._synthetic_runs: dict[str, dict[str, Any]] = {}
+        self._synthetic_tasks: dict[str, Any] = {}
         self._preflight_checks: dict[str, PreflightCheckSnapshot] = {}
         self._last_preflight_at = ""
         self._last_updated_at = _utcnow_iso()
@@ -118,6 +120,83 @@ class PhotosMcpStateStore:
             self._last_updated_at = _utcnow_iso()
             self._sync_busy_state_locked()
 
+    def upsert_synthetic_run(self, payload: dict[str, Any], *, task: Any | None = None) -> None:
+        run_id = str(payload.get("run_id") or payload.get("job_id") or "")
+        if not run_id:
+            raise ValueError("Synthetic run payload requires run_id or job_id")
+
+        with self._lock:
+            normalized = dict(payload)
+            normalized.setdefault("run_id", run_id)
+            normalized.setdefault("job_id", run_id)
+            self._synthetic_runs[run_id] = normalized
+            if task is not None:
+                self._synthetic_tasks[run_id] = task
+            elif is_terminal_job_status(normalized.get("status") or ""):
+                self._synthetic_tasks.pop(run_id, None)
+            self._last_updated_at = _utcnow_iso()
+            self._sync_busy_state_locked()
+
+    def get_synthetic_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            payload = self._synthetic_runs.get(run_id)
+            if payload is None:
+                return None
+            return dict(payload)
+
+    def cancel_synthetic_run(self, run_id: str) -> bool:
+        with self._lock:
+            task = self._synthetic_tasks.get(run_id)
+            payload = self._synthetic_runs.get(run_id)
+            if task is None and payload is None:
+                return False
+
+            if payload is not None and not is_terminal_job_status(payload.get("status") or ""):
+                cancelled_payload = dict(payload)
+                cancelled_payload["status"] = "cancelled"
+                cancelled_payload["terminal"] = True
+                cancelled_payload["summary_available"] = True
+                cancelled_payload["result_available"] = False
+                cancelled_payload["wait_status"] = "cancelled"
+                cancelled_payload["reason"] = "cancelled"
+                cancelled_payload["error_code"] = "cancelled"
+                cancelled_payload.setdefault("error", "Analyze wait cancelled")
+                cancelled_payload.setdefault(
+                    "detail",
+                    "The local download wait was cancelled before analyze could continue.",
+                )
+                cancelled_payload.setdefault(
+                    "hint",
+                    "Rerun photos_run(intent=\"analyze\", wait_for_local=true) when you want to resume waiting.",
+                )
+                cancelled_payload.setdefault("next_suggested_action", "photos_run")
+                cancelled_payload.setdefault("can_retry", True)
+                cancelled_payload["finished_at"] = _utcnow_iso()
+                self._synthetic_runs[run_id] = cancelled_payload
+
+            if task is not None:
+                task.cancel()
+                self._synthetic_tasks.pop(run_id, None)
+            self._last_updated_at = _utcnow_iso()
+            self._sync_busy_state_locked()
+            return True
+
+    def clear_synthetic_history(self, statuses: tuple[str, ...] | None = None) -> list[str]:
+        target_statuses = set(statuses or ("completed", "failed", "cancelled"))
+        deleted_run_ids: list[str] = []
+        with self._lock:
+            for run_id, payload in list(self._synthetic_runs.items()):
+                status = job_status_value(payload.get("status") or "")
+                if status not in target_statuses:
+                    continue
+                self._synthetic_runs.pop(run_id, None)
+                self._synthetic_tasks.pop(run_id, None)
+                deleted_run_ids.append(run_id)
+            if deleted_run_ids:
+                self._last_updated_at = _utcnow_iso()
+                self._sync_busy_state_locked()
+        return deleted_run_ids
+
     def replace_preflight_checks(self, checks: list[PreflightCheckSnapshot]) -> None:
         with self._lock:
             self._preflight_checks = {check.key: check for check in checks}
@@ -126,13 +205,19 @@ class PhotosMcpStateStore:
 
     def snapshot(self) -> PhotosMcpSnapshot:
         with self._lock:
+            synthetic_jobs = [
+                job_snapshot_from_payload(payload)
+                for payload in self._synthetic_runs.values()
+                if payload.get("job_id") and payload.get("status")
+            ]
+            all_jobs = [*self._jobs.values(), *synthetic_jobs]
             active_jobs = sorted(
-                (job for job in self._jobs.values() if is_active_job_status(job.status)),
+                (job for job in all_jobs if is_active_job_status(job.status)),
                 key=lambda item: item.sort_key,
                 reverse=True,
             )
             recent_jobs = sorted(
-                (job for job in self._jobs.values() if job.is_terminal),
+                (job for job in all_jobs if job.is_terminal),
                 key=lambda item: item.sort_key,
                 reverse=True,
             )
@@ -152,7 +237,10 @@ class PhotosMcpStateStore:
     def _sync_busy_state_locked(self) -> None:
         if self._daemon_status in {"starting", "stopping", "degraded", "stopped"}:
             return
-        if any(is_running_job_status(job.status) for job in self._jobs.values()):
+        if any(is_running_job_status(job.status) for job in self._jobs.values()) or any(
+            is_running_job_status(payload.get("status") or "")
+            for payload in self._synthetic_runs.values()
+        ):
             self._daemon_status = "busy"
             return
         self._daemon_status = "ready"

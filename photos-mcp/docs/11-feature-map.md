@@ -6,6 +6,18 @@
 
 - MCP: `http://127.0.0.1:18791/mcp`
 - health: `http://127.0.0.1:18791/health`
+- health capabilities: `http://127.0.0.1:18791/health/capabilities`
+
+### 진단 tool
+
+- `photos_status`
+
+### facade tools
+
+- `photos_status`
+- `photos_library`
+- `photos_run`
+- `photos_result`
 
 ### app shell
 
@@ -17,10 +29,20 @@
 
 - `PhotosMcp --health`
 - `PhotosMcp --version`
+- `PhotosMcp --help`
 
 ## 2. 기능 범주
 
-### 2.1 Photos source access (`photo-source` 계열)
+### 2.1 Public MCP facade
+
+대표 기능:
+
+- `photos_status`: 상태/health/current/latest 실행 요약
+- `photos_library`: browse/search/inspect
+- `photos_run`: analyze/classify/curate/organize/import
+- `photos_result`: summary/result/artifacts/selected/cancel
+
+### 2.2 Internal photos source access (`photo-source` 계열)
 
 대표 기능:
 
@@ -39,7 +61,7 @@
 
 실무상 현재 핵심은 Apple Photos read path 다.
 
-### 2.2 photo analysis / ranking (`photo-ranker` 계열)
+### 2.3 Internal photo analysis / ranking (`photo-ranker` 계열)
 
 대표 기능:
 
@@ -59,7 +81,7 @@
 - `find_duplicates`
 - `rank_best_shots`
 
-### 2.3 face / review / curation
+### 2.4 internal face / review / curation
 
 대표 기능:
 
@@ -68,22 +90,22 @@
 - photo review 상태 저장
 - face labeling
 
-### 2.4 background job 관리
+### 2.5 internal background job 관리
 
 대표 기능:
 
-- classify/organize job 시작
-- job status 조회
-- job summary 조회
-- job result 조회
-- cancel
-- delete
-- clear history
-- list jobs
+- `start_classify_job`
+- `get_job_status`
+- `get_job_summary`
+- `get_job_result`
+- `cancel_job`
+- `delete_job`
+- `clear_job_history`
+- `list_jobs`
 
-현재 unified layer 가 중요하게 다루는 표면은 이 job 계열이다. 이유는 MCP 응답과 menu UI 가 같은 state store 를 읽어야 하기 때문이다.
+현재 public surface 는 이 job 계열을 직접 노출하기보다 `photos_run` 과 `photos_result` 뒤로 숨긴다. 이유는 MCP 응답과 menu UI 가 같은 state store 를 읽으면서도, LLM 에게는 단순한 facade surface 만 보이게 하기 위해서다.
 
-### 2.5 Apple Photos write / organize
+### 2.6 internal Apple Photos write / organize
 
 대표 기능:
 
@@ -125,21 +147,25 @@
 - active jobs 최대 2개 표시
 - recent terminal jobs 표시
 - active job cancel
-- recent history delete / clear
+- recent history delete
+- recent history clear all
 
 ## 4. health payload 의미
 
 health payload 는 단순 alive probe 이상이다. 아래를 같이 담는다.
 
+- `status`
+- `transport.status`
 - `daemon_status`
 - `preflight_status`
 - `preflight_checks`
+- `capabilities`
 - `background_job_running`
 - `active_job_count`
 - `recent_job_count`
 - endpoint / health_endpoint
 
-따라서 `status=ok` 라고 해도 내부 `preflight_checks` 를 별도로 읽어야 Apple Photos read/write readiness 를 판단할 수 있다.
+따라서 `status=ok` 라고 해도 내부 `preflight_checks` 또는 `/health/capabilities` 를 별도로 읽어야 Apple Photos read/write readiness 를 판단할 수 있다.
 
 ## 5. 테스트 범위
 
@@ -187,7 +213,7 @@ health payload 는 단순 alive probe 이상이다. 아래를 같이 담는다.
 ## 6. 현재 구조의 제약
 
 - macOS / AppKit / Apple Photos permission path 에 강하게 묶여 있다.
-- vendored runtime 은 `sys.path` 와 `sys.modules` 정리에 의존하므로 import bootstrap 이 민감하다.
+- vendored runtime 은 package alias 기반으로 정리됐지만, source/bundle 공용 import bootstrap 과 packaging contract 는 여전히 민감하다.
 - bundle 문제는 source 실행에서 재현되지 않을 수 있다.
-- preflight 의 `photos_read` 와 `photos_automation` 은 transport success 와 별개의 문제다.
+- preflight 의 `photos_read`, `photos_automation`, `photos_thumbnail` 은 transport success 와 별개의 문제다.
 - single-instance lock 이 stale 하게 남으면 app 이 실행되지 않은 것처럼 보일 수 있다.

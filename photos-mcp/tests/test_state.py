@@ -150,3 +150,49 @@ def test_state_store_tracks_preflight_results() -> None:
     assert snapshot.preflight_status == "warning"
     assert len(snapshot.preflight_checks) == 2
     assert snapshot.last_preflight_at
+
+
+def test_state_store_merges_synthetic_runs_into_snapshot() -> None:
+    store = PhotosMcpStateStore(
+        endpoint="http://127.0.0.1:18791/mcp",
+        health_endpoint="http://127.0.0.1:18791/health",
+    )
+    store.set_daemon_status("ready")
+    store.upsert_synthetic_run(
+        {
+            "run_id": "analyze-wait-1",
+            "job_id": "analyze-wait-1",
+            "request_kind": "photos_run",
+            "source": "apple",
+            "status": "running",
+            "summary_available": True,
+            "result_available": False,
+            "started_at": "2026-05-20T00:00:00+00:00",
+            "progress": {"stage": "waiting_for_local_download", "current": 1, "total": 5},
+        }
+    )
+
+    snapshot = store.snapshot()
+
+    assert snapshot.daemon_status == "busy"
+    assert snapshot.background_job_running is True
+    assert [job["job_id"] for job in snapshot.active_jobs] == ["analyze-wait-1"]
+
+    store.upsert_synthetic_run(
+        {
+            "run_id": "analyze-wait-1",
+            "job_id": "analyze-wait-1",
+            "request_kind": "photos_run",
+            "source": "apple",
+            "status": "completed",
+            "summary_available": True,
+            "result_available": True,
+            "started_at": "2026-05-20T00:00:00+00:00",
+            "finished_at": "2026-05-20T00:00:05+00:00",
+        }
+    )
+
+    snapshot = store.snapshot()
+
+    assert snapshot.daemon_status == "ready"
+    assert [job["job_id"] for job in snapshot.recent_jobs] == ["analyze-wait-1"]
