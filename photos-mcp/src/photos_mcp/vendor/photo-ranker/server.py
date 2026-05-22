@@ -10,7 +10,7 @@ import time
 from mcp.server.fastmcp import FastMCP
 from photos_mcp.logging_setup import ToolLogContext, log_context
 
-from .artifacts import save_face_crop, save_preview
+from .artifacts import job_results_path, save_face_crop, save_job_results, save_preview
 from .album_writer import AlbumWriter
 from .local_writer import LocalDirectoryWriter
 from .engines.aesthetic import AestheticEngine, score_technical_quality
@@ -490,6 +490,16 @@ async def _run_classify_job(job) -> dict:
     db.save_photo_results(job.id, results)
     db.save_job(job)
 
+    _persist_job_result_artifact(
+        job,
+        db,
+        summary={
+            "ranked_count": len(ranked),
+            "top_score": ranked[0].total_score if ranked else 0,
+            "selection_profile": selection_profile,
+        },
+    )
+
     return {
         "ranked_count": len(ranked),
         "top_score": ranked[0].total_score if ranked else 0,
@@ -613,6 +623,7 @@ async def _run_sync_classification(
     results = [result.to_dict() for result in ranked]
     db.save_photo_results(job.id, results)
     db.save_job(job)
+    _persist_job_result_artifact(job, db)
     return job, db, results
 
 
@@ -621,6 +632,20 @@ def _finalize_sync_job(job, db: JobDB, summary: dict) -> None:
     job.finished_at = time.time()
     job.result_summary = summary
     db.save_job(job)
+    _persist_job_result_artifact(job, db, summary=summary)
+
+
+def _persist_job_result_artifact(job, db: JobDB, *, summary: dict | None = None) -> None:
+    try:
+        save_job_results(
+            job.id,
+            job=job.to_dict(),
+            summary=summary or getattr(job, "result_summary", {}) or {},
+            results=db.load_photo_results(job.id),
+            assets=db.list_job_assets(job.id),
+        )
+    except Exception as exc:
+        logger.warning("Result artifact save failed for %s: %s", job.id, exc)
 
 
 def _select_top_quality_results(
@@ -769,6 +794,7 @@ async def get_job_summary(job_id: str) -> str:
         (asset.get("preview_path", "") for asset in assets.values() if asset.get("preview_path")),
         "",
     )
+    results_path = job_results_path(job.id)
     return json.dumps(
         {
             "job_id": job.id,
@@ -785,6 +811,7 @@ async def get_job_summary(job_id: str) -> str:
             "photo_count": len(results),
             "selected_count": selected_count,
             "preview_path": preview_path,
+            "results_path": str(results_path) if results_path.exists() else "",
         },
         ensure_ascii=False,
     )
@@ -1291,7 +1318,7 @@ async def curate_best_photos(
         return _selection_profile_error(selection_profile)
 
     normalized_profile = normalize_selection_profile(selection_profile)
-    score_field = "quality_score" if normalized_profile == "general" else "total_score"
+    score_field = "total_score"
 
     job, db, results = await _run_sync_classification(
         source,
@@ -1414,6 +1441,16 @@ async def curate_best_photos(
             "album write-back skipped because no selected photos remained",
         )
 
+    touched_album_names: list[str] = []
+    if isinstance(album_result, dict):
+        raw_touched = album_result.get("touched_album_names")
+        if isinstance(raw_touched, list):
+            touched_album_names = [str(name) for name in raw_touched if isinstance(name, str) and name]
+        elif isinstance(album_result.get("album"), str) and album_result.get("album"):
+            touched_album_names = [str(album_result["album"])]
+    elif normalized_mode == "album" and target_album_name.strip():
+        touched_album_names = [target_album_name.strip()]
+
     summary = {
         "job_id": job.id,
         "source": source,
@@ -1442,6 +1479,8 @@ async def curate_best_photos(
         "writeback_mode": normalized_mode,
         "target_album_name": target_album_name,
         "album_result": album_result,
+        "touched_album_names": touched_album_names,
+        "classification_album_created": False,
     }
     _finalize_sync_job(job, db, summary)
     _log_workflow_step(

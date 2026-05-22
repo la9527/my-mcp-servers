@@ -26,7 +26,7 @@ PARTIAL = "partial"
 FAIL = "fail"
 SKIP = "skip"
 
-EXPECTED_TOOLS = ["photos_library", "photos_result", "photos_run", "photos_status"]
+EXPECTED_TOOLS = ["photos_query", "photos_select", "photos_workflow", "photos_write"]
 VIDEO_SUFFIXES = (".mov", ".mp4", ".m4v", ".avi", ".mkv")
 
 
@@ -307,7 +307,7 @@ async def _wait_for_terminal_summary(
     summary_payload: dict[str, Any] = {}
     last_snapshot = ""
     for attempt in range(rounds):
-        summary_payload = await _call_tool(session, "photos_result", {"action": "summary", "run_id": run_id})
+        summary_payload = await _call_tool(session, "photos_query", {"action": "result_summary", "options": {"run_id": run_id}})
         snapshot = _summary_progress_snapshot(summary_payload)
         if progress is not None and snapshot != last_snapshot:
             prefix = f"{label}: " if label else ""
@@ -332,7 +332,7 @@ async def _wait_for_summary_predicate(
     summary_payload: dict[str, Any] = {}
     last_snapshot = ""
     for attempt in range(rounds):
-        summary_payload = await _call_tool(session, "photos_result", {"action": "summary", "run_id": run_id})
+        summary_payload = await _call_tool(session, "photos_query", {"action": "result_summary", "options": {"run_id": run_id}})
         snapshot = _summary_progress_snapshot(summary_payload)
         if progress is not None and snapshot != last_snapshot:
             prefix = f"{label}: " if label else ""
@@ -389,7 +389,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
         ],
     )
     status_section = ReportSection(
-        title="photos_status",
+        title="photos_query/status",
         checks=[
             CheckResult("status-summary", "summary view returns transport, capabilities, running, latest"),
             CheckResult("status-checks", "checks view returns preflight entries"),
@@ -398,7 +398,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
         ],
     )
     library_section = ReportSection(
-        title="photos_library",
+        title="photos_query/library",
         checks=[
             CheckResult("library-list", "list action returns items with source aliases"),
             CheckResult("library-photo-only", "apple list excludes video assets from candidates"),
@@ -409,7 +409,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
         ],
     )
     run_section = ReportSection(
-        title="photos_run",
+        title="photos_select/photos_write",
         checks=[
             CheckResult("analyze-success", "local analyze succeeds immediately"),
             CheckResult("analyze-blocked", "non-local analyze without wait returns structured blocked payload"),
@@ -420,7 +420,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
         ],
     )
     result_section = ReportSection(
-        title="photos_result",
+        title="photos_query/result",
         checks=[
             CheckResult("result-wait-summary", "synthetic wait summary exposes progress fields"),
             CheckResult("result-wait-result-pending", "synthetic wait result stays unavailable before terminal completion"),
@@ -496,11 +496,11 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                     _json_preview(tool_names),
                 )
 
-                progress("photos_status: fetching summary/checks/running/latest")
-                status_summary = await _call_tool(session, "photos_status", {})
-                status_checks = await _call_tool(session, "photos_status", {"view": "checks"})
-                status_running = await _call_tool(session, "photos_status", {"view": "running"})
-                status_latest = await _call_tool(session, "photos_status", {"view": "latest"})
+                progress("photos_query: fetching status summary/checks/running/latest")
+                status_summary = await _call_tool(session, "photos_query", {"action": "status", "options": {}})
+                status_checks = await _call_tool(session, "photos_query", {"action": "status", "options": {"view": "checks"}})
+                status_running = await _call_tool(session, "photos_query", {"action": "status", "options": {"view": "running"}})
+                status_latest = await _call_tool(session, "photos_query", {"action": "status", "options": {"view": "latest"}})
 
                 set_check(
                     status_section.checks[0],
@@ -523,11 +523,11 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                     _json_preview(status_latest),
                 )
 
-                progress("photos_library: listing candidates")
+                progress("photos_query: listing candidates")
                 library_list = await _call_tool(
                     session,
-                    "photos_library",
-                    {"action": "list", "source": "apple", "limit": 20},
+                    "photos_query",
+                    {"action": "list", "options": {"source": "apple", "limit": 20}},
                 )
                 items = library_list.get("items") if isinstance(library_list, dict) else []
                 items = items if isinstance(items, list) else []
@@ -545,11 +545,11 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                     _json_preview(items[:5]),
                 )
 
-                progress("photos_library: checking ready_only")
+                progress("photos_query: checking ready_only")
                 ready_only_payload = await _call_tool(
                     session,
-                    "photos_library",
-                    {"action": "ready_only", "source": "apple", "limit": 20},
+                    "photos_query",
+                    {"action": "ready_only", "options": {"source": "apple", "limit": 20}},
                 )
                 ready_items = ready_only_payload.get("items") if isinstance(ready_only_payload, dict) else []
                 ready_items = ready_items if isinstance(ready_items, list) else []
@@ -562,11 +562,11 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                 )
 
                 if search_seed:
-                    progress(f"photos_library: searching query={search_seed}")
+                    progress(f"photos_query: searching query={search_seed}")
                     search_payload = await _call_tool(
                         session,
-                        "photos_library",
-                        {"action": "search", "source": "apple", "query": search_seed, "limit": 10},
+                        "photos_query",
+                        {"action": "search", "options": {"source": "apple", "query": search_seed, "limit": 10}},
                     )
                     search_ok = isinstance(search_payload, dict) and search_payload.get("action") == "search" and "items" in search_payload
                     set_check(library_section.checks[3], PASS if search_ok else FAIL, _json_preview(search_payload))
@@ -575,16 +575,18 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
 
                 inspect_target = config.local_photo_id or (local_item or {}).get("photo_id") or (items[0].get("photo_id") if items else "")
                 if inspect_target:
-                    progress(f"photos_library: inspecting photo_id={inspect_target}")
+                    progress(f"photos_query: inspecting photo_id={inspect_target}")
                     inspect_payload = await _call_tool(
                         session,
-                        "photos_library",
+                        "photos_query",
                         {
                             "action": "inspect",
-                            "source": "apple",
-                            "photo_id": inspect_target,
-                            "include_metadata": True,
-                            "include_thumbnail": bool(local_item),
+                            "options": {
+                                "source": "apple",
+                                "photo_id": inspect_target,
+                                "include_metadata": True,
+                                "include_thumbnail": bool(local_item),
+                            },
                         },
                     )
                     inspect_item = inspect_payload.get("item") if isinstance(inspect_payload, dict) else {}
@@ -605,11 +607,11 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                 workflow_sample = await _prepare_local_workflow_sample(local_item)
 
                 if local_photo_id:
-                    progress(f"photos_run: analyzing local candidate photo_id={local_photo_id}")
+                    progress(f"photos_select: analyzing local candidate photo_id={local_photo_id}")
                     analyze_success_payload = await _call_tool(
                         session,
-                        "photos_run",
-                        {"intent": "analyze", "source": "apple", "photo_id": local_photo_id},
+                        "photos_select",
+                        {"action": "analyze_photo", "options": {"source": "apple", "photo_id": local_photo_id}},
                     )
                     analyze_success_ok = (
                         isinstance(analyze_success_payload, dict)
@@ -625,11 +627,11 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                 wait_cancel_summary_payload: dict[str, Any] | None = None
 
                 if non_local_photo_id:
-                    progress(f"photos_run: checking blocked non-local analyze photo_id={non_local_photo_id}")
+                    progress(f"photos_select: checking blocked non-local analyze photo_id={non_local_photo_id}")
                     blocked_payload = await _call_tool(
                         session,
-                        "photos_run",
-                        {"intent": "analyze", "source": "apple", "photo_id": non_local_photo_id},
+                        "photos_select",
+                        {"action": "analyze_photo", "options": {"source": "apple", "photo_id": non_local_photo_id}},
                     )
                     blocked_ok = (
                         isinstance(blocked_payload, dict)
@@ -638,17 +640,19 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                     )
                     set_check(run_section.checks[1], PASS if blocked_ok else FAIL, _json_preview(blocked_payload))
 
-                    progress("photos_run: starting synthetic wait_for_local timeout probe")
+                    progress("photos_select: starting synthetic wait_for_local timeout probe")
                     timeout_run_payload = await _call_tool(
                         session,
-                        "photos_run",
+                        "photos_select",
                         {
-                            "intent": "analyze",
-                            "source": "apple",
-                            "photo_id": non_local_photo_id,
-                            "wait_for_local": True,
-                            "wait_timeout_seconds": config.wait_timeout_seconds,
-                            "wait_poll_interval_seconds": config.wait_poll_interval_seconds,
+                            "action": "analyze_photo",
+                            "options": {
+                                "source": "apple",
+                                "photo_id": non_local_photo_id,
+                                "wait_for_local": True,
+                                "wait_timeout_seconds": config.wait_timeout_seconds,
+                                "wait_poll_interval_seconds": config.wait_poll_interval_seconds,
+                            },
                         },
                     )
                     timeout_run_id = str(timeout_run_payload.get("run_id") or "")
@@ -661,8 +665,8 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
 
                     wait_pending_result = await _call_tool(
                         session,
-                        "photos_result",
-                        {"action": "result", "run_id": timeout_run_id},
+                        "photos_query",
+                        {"action": "result_detail", "options": {"run_id": timeout_run_id}},
                     )
                     pending_ok = isinstance(wait_pending_result, dict) and wait_pending_result.get("result_available") is False
                     set_check(result_section.checks[1], PASS if pending_ok else FAIL, _json_preview(wait_pending_result))
@@ -697,8 +701,8 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                     )
                     wait_result_payload = await _call_tool(
                         session,
-                        "photos_result",
-                        {"action": "result", "run_id": timeout_run_id},
+                        "photos_query",
+                        {"action": "result_detail", "options": {"run_id": timeout_run_id}},
                     )
                     timeout_ok = timeout_summary.get("status") in {"failed", "completed"}
                     set_check(
@@ -708,17 +712,19 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                         note="completed is possible if the asset downloads while polling",
                     )
 
-                    progress("photos_run: starting synthetic wait_for_local cancel probe")
+                    progress("photos_select: starting synthetic wait_for_local cancel probe")
                     cancel_run_payload = await _call_tool(
                         session,
-                        "photos_run",
+                        "photos_select",
                         {
-                            "intent": "analyze",
-                            "source": "apple",
-                            "photo_id": non_local_photo_id,
-                            "wait_for_local": True,
-                            "wait_timeout_seconds": max(config.wait_timeout_seconds, 30.0),
-                            "wait_poll_interval_seconds": max(config.wait_poll_interval_seconds, 3.0),
+                            "action": "analyze_photo",
+                            "options": {
+                                "source": "apple",
+                                "photo_id": non_local_photo_id,
+                                "wait_for_local": True,
+                                "wait_timeout_seconds": max(config.wait_timeout_seconds, 30.0),
+                                "wait_poll_interval_seconds": max(config.wait_poll_interval_seconds, 3.0),
+                            },
                         },
                     )
                     cancel_run_id = str(cancel_run_payload.get("run_id") or "")
@@ -734,8 +740,8 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                     )
                     cancel_payload = await _call_tool(
                         session,
-                        "photos_result",
-                        {"action": "cancel", "run_id": cancel_run_id},
+                        "photos_query",
+                        {"action": "cancel", "options": {"run_id": cancel_run_id}},
                     )
                     wait_cancel_summary_payload = await _wait_for_summary_predicate(
                         session,
@@ -773,16 +779,18 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                         try:
                             workflow_poll_rounds = max(config.wait_poll_rounds, 20)
                             workflow_poll_interval_seconds = max(config.wait_poll_interval_seconds, 1.0)
-                            progress(f"photos_run workflows: starting classify source_path={workflow_sample['input_dir']}")
+                            progress(f"photos_select workflows: starting classify source_path={workflow_sample['input_dir']}")
                             classify_payload = await _call_tool(
                                 session,
-                                "photos_run",
+                                "photos_select",
                                 {
-                                    "intent": "classify",
-                                    "source": "local",
-                                    "source_path": workflow_sample["input_dir"],
-                                    "limit": 5,
-                                    "selection_profile": "general",
+                                    "action": "classify_range",
+                                    "options": {
+                                        "source": "local",
+                                        "source_path": workflow_sample["input_dir"],
+                                        "limit": 5,
+                                        "selection_profile": "general",
+                                    },
                                 },
                             )
                             classify_run_id = str(classify_payload.get("run_id") or classify_payload.get("job_id") or "")
@@ -794,52 +802,58 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                                 progress=progress,
                                 label=f"workflow classify run_id={classify_run_id}",
                             )
-                            progress(f"photos_result workflows: fetching result artifacts for run_id={classify_run_id}")
+                            progress(f"photos_query workflows: fetching result artifacts for run_id={classify_run_id}")
                             classify_result = await _call_tool(
                                 session,
-                                "photos_result",
-                                {"action": "result", "run_id": classify_run_id, "top_n": 10},
+                                "photos_query",
+                                {"action": "result_detail", "options": {"run_id": classify_run_id, "top_n": 10}},
                             )
                             classify_selected = await _call_tool(
                                 session,
-                                "photos_result",
-                                {"action": "selected", "run_id": classify_run_id, "top_n": 10},
+                                "photos_query",
+                                {"action": "selected", "options": {"run_id": classify_run_id, "top_n": 10}},
                             )
                             classify_artifacts = await _call_tool(
                                 session,
-                                "photos_result",
-                                {"action": "artifacts", "run_id": classify_run_id},
+                                "photos_query",
+                                {"action": "artifacts", "options": {"run_id": classify_run_id}},
                             )
-                            progress(f"photos_run workflows: organizing run_id={classify_run_id}")
+                            progress(f"photos_write workflows: organizing run_id={classify_run_id}")
                             organize_payload = await _call_tool(
                                 session,
-                                "photos_run",
+                                "photos_write",
                                 {
-                                    "intent": "organize",
-                                    "run_id": classify_run_id,
-                                    "output_dir": workflow_sample["output_dir"],
+                                    "action": "organize_by_category",
+                                    "options": {
+                                        "run_id": classify_run_id,
+                                        "folder": workflow_sample["output_dir"],
+                                    },
                                 },
                             )
-                            progress("photos_run workflows: running curate(review)")
+                            progress("photos_select workflows: running curate(review)")
                             curate_payload = await _call_tool(
                                 session,
-                                "photos_run",
+                                "photos_select",
                                 {
-                                    "intent": "curate",
-                                    "source": "local",
-                                    "source_path": workflow_sample["input_dir"],
-                                    "limit": 5,
-                                    "selection_profile": "general",
-                                    "writeback_mode": "review",
+                                    "action": "select_best",
+                                    "options": {
+                                        "source": "local",
+                                        "source_path": workflow_sample["input_dir"],
+                                        "limit": 5,
+                                        "selection_profile": "general",
+                                    },
                                 },
                             )
-                            progress("photos_run workflows: running import no-op")
+                            progress("photos_write workflows: running import no-op")
                             import_payload = await _call_tool(
                                 session,
-                                "photos_run",
+                                "photos_write",
                                 {
-                                    "intent": "import",
-                                    "photo_paths_json": "[]",
+                                    "action": "import_to_album",
+                                    "options": {
+                                        "photo_paths": [],
+                                        "target_album_name": "photos-mcp live validation noop",
+                                    },
                                 },
                             )
 
@@ -867,7 +881,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                             curate_ok = (
                                 isinstance(curate_payload, dict)
                                 and not curate_payload.get("error")
-                                and curate_payload.get("writeback_mode") == "review"
+                                and curate_payload.get("action") == "select_best"
                                 and bool(curate_payload.get("job_id"))
                             )
                             import_ok = (

@@ -31,6 +31,20 @@
 - full auto-launch fallback
 - notarization / auto-update 완성
 
+## redesign 이후 바로 붙는 follow-up 후보
+
+이 문서가 phase-1 daemon ownership 과 app status UX 를 고정한 뒤, 바로 이어서 붙는 후속 축은 아래 두 가지다.
+
+1. async-first job contract
+   - long-running `photos_run` intent 는 request completion 을 기다리지 않고 `job_id` 중심 accepted envelope 를 즉시 반환
+   - 결과는 `photos_result` polling 을 기본값으로 읽고, 필요하면 optional callback 으로 terminal summary 를 push
+   - 목적은 `nanobot` 외 다른 LLM/agent client 도 같은 contract 를 그대로 재사용하게 만드는 것이다.
+
+2. Terminal helper app-internalization 검토
+   - 현재 `apple_photos_terminal_fetch.py` / `apple_photos_terminal_runner.py` 는 Terminal.app 을 여는 helper 경로에 의존한다.
+   - daemon ownership 이 `PhotosMcp.app` 으로 고정된 뒤에는, fetch/write 권한 경로를 app process 안으로 수렴시킬 수 있는지 별도 slice 로 검토한다.
+   - phase-1 에서는 현행 helper 를 유지하되, 이후 목표 구조는 Terminal.app popup 의존도를 줄이고 app-owned TCC attribution 을 강화하는 쪽이다.
+
 ## phase-1 고정 결정
 
 이번 문서의 확정 전제는 아래와 같다.

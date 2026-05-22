@@ -34,13 +34,35 @@ async def test_mock_mcp_client_lists_tools_and_calls_photos_status() -> None:
     client = MockMcpClient(mcp)
 
     tools = await client.list_tools()
-    status_payload = await client.call_tool("photos_status")
+    status_payload = await client.call_tool("photos_query", {"action": "status"})
 
-    assert tools == ["photos_library", "photos_result", "photos_run", "photos_status"]
+    assert tools == ["photos_query", "photos_select", "photos_workflow", "photos_write"]
     assert status_payload["status"] == "ok"
     assert status_payload["transport"]["status"] == "ok"
     assert status_payload["running"]["active"] is False
     assert status_payload["latest"]["status"] == "idle"
+
+
+def test_photos_workflow_description_guides_single_album_requests_to_curate_to_album() -> None:
+    mcp = build_server(config=load_config(), state_store=None)
+
+    description = mcp._tool_manager._tools["photos_workflow"].description
+
+    assert "curate_to_album" in description
+    assert "exactly one target album" in description
+    assert "category workflow" in description
+    assert "Do not pass selected_photo_ids" in description
+    assert "scope filters plus target_album_name" in description
+
+
+def test_photos_write_description_guides_category_organize_requests() -> None:
+    mcp = build_server(config=load_config(), state_store=None)
+
+    description = mcp._tool_manager._tools["photos_write"].description
+
+    assert "organize_by_category" in description
+    assert "category albums" in description
+    assert "Do not pass target_album_name" in description
 
 
 @pytest.mark.asyncio
@@ -69,7 +91,7 @@ async def test_mock_mcp_client_photos_run_normalizes_job_payloads_and_updates_st
     mcp = build_server(config=load_config(), state_store=state_store)
     client = MockMcpClient(mcp)
 
-    payload = await client.call_tool("photos_run", {"intent": "classify"})
+    payload = await client.call_tool("photos_select", {"action": "classify_range"})
     snapshot = state_store.snapshot()
 
     assert payload["run_id"] == "job-123"
@@ -81,7 +103,45 @@ async def test_mock_mcp_client_photos_run_normalizes_job_payloads_and_updates_st
     assert snapshot.daemon_status == "busy"
     assert len(snapshot.active_jobs) == 1
     assert snapshot.active_jobs[0]["job_id"] == "job-123"
-    assert snapshot.active_jobs[0]["request_kind"] == "photos_run"
+    assert payload["action"] == "classify_range"
+    assert snapshot.active_jobs[0]["request_kind"] == "photos_select"
+
+
+@pytest.mark.asyncio
+async def test_mock_mcp_client_photos_result_summary_promotes_structured_job_error(monkeypatch) -> None:
+    async def fake_get_job_summary(*_args, **_kwargs) -> dict:
+        return {
+            "job_id": "job-123",
+            "status": "failed",
+            "error_message": '{"error":"Apple Photos organize failed","details":"Could not get authorizaton to use Photos: auth_status = 2","code":"download_missing_photokit_permission_denied","hint":"Run photos_library(action=\\"prefetch\\") before retrying organize.","fetch_strategy":"download_missing_photokit","strategies_tried":["download_missing","download_missing_photokit"],"photokit_authorization_denied":true}',
+        }
+
+    fake_module = SimpleNamespace(get_job_summary=fake_get_job_summary)
+
+    def fake_load_vendor_server(name: str):
+        assert name == "photo-ranker"
+        return fake_module
+
+    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fake_load_vendor_server)
+
+    mcp = build_server(config=load_config(), state_store=None)
+    client = MockMcpClient(mcp)
+
+    payload = await client.call_tool("photos_query", {"action": "result_summary", "options": {"run_id": "job-123"}})
+
+    assert payload["action"] == "summary"
+    assert payload["run_id"] == "job-123"
+    assert payload["status"] == "failed"
+    assert payload["terminal"] is True
+    assert payload["summary_available"] is True
+    assert payload["result_available"] is False
+    assert payload["error"] == "Apple Photos organize failed"
+    assert payload["error_code"] == "download_missing_photokit_permission_denied"
+    assert payload["detail"] == "Could not get authorizaton to use Photos: auth_status = 2"
+    assert payload["hint"] == "Run photos_library(action=\"prefetch\") before retrying organize."
+    assert payload["fetch_strategy"] == "download_missing_photokit"
+    assert payload["fetch_strategies_tried"] == ["download_missing", "download_missing_photokit"]
+    assert payload["photokit_authorization_denied"] is True
 
 
 @pytest.mark.asyncio
@@ -107,17 +167,17 @@ async def test_mock_mcp_client_photos_library_adds_photo_id_alias(monkeypatch) -
     mcp = build_server(config=load_config(), state_store=None)
     client = MockMcpClient(mcp)
 
-    payload = await client.call_tool("photos_library", {"action": "list"})
+    payload = await client.call_tool("photos_query", {"action": "list"})
 
     assert payload["count"] == 1
     assert payload["analyze_ready_count"] == 1
     assert payload["download_required_count"] == 0
-    assert payload["next_suggested_action"] == "photos_run"
+    assert payload["next_suggested_action"] == "photos_select"
     assert payload["items"][0]["id"] == "photo-123"
     assert payload["items"][0]["photo_id"] == "photo-123"
     assert payload["items"][0]["local_path_available"] is True
     assert payload["items"][0]["analyze_recommended"] is True
-    assert payload["items"][0]["recommended_next_action"] == "photos_run"
+    assert payload["items"][0]["recommended_next_action"] == "photos_select"
     assert payload["items"][0]["source"] == "apple"
     assert payload["items"][0]["vendor_source"] == "apple_photos"
 
@@ -147,7 +207,7 @@ async def test_mock_mcp_client_photos_library_sets_local_path_availability_false
     mcp = build_server(config=load_config(), state_store=None)
     client = MockMcpClient(mcp)
 
-    payload = await client.call_tool("photos_library", {"action": "list"})
+    payload = await client.call_tool("photos_query", {"action": "list"})
 
     assert payload["count"] == 1
     assert payload["analyze_ready_count"] == 0
@@ -189,15 +249,66 @@ async def test_mock_mcp_client_photos_library_ready_only_filters_to_analyze_read
     mcp = build_server(config=load_config(), state_store=None)
     client = MockMcpClient(mcp)
 
-    payload = await client.call_tool("photos_library", {"action": "ready_only"})
+    payload = await client.call_tool("photos_query", {"action": "ready_only"})
 
     assert payload["action"] == "ready_only"
     assert payload["count"] == 1
     assert payload["analyze_ready_count"] == 1
     assert payload["download_required_count"] == 0
-    assert payload["next_suggested_action"] == "photos_run"
+    assert payload["next_suggested_action"] == "photos_select"
     assert payload["items"][0]["photo_id"] == "photo-local"
     assert payload["items"][0]["local_path_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_mock_mcp_client_photos_library_prefetch_reports_download_counts(monkeypatch) -> None:
+    async def fake_prefetch_tool(*_args, **_kwargs) -> dict:
+        return {
+            "source": "apple",
+            "attempted_count": 3,
+            "already_local_count": 1,
+            "downloaded_count": 1,
+            "failed_count": 1,
+            "failed": [
+                {
+                    "photo_id": "photo-cloud-fail",
+                    "filename": "cloud-fail.heic",
+                    "reason_code": "download_missing_failed",
+                    "fetch_strategy": "download_missing",
+                    "strategies_tried": ["download_missing", "download_missing_photokit"],
+                    "reason_detail": "Apple photo export returned no files via download_missing",
+                }
+            ],
+        }
+
+    fake_module = SimpleNamespace(prefetch_photos=fake_prefetch_tool)
+
+    def fake_load_vendor_server(name: str):
+        assert name == "photo-source"
+        return fake_module
+
+    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fake_load_vendor_server)
+
+    mcp = build_server(config=load_config(), state_store=None)
+    client = MockMcpClient(mcp)
+
+    payload = await client.call_tool(
+        "photos_query",
+        {"action": "prefetch", "options": {"source": "apple", "date_from": "2025-06-30", "date_to": "2025-06-30", "limit": 10}},
+    )
+
+    assert payload["action"] == "prefetch"
+    assert payload["source"] == "apple"
+    assert payload["attempted_count"] == 3
+    assert payload["already_local_count"] == 1
+    assert payload["downloaded_count"] == 1
+    assert payload["failed_count"] == 1
+    assert payload["can_retry_failed"] is True
+    assert payload["next_suggested_action"] == "photos_select"
+    assert payload["failed"][0]["reason_code"] == "download_missing_failed"
+    assert payload["failed"][0]["fetch_strategy"] == "download_missing"
+    assert payload["failed"][0]["strategies_tried"] == ["download_missing", "download_missing_photokit"]
+    assert "returned no files" in payload["failed"][0]["reason_detail"]
 
 
 @pytest.mark.asyncio
@@ -219,14 +330,25 @@ async def test_mock_mcp_client_photos_run_reports_structured_thumbnail_error(mon
             }
         ]
 
+    apple_source = SimpleNamespace(
+        _find_photo=lambda photo_id: SimpleNamespace(uuid=photo_id, path=""),
+        _resolve_photo_path=lambda _photo, download_missing=False: "",
+        _last_fetch_details={
+            "photo-123": {
+                "fetch_strategy": "download_missing_photokit",
+                "reason_code": "download_missing_photokit_permission_denied",
+                "reason_detail": "Could not get authorizaton to use Photos: auth_status = 2",
+                "strategies_tried": ["download_missing", "download_missing_photokit"],
+                "photokit_authorization_denied": True,
+            }
+        },
+    )
+
     photo_source_module = SimpleNamespace(
         get_thumbnail=fake_get_thumbnail,
         get_metadata=fake_get_metadata,
         list_photos=fake_list_photos,
-        _get_apple_source=lambda: SimpleNamespace(
-            _find_photo=lambda photo_id: SimpleNamespace(uuid=photo_id, path=""),
-            _resolve_photo_path=lambda _photo, download_missing=False: "",
-        ),
+        _get_apple_source=lambda: apple_source,
     )
 
     def fake_load_vendor_server(name: str):
@@ -257,19 +379,25 @@ async def test_mock_mcp_client_photos_run_reports_structured_thumbnail_error(mon
     client = MockMcpClient(mcp)
 
     payload = await client.call_tool(
-        "photos_run",
-        {"intent": "analyze", "source": "apple", "photo_id": "photo-123"},
+        "photos_select",
+        {"action": "analyze_photo", "options": {"source": "apple", "photo_id": "photo-123"}},
     )
 
     assert payload["status"] == "blocked"
     assert payload["error_code"] == "selected_photo_not_local"
     assert payload["error_stage"] == "photo_source.get_thumbnail"
     assert payload["readiness_check"] == "photos_thumbnail"
-    assert payload["next_suggested_action"] == "photos_status"
+    assert payload["next_suggested_action"] == "photos_query"
     assert payload["can_retry"] is True
+    assert payload["fetch_strategy"] == "download_missing_photokit"
+    assert payload["fetch_reason_code"] == "download_missing_photokit_permission_denied"
+    assert payload["fetch_strategies_tried"] == ["download_missing", "download_missing_photokit"]
+    assert payload["photokit_authorization_denied"] is True
+    assert "auth_status = 2" in str(payload["fetch_reason_detail"])
     assert "sample.heic" in str(payload["detail"])
     assert "current_photo_local_path_available=false" in str(payload["detail"])
     assert "runtime_photos_thumbnail_status=ok" in str(payload["detail"])
+    assert "fetch_strategy=download_missing_photokit" in str(payload["detail"])
     assert "local_path_available=true" in str(payload["hint"])
 
 
@@ -304,13 +432,13 @@ async def test_mock_mcp_client_photos_run_blocks_video_analyze(monkeypatch) -> N
     client = MockMcpClient(mcp)
 
     payload = await client.call_tool(
-        "photos_run",
-        {"intent": "analyze", "source": "apple", "photo_id": "video-123"},
+        "photos_select",
+        {"action": "analyze_photo", "options": {"source": "apple", "photo_id": "video-123"}},
     )
 
     assert payload["status"] == "blocked"
     assert payload["error_code"] == "unsupported_media_type"
-    assert payload["next_suggested_action"] == "photos_library"
+    assert payload["next_suggested_action"] == "photos_query"
     assert payload["can_retry"] is False
 
 
@@ -359,14 +487,16 @@ async def test_mock_mcp_client_photos_run_waits_for_local_download_and_completes
     client = MockMcpClient(mcp)
 
     payload = await client.call_tool(
-        "photos_run",
+        "photos_select",
         {
-            "intent": "analyze",
-            "source": "apple",
-            "photo_id": "photo-123",
-            "wait_for_local": True,
-            "wait_timeout_seconds": 1.0,
-            "wait_poll_interval_seconds": 0.01,
+            "action": "analyze_photo",
+            "options": {
+                "source": "apple",
+                "photo_id": "photo-123",
+                "wait_for_local": True,
+                "wait_timeout_seconds": 1.0,
+                "wait_poll_interval_seconds": 0.01,
+            },
         },
     )
 
@@ -375,11 +505,15 @@ async def test_mock_mcp_client_photos_run_waits_for_local_download_and_completes
     assert payload["result_available"] is False
     assert payload["wait_status"] == "waiting_for_local_download"
 
-    await asyncio.sleep(0.05)
+    summary = None
+    for _ in range(20):
+        await asyncio.sleep(0.02)
+        summary = await client.call_tool("photos_query", {"action": "result_summary", "options": {"run_id": payload["run_id"]}})
+        if summary["status"] == "completed":
+            break
+    result = await client.call_tool("photos_query", {"action": "result_detail", "options": {"run_id": payload["run_id"]}})
 
-    summary = await client.call_tool("photos_result", {"action": "summary", "run_id": payload["run_id"]})
-    result = await client.call_tool("photos_result", {"action": "result", "run_id": payload["run_id"]})
-
+    assert summary is not None
     assert summary["status"] == "completed"
     assert summary["result_available"] is True
     assert result["action"] == "result"
@@ -439,14 +573,16 @@ async def test_mock_mcp_client_photos_run_wait_for_local_continues_despite_permi
     client = MockMcpClient(mcp)
 
     payload = await client.call_tool(
-        "photos_run",
+        "photos_select",
         {
-            "intent": "analyze",
-            "source": "apple",
-            "photo_id": "photo-123",
-            "wait_for_local": True,
-            "wait_timeout_seconds": 0.01,
-            "wait_poll_interval_seconds": 0.01,
+            "action": "analyze_photo",
+            "options": {
+                "source": "apple",
+                "photo_id": "photo-123",
+                "wait_for_local": True,
+                "wait_timeout_seconds": 0.01,
+                "wait_poll_interval_seconds": 0.01,
+            },
         },
     )
 
@@ -456,7 +592,7 @@ async def test_mock_mcp_client_photos_run_wait_for_local_continues_despite_permi
 
     await asyncio.sleep(0.05)
 
-    summary = await client.call_tool("photos_result", {"action": "summary", "run_id": payload["run_id"]})
+    summary = await client.call_tool("photos_query", {"action": "result_summary", "options": {"run_id": payload["run_id"]}})
 
     assert summary["status"] == "failed"
     assert summary["error_code"] == "local_download_timeout"
@@ -497,27 +633,29 @@ async def test_mock_mcp_client_photos_run_wait_for_local_can_cancel(monkeypatch)
     client = MockMcpClient(mcp)
 
     payload = await client.call_tool(
-        "photos_run",
+        "photos_select",
         {
-            "intent": "analyze",
-            "source": "apple",
-            "photo_id": "photo-123",
-            "wait_for_local": True,
-            "wait_timeout_seconds": 30.0,
-            "wait_poll_interval_seconds": 5.0,
+            "action": "analyze_photo",
+            "options": {
+                "source": "apple",
+                "photo_id": "photo-123",
+                "wait_for_local": True,
+                "wait_timeout_seconds": 30.0,
+                "wait_poll_interval_seconds": 5.0,
+            },
         },
     )
 
     assert payload["status"] == "running"
     await asyncio.wait_for(started_wait.wait(), timeout=1.0)
 
-    cancel = await client.call_tool("photos_result", {"action": "cancel", "run_id": payload["run_id"]})
+    cancel = await client.call_tool("photos_query", {"action": "cancel", "options": {"run_id": payload["run_id"]}})
     assert cancel["action"] == "cancel"
 
     await asyncio.sleep(0.05)
 
-    summary = await client.call_tool("photos_result", {"action": "summary", "run_id": payload["run_id"]})
-    result = await client.call_tool("photos_result", {"action": "result", "run_id": payload["run_id"]})
+    summary = await client.call_tool("photos_query", {"action": "result_summary", "options": {"run_id": payload["run_id"]}})
+    result = await client.call_tool("photos_query", {"action": "result_detail", "options": {"run_id": payload["run_id"]}})
     snapshot = state_store.snapshot()
 
     assert summary["status"] == "cancelled"
@@ -569,14 +707,16 @@ async def test_mock_mcp_client_photos_run_wait_for_local_returns_immediately_for
 
     started = time.monotonic()
     payload = await client.call_tool(
-        "photos_run",
+        "photos_select",
         {
-            "intent": "analyze",
-            "source": "apple",
-            "photo_id": "photo-123",
-            "wait_for_local": True,
-            "wait_timeout_seconds": 30.0,
-            "wait_poll_interval_seconds": 5.0,
+            "action": "analyze_photo",
+            "options": {
+                "source": "apple",
+                "photo_id": "photo-123",
+                "wait_for_local": True,
+                "wait_timeout_seconds": 30.0,
+                "wait_poll_interval_seconds": 5.0,
+            },
         },
     )
     elapsed = time.monotonic() - started

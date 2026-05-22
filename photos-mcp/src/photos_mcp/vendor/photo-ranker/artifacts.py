@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 from pathlib import Path
 
 from PIL import Image
@@ -14,14 +15,60 @@ from photos_mcp.runtime_paths import photo_ranker_runtime_root
 DEFAULT_ARTIFACT_ROOT = photo_ranker_runtime_root() / "artifacts"
 
 
+def job_artifact_root(job_id: str) -> Path:
+    """Return the per-job artifact directory, creating it if needed."""
+    job_root = DEFAULT_ARTIFACT_ROOT / job_id
+    job_root.mkdir(parents=True, exist_ok=True)
+    return job_root
+
+
+def job_results_path(job_id: str) -> Path:
+    """Return the canonical JSON result path for a job."""
+    return job_artifact_root(job_id) / "results.json"
+
+
 def ensure_job_dirs(job_id: str) -> tuple[Path, Path]:
     """Ensure per-job preview and face directories exist."""
-    job_root = DEFAULT_ARTIFACT_ROOT / job_id
+    job_root = job_artifact_root(job_id)
     previews = job_root / "previews"
     faces = job_root / "faces"
     previews.mkdir(parents=True, exist_ok=True)
     faces.mkdir(parents=True, exist_ok=True)
     return previews, faces
+
+
+def save_job_results(
+    job_id: str,
+    *,
+    job: dict | None = None,
+    summary: dict | None = None,
+    results: list[dict] | None = None,
+    assets: dict[str, dict] | None = None,
+) -> str:
+    """Persist a JSON snapshot of job metadata and ranked results."""
+    asset_map = assets or {}
+    merged_results: list[dict] = []
+    for result in results or []:
+        item = dict(result)
+        photo_id = str(item.get("photo_id") or "")
+        asset = asset_map.get(photo_id) or {}
+        if asset:
+            item["preview_path"] = asset.get("preview_path", "")
+            item["source_photo_path"] = asset.get("source_photo_path", "")
+            item["selected"] = bool(asset.get("selected", False))
+            item["note"] = asset.get("note", "")
+            item["tags"] = list(asset.get("tags", []))
+        merged_results.append(item)
+
+    payload = {
+        "job_id": job_id,
+        "job": dict(job or {}),
+        "summary": dict(summary or {}),
+        "results": merged_results,
+    }
+    dest = job_results_path(job_id)
+    dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(dest)
 
 
 def save_preview(job_id: str, photo_id: str, image_b64: str, max_size: int = 512) -> str:

@@ -166,6 +166,47 @@ def search_photos(
 
 
 @mcp.tool()
+def prefetch_photos(
+    source: str,
+    path_or_bucket: str = "",
+    photo_ids: list[str] | None = None,
+    date_from: str = "",
+    date_to: str = "",
+    album: str = "",
+    person: str = "",
+    limit: int = 100,
+) -> dict:
+    """필터로 선택된 사진 원본을 미리 로컬에 확보합니다.
+
+    Args:
+        source: 소스 종류 — 현재는 "apple" 중심
+        path_or_bucket: local/gcs 호환용 자리, apple 에서는 사용하지 않음
+        photo_ids: 특정 사진 ID 목록 (선택)
+        date_from: 시작 날짜 (ISO 형식, 선택)
+        date_to: 종료 날짜 (ISO 형식, 선택)
+        album: 앨범 이름 필터 (Apple Photos 전용, 선택)
+        person: 인물 이름 필터 (Apple Photos 전용, 선택)
+        limit: 최대 처리 수
+    """
+    src = _resolve_source(source, path_or_bucket)
+    if not hasattr(src, "prefetch_photos"):
+        raise ValueError(f"prefetch_photos is not supported for source: {source}")
+
+    kwargs: dict = {
+        "photo_ids": photo_ids or None,
+        "date_from": date_from or None,
+        "date_to": date_to or None,
+        "limit": limit,
+    }
+    if album:
+        kwargs["album"] = album
+    if person and source == "apple":
+        kwargs["person"] = person
+
+    return src.prefetch_photos(**kwargs)
+
+
+@mcp.tool()
 def export_photos(
     source: str,
     photo_ids: list[str],

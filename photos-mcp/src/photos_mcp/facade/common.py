@@ -31,6 +31,61 @@ def parse_json_list(value: str) -> list[Any]:
     return []
 
 
+def _structured_error_fields(payload: dict[str, Any]) -> dict[str, Any] | None:
+    nested_error = parse_payload(payload.get("error_message"))
+    nested = nested_error if isinstance(nested_error, dict) else {}
+
+    error = payload.get("error") or nested.get("error")
+    if not error:
+        return None
+
+    error_fields: dict[str, Any] = {
+        "status": "failed",
+        "terminal": True,
+        "summary_available": True,
+        "result_available": False,
+        "error": str(error),
+    }
+
+    error_code = payload.get("error_code") or payload.get("code") or nested.get("error_code") or nested.get("code")
+    if error_code:
+        error_fields["error_code"] = str(error_code)
+
+    detail = payload.get("detail") or payload.get("details") or nested.get("detail") or nested.get("details")
+    if detail:
+        error_fields["detail"] = str(detail)
+
+    hint = payload.get("hint") or nested.get("hint")
+    if hint:
+        error_fields["hint"] = str(hint)
+
+    fetch_strategy = payload.get("fetch_strategy") or nested.get("fetch_strategy")
+    if fetch_strategy:
+        error_fields["fetch_strategy"] = str(fetch_strategy)
+
+    fetch_reason_code = payload.get("fetch_reason_code") or nested.get("fetch_reason_code")
+    if fetch_reason_code:
+        error_fields["fetch_reason_code"] = str(fetch_reason_code)
+
+    fetch_reason_detail = payload.get("fetch_reason_detail") or nested.get("fetch_reason_detail")
+    if fetch_reason_detail:
+        error_fields["fetch_reason_detail"] = str(fetch_reason_detail)
+
+    strategies_tried = (
+        payload.get("fetch_strategies_tried")
+        or payload.get("strategies_tried")
+        or nested.get("fetch_strategies_tried")
+        or nested.get("strategies_tried")
+    )
+    if isinstance(strategies_tried, list) and strategies_tried:
+        error_fields["fetch_strategies_tried"] = [str(item) for item in strategies_tried]
+
+    if bool(payload.get("photokit_authorization_denied") or nested.get("photokit_authorization_denied")):
+        error_fields["photokit_authorization_denied"] = True
+
+    return error_fields
+
+
 async def call_vendor(server_name: str, function_name: str, *args, **kwargs) -> Any:
     module = load_vendor_server(server_name)
     function = getattr(module, function_name)
@@ -91,4 +146,9 @@ def wrap_run_payload(payload: Any, *, intent: str, run_id: str = "") -> dict[str
     normalized.setdefault("terminal", normalized["status"] in TERMINAL_JOB_STATUSES)
     normalized.setdefault("summary_available", normalized["terminal"])
     normalized.setdefault("result_available", normalized["status"] == "completed")
+
+    error_fields = _structured_error_fields(normalized)
+    if error_fields:
+        normalized.update(error_fields)
+
     return normalized

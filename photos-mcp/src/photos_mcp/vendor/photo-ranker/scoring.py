@@ -12,13 +12,14 @@ from .models import (
 )
 
 # Weight configuration
-# Retuned 2026-03-30: quality now has better spread (5-component technical
-# + sigmoid aesthetic), and face detection fires more reliably (upscale retry
-# + lower confidence), so shift weight from family→quality.
-WEIGHT_QUALITY = 0.30
-WEIGHT_FAMILY = 0.25
-WEIGHT_EVENT = 0.25
-WEIGHT_UNIQUENESS = 0.20
+# Retuned 2026-05-22: keep "general" usable for family/newborn detail shots
+# even when face detection does not fire. General now leans more on overall
+# image quality + uniqueness, while person-specific preference stays in the
+# dedicated "person" profile.
+WEIGHT_QUALITY = 0.35
+WEIGHT_FAMILY = 0.15
+WEIGHT_EVENT = 0.20
+WEIGHT_UNIQUENESS = 0.30
 
 DEFAULT_SELECTION_PROFILE = "general"
 SELECTION_PROFILES = ("general", "person", "landscape")

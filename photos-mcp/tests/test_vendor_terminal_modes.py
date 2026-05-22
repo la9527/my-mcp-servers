@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import sys
+from pathlib import Path
+from types import SimpleNamespace
 
 from photos_mcp.vendor_loader import load_vendor_server
 
@@ -102,3 +104,244 @@ def test_photo_source_terminal_helper_disables_bytecode(monkeypatch) -> None:
 
     assert captured["env_overrides"]["PHOTO_SOURCE_APPLE_FETCH_MODE"] == "direct"
     assert captured["env_overrides"]["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_photo_ranker_terminal_mode_uses_direct_export_before_helper(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("PHOTO_RANKER_APPLE_FETCH_MODE", "terminal")
+    load_vendor_server("photo-ranker")
+    sources_module = importlib.import_module("photos_mcp_vendor_photo_ranker.sources")
+    monkeypatch.setattr(sources_module, "_APPLE_FETCH_MODE", "terminal")
+    monkeypatch.setattr(sources_module, "_APPLE_TERMINAL_HELPER_DISABLED", False)
+    monkeypatch.setattr(sources_module, "_APPLE_PHOTOKIT_DISABLED", False)
+
+    helper_called = False
+    exported_path = tmp_path / "ranker-direct.jpg"
+    exported_path.write_text("data", encoding="utf-8")
+
+    class FakeExporter:
+        def __init__(self, photo):
+            self.photo = photo
+
+        def export(self, *_args, **_kwargs):
+            return SimpleNamespace(exported=[str(exported_path)])
+
+    monkeypatch.setitem(
+        sys.modules,
+        "osxphotos",
+        SimpleNamespace(
+            PhotoExporter=FakeExporter,
+            ExportOptions=lambda **kwargs: kwargs,
+        ),
+    )
+
+    def fake_run_in_terminal(**kwargs):
+        nonlocal helper_called
+        helper_called = True
+        return {"path": "/tmp/helper.jpg"}
+
+    monkeypatch.setattr(sources_module, "run_in_terminal", fake_run_in_terminal)
+
+    result = sources_module._download_missing_apple_photo(SimpleNamespace(uuid="photo-1"))
+
+    assert result == str(exported_path)
+    assert helper_called is False
+
+
+def test_photo_ranker_terminal_mode_falls_back_to_helper_after_direct_failures(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("PHOTO_RANKER_APPLE_FETCH_MODE", "terminal")
+    load_vendor_server("photo-ranker")
+    sources_module = importlib.import_module("photos_mcp_vendor_photo_ranker.sources")
+    monkeypatch.setattr(sources_module, "_APPLE_FETCH_MODE", "terminal")
+    monkeypatch.setattr(sources_module, "_APPLE_TERMINAL_HELPER_DISABLED", False)
+    monkeypatch.setattr(sources_module, "_APPLE_PHOTOKIT_DISABLED", False)
+
+    helper_path = tmp_path / "ranker-helper.jpg"
+    helper_path.write_text("data", encoding="utf-8")
+
+    class FakeExporter:
+        def __init__(self, photo):
+            self.photo = photo
+
+        def export(self, *_args, **_kwargs):
+            return SimpleNamespace(exported=[])
+
+    monkeypatch.setitem(
+        sys.modules,
+        "osxphotos",
+        SimpleNamespace(
+            PhotoExporter=FakeExporter,
+            ExportOptions=lambda **kwargs: kwargs,
+        ),
+    )
+
+    monkeypatch.setattr(
+        sources_module,
+        "run_in_terminal",
+        lambda **kwargs: {"path": str(helper_path)},
+    )
+
+    result = sources_module._download_missing_apple_photo(SimpleNamespace(uuid="photo-2"))
+
+    assert result == str(helper_path)
+
+
+def test_photo_source_terminal_mode_uses_direct_export_before_helper(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("PHOTO_SOURCE_APPLE_FETCH_MODE", "terminal")
+    load_vendor_server("photo-source")
+    apple_photos_module = importlib.import_module("photos_mcp_vendor_photo_source.sources.apple_photos")
+
+    helper_called = False
+    exported_path = tmp_path / "source-direct.jpg"
+    exported_path.write_text("data", encoding="utf-8")
+
+    class FakeExporter:
+        def __init__(self, photo):
+            self.photo = photo
+
+        def export(self, *_args, **_kwargs):
+            return SimpleNamespace(exported=[str(exported_path)])
+
+    monkeypatch.setitem(
+        sys.modules,
+        "osxphotos",
+        SimpleNamespace(
+            PhotoExporter=FakeExporter,
+            ExportOptions=lambda **kwargs: kwargs,
+        ),
+    )
+
+    def fake_run_in_terminal(**kwargs):
+        nonlocal helper_called
+        helper_called = True
+        return {"path": "/tmp/helper.jpg"}
+
+    monkeypatch.setattr(apple_photos_module, "run_in_terminal", fake_run_in_terminal)
+
+    source = apple_photos_module.ApplePhotosSource()
+    result = source._download_missing_photo(SimpleNamespace(uuid="photo-3"))
+
+    assert result == str(exported_path)
+    assert helper_called is False
+
+
+def test_photo_source_terminal_mode_falls_back_to_helper_after_direct_failures(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("PHOTO_SOURCE_APPLE_FETCH_MODE", "terminal")
+    load_vendor_server("photo-source")
+    apple_photos_module = importlib.import_module("photos_mcp_vendor_photo_source.sources.apple_photos")
+
+    helper_path = tmp_path / "source-helper.jpg"
+    helper_path.write_text("data", encoding="utf-8")
+
+    class FakeExporter:
+        def __init__(self, photo):
+            self.photo = photo
+
+        def export(self, *_args, **_kwargs):
+            return SimpleNamespace(exported=[])
+
+    monkeypatch.setitem(
+        sys.modules,
+        "osxphotos",
+        SimpleNamespace(
+            PhotoExporter=FakeExporter,
+            ExportOptions=lambda **kwargs: kwargs,
+        ),
+    )
+
+    monkeypatch.setattr(
+        apple_photos_module,
+        "run_in_terminal",
+        lambda **kwargs: {"path": str(helper_path)},
+    )
+
+    source = apple_photos_module.ApplePhotosSource()
+    result = source._download_missing_photo(SimpleNamespace(uuid="photo-4"))
+
+    assert result == str(helper_path)
+
+
+def test_photo_source_prefetch_photos_reports_local_downloaded_and_failed(monkeypatch, tmp_path: Path) -> None:
+    load_vendor_server("photo-source")
+    apple_photos_module = importlib.import_module("photos_mcp_vendor_photo_source.sources.apple_photos")
+
+    local_photo = SimpleNamespace(uuid="photo-local", filename="local.heic", path="/tmp/local.heic")
+    downloaded_photo = SimpleNamespace(uuid="photo-downloaded", filename="downloaded.heic", path="")
+    failed_photo = SimpleNamespace(uuid="photo-failed", filename="failed.heic", path="")
+
+    source = apple_photos_module.ApplePhotosSource()
+    source._db = SimpleNamespace(photos=lambda: [local_photo, downloaded_photo, failed_photo])
+
+    downloaded_path = tmp_path / "downloaded.heic"
+    downloaded_path.write_text("data", encoding="utf-8")
+
+    def fake_download_missing(photo):
+        if photo.uuid == "photo-downloaded":
+            return str(downloaded_path)
+        if photo.uuid == "photo-failed":
+            return None
+        raise AssertionError(f"unexpected download request for {photo.uuid}")
+
+    monkeypatch.setattr(source, "_download_missing_photo", fake_download_missing)
+
+    result = source.prefetch_photos(limit=10)
+
+    assert result["attempted_count"] == 3
+    assert result["already_local_count"] == 1
+    assert result["downloaded_count"] == 1
+    assert result["failed_count"] == 1
+    assert result["downloaded"][0]["photo_id"] == "photo-downloaded"
+    assert result["failed"][0]["photo_id"] == "photo-failed"
+    assert result["failed"][0]["reason_code"] == "prefetch_failed"
+
+
+def test_photo_source_prefetch_photos_records_fetch_reason_details(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("PHOTO_SOURCE_APPLE_FETCH_MODE", "direct")
+    load_vendor_server("photo-source")
+    apple_photos_module = importlib.import_module("photos_mcp_vendor_photo_source.sources.apple_photos")
+
+    failed_photo = SimpleNamespace(uuid="photo-failed", filename="failed.heic", path="")
+
+    class FakeExporter:
+        def __init__(self, photo):
+            self.photo = photo
+
+        def export(self, *_args, **kwargs):
+            options = kwargs["options"]
+            if options.get("use_photokit"):
+                raise RuntimeError("Could not get authorizaton to use Photos: auth_status = 2")
+            return SimpleNamespace(exported=[])
+
+    monkeypatch.setitem(
+        sys.modules,
+        "osxphotos",
+        SimpleNamespace(
+            PhotoExporter=FakeExporter,
+            ExportOptions=lambda **kwargs: kwargs,
+        ),
+    )
+
+    source = apple_photos_module.ApplePhotosSource()
+    source._db = SimpleNamespace(photos=lambda: [failed_photo])
+    monkeypatch.setattr(source, "_get_cache_dir", lambda: tmp_path)
+
+    result = source.prefetch_photos(limit=10)
+
+    assert result["attempted_count"] == 1
+    assert result["failed_count"] == 1
+    assert result["downloaded_count"] == 0
+    assert result["already_local_count"] == 0
+    assert result["failed"][0]["photo_id"] == "photo-failed"
+    assert result["failed"][0]["reason_code"] == "download_missing_photokit_permission_denied"
+    assert result["failed"][0]["fetch_strategy"] == "download_missing_photokit"
+    assert result["failed"][0]["strategies_tried"] == ["download_missing", "download_missing_photokit"]
+    assert result["failed"][0]["photokit_authorization_denied"] is True
+    assert "auth_status = 2" in result["failed"][0]["reason_detail"]

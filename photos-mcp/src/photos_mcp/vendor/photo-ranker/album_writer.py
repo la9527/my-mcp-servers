@@ -271,6 +271,8 @@ class AlbumWriter:
             "added": added,
             "failed": failed,
             "errors": errors,
+            "touched_album_names": [album_name],
+            "created_album": bool(album_info.get("created", False)),
         }
 
     def organize_by_classification(

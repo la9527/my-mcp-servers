@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from typing import Any
 
 import AppKit
@@ -7,6 +8,7 @@ import objc
 from AppKit import (
     NSApp,
     NSAlert,
+    NSAlertFirstButtonReturn,
     NSAlertStyleCritical,
     NSAlertStyleInformational,
     NSAlertStyleWarning,
@@ -42,6 +44,18 @@ _POPOVER_HEIGHT = 640.0
 _SIDE_MARGIN = 12.0
 _CARD_WIDTH = _POPOVER_WIDTH - (_SIDE_MARGIN * 2.0)
 _RECENT_SCROLL_HEIGHT = 214.0
+_PRELIGHT_RECHECK_DELAY_SECONDS = 12.0
+_PRELIGHT_RECHECK_MAX_ATTEMPTS = 3
+
+
+def _restart_guidance_check(checks: list[Any], *, retry_attempts: int) -> Any | None:
+    if retry_attempts < 1:
+        return None
+
+    for check in checks:
+        if getattr(check, "key", "") == "photos_permission" and getattr(check, "status", "") != "ok":
+            return check
+    return None
 
 
 def _status_color(status: str) -> Any:
@@ -498,6 +512,8 @@ class PhotosMcpMenuController(NSObject):
         self._popover_controller = None
         self._timer = None
         self._startup_timer = None
+        self._preflight_retry_timer = None
+        self._preflight_retry_attempts = 0
         return self
 
     def install(self) -> None:
@@ -532,6 +548,9 @@ class PhotosMcpMenuController(NSObject):
         if self._startup_timer is not None:
             self._startup_timer.invalidate()
             self._startup_timer = None
+        if self._preflight_retry_timer is not None:
+            self._preflight_retry_timer.invalidate()
+            self._preflight_retry_timer = None
         if self._timer is not None:
             self._timer.invalidate()
             self._timer = None
@@ -563,7 +582,8 @@ class PhotosMcpMenuController(NSObject):
         if self._startup_timer is not None:
             self._startup_timer.invalidate()
             self._startup_timer = None
-        self.runPreflightChecks_(None)
+        checks = self._run_preflight_checks(show_success=False)
+        self._schedule_preflight_retry_if_needed(checks)
         if self._config.start_daemon_on_launch:
             self._daemon_controller.start()
         self.rebuildMenu()
@@ -606,6 +626,27 @@ class PhotosMcpMenuController(NSObject):
         self.rebuildMenu()
 
     def runPreflightChecks_(self, sender) -> None:
+        self._preflight_retry_attempts = 0
+        if self._preflight_retry_timer is not None:
+            self._preflight_retry_timer.invalidate()
+            self._preflight_retry_timer = None
+        checks = self._run_preflight_checks(show_success=sender is not None)
+        self._schedule_preflight_retry_if_needed(checks)
+
+    def rerunPreflightChecks_(self, _timer) -> None:
+        if self._preflight_retry_timer is not None:
+            self._preflight_retry_timer.invalidate()
+            self._preflight_retry_timer = None
+
+        checks = self._run_preflight_checks(show_success=False)
+        restart_check = _restart_guidance_check(checks, retry_attempts=self._preflight_retry_attempts)
+        if restart_check is not None:
+            self._preflight_retry_attempts = _PRELIGHT_RECHECK_MAX_ATTEMPTS
+            self._show_restart_guidance_alert(restart_check)
+            return
+        self._schedule_preflight_retry_if_needed(checks)
+
+    def _run_preflight_checks(self, *, show_success: bool) -> list[Any]:
         checks = [
             preflight_check_snapshot_from_payload(
                 {
@@ -621,13 +662,44 @@ class PhotosMcpMenuController(NSObject):
         ]
         self._state_store.replace_preflight_checks(checks)
         self.rebuildMenu()
-        if sender is not None:
+        if show_success:
             self._show_preflight_alert(checks, show_success=True)
+        return checks
+
+    def _schedule_preflight_retry_if_needed(self, checks: list[Any]) -> None:
+        if self._preflight_retry_attempts >= _PRELIGHT_RECHECK_MAX_ATTEMPTS:
+            return
+        if all(check.status == "ok" for check in checks):
+            return
+        self._preflight_retry_attempts += 1
+        self._preflight_retry_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _PRELIGHT_RECHECK_DELAY_SECONDS,
+            self,
+            "rerunPreflightChecks:",
+            None,
+            False,
+        )
 
     def quitApp_(self, _sender) -> None:
         self._daemon_controller.close()
         self.teardown()
         NSApp.terminate_(None)
+
+    def restartApp_(self, _sender) -> None:
+        bundle_path = str(self._config.bundle_path)
+        subprocess.Popen(
+            [
+                "/bin/sh",
+                "-c",
+                'sleep 1; exec /usr/bin/open "$1"',
+                "photos-mcp-relaunch",
+                bundle_path,
+            ],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.quitApp_(None)
 
     def _title_for_status(self, status: str) -> str:
         if status == "busy":
@@ -666,11 +738,36 @@ class PhotosMcpMenuController(NSObject):
         else:
             alert.setMessageText_("PhotosMcp checks passed")
             alert.setAlertStyle_(NSAlertStyleInformational)
-            alert.setInformativeText_("Photos library read and automation checks completed successfully.")
+            alert.setInformativeText_(
+                "Photos permission, library read, automation, and thumbnail checks completed successfully."
+            )
 
         NSApp.activateIgnoringOtherApps_(True)
         alert.addButtonWithTitle_("OK")
         alert.runModal()
+
+    def _show_restart_guidance_alert(self, check) -> None:
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Restart PhotosMcp to finish Photos access")
+        alert.setAlertStyle_(NSAlertStyleCritical if check.status == CHECK_ERROR else NSAlertStyleWarning)
+
+        lines = [
+            check.summary,
+            "",
+            "If you just approved the macOS Photos permission popup, PhotosMcp may still need a full relaunch to refresh app-owned access.",
+            "Choose Restart PhotosMcp now, or quit and reopen the app from Finder or Dock.",
+        ]
+        if check.detail:
+            lines.extend(["", f"Detail: {check.detail}"])
+        if check.hint:
+            lines.extend([f"Hint: {check.hint}"])
+
+        alert.setInformativeText_("\n".join(lines))
+        NSApp.activateIgnoringOtherApps_(True)
+        alert.addButtonWithTitle_("Restart PhotosMcp")
+        alert.addButtonWithTitle_("Later")
+        if alert.runModal() == NSAlertFirstButtonReturn:
+            self.restartApp_(None)
 
 
 def run_menu_app(

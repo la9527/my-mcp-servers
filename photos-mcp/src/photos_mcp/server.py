@@ -8,10 +8,10 @@ from starlette.responses import JSONResponse
 from starlette.applications import Starlette
 
 from photos_mcp.config import load_config
-from photos_mcp.facade import photos_library as facade_photos_library
-from photos_mcp.facade import photos_result as facade_photos_result
-from photos_mcp.facade import photos_run as facade_photos_run
-from photos_mcp.facade import photos_status as facade_photos_status
+from photos_mcp.facade.public_tools import photos_query as facade_photos_query
+from photos_mcp.facade.public_tools import photos_select as facade_photos_select
+from photos_mcp.facade.public_tools import photos_workflow as facade_photos_workflow
+from photos_mcp.facade.public_tools import photos_write as facade_photos_write
 from photos_mcp.state import PhotosMcpStateStore, TERMINAL_JOB_STATUSES, job_snapshot_from_payload
 
 
@@ -125,136 +125,37 @@ def build_server(
     )
 
     @mcp.tool()
-    def photos_status(view: str = "summary") -> dict[str, Any]:
-        """Return app, transport, capability, and current/latest run status."""
+    async def photos_query(action: str = "status", options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Read-only diagnostics, library browsing, inspection, and result lookup. Use action plus action-specific options."""
 
-        return facade_photos_status(health_payload=build_health_payload(config, state_store), view=view)
-
-    @mcp.tool()
-    async def photos_library(
-        action: str = "list",
-        source: str = "apple",
-        photo_id: str = "",
-        query: str = "",
-        path_or_bucket: str = "",
-        album: str = "",
-        person: str = "",
-        date_from: str = "",
-        date_to: str = "",
-        limit: int = 20,
-        include_thumbnail: bool = False,
-        include_metadata: bool = False,
-        max_size: int = 512,
-    ) -> dict[str, Any]:
-        """Browse, search, or inspect photos with app defaults and compact options."""
-
-        return await facade_photos_library(
-            action=action,
-            source=source,
-            photo_id=photo_id,
-            query=query,
-            path_or_bucket=path_or_bucket,
-            album=album,
-            person=person,
-            date_from=date_from,
-            date_to=date_to,
-            limit=limit,
-            include_thumbnail=include_thumbnail,
-            include_metadata=include_metadata,
-            max_size=max_size,
-        )
-
-    @mcp.tool()
-    async def photos_run(
-        intent: str = "classify",
-        source: str = "apple",
-        source_path: str = "",
-        photo_id: str = "",
-        path_or_bucket: str = "",
-        album: str = "",
-        person: str = "",
-        date_from: str = "",
-        date_to: str = "",
-        limit: int = 50,
-        selection_profile: str = "general",
-        prompt: str = "",
-        include_faces: bool = False,
-        output_dir: str = "",
-        photo_paths_json: str = "[]",
-        results_json: str = "[]",
-        target_album_name: str = "",
-        writeback_mode: str = "review",
-        exclude_screenshots: bool = False,
-        album_prefix: str = "AI 분류",
-        folder: str = "",
-        min_score: float = 0.0,
-        group_by_date: bool = False,
-        max_size: int = 512,
-        wait_for_local: bool = False,
-        wait_timeout_seconds: float = 120.0,
-        wait_poll_interval_seconds: float = 3.0,
-        run_id: str = "",
-    ) -> dict[str, Any]:
-        """Run high-level analyze, classify, curate, organize, or import workflows."""
-
-        payload = await facade_photos_run(
+        payload = await facade_photos_query(
             state_store=state_store,
-            intent=intent,
-            source=source,
-            source_path=source_path,
-            photo_id=photo_id,
-            path_or_bucket=path_or_bucket,
-            album=album,
-            person=person,
-            date_from=date_from,
-            date_to=date_to,
-            limit=limit,
-            selection_profile=selection_profile,
-            prompt=prompt,
-            include_faces=include_faces,
-            output_dir=output_dir,
-            photo_paths_json=photo_paths_json,
-            results_json=results_json,
-            target_album_name=target_album_name,
-            writeback_mode=writeback_mode,
-            exclude_screenshots=exclude_screenshots,
-            album_prefix=album_prefix,
-            folder=folder,
-            min_score=min_score,
-            group_by_date=group_by_date,
-            max_size=max_size,
-            wait_for_local=wait_for_local,
-            wait_timeout_seconds=wait_timeout_seconds,
-            wait_poll_interval_seconds=wait_poll_interval_seconds,
-            run_id=run_id,
+            health_payload=build_health_payload(config, state_store),
+            action=action,
+            options=options,
         )
-        if intent.strip().lower() == "analyze":
-            return payload
-        return _ingest_tool_response("photos_run", payload, state_store)
+        return _ingest_tool_response("photos_query", payload, state_store)
 
     @mcp.tool()
-    async def photos_result(
-        action: str = "summary",
-        run_id: str = "latest",
-        top_n: int = 20,
-        output_dir: str = "",
-        min_score: float = 0.0,
-        group_by_date: bool = False,
-        mode: str = "copy",
-    ) -> dict[str, Any]:
-        """Read summaries, results, selected items, artifacts, or cancel the latest run."""
+    async def photos_select(action: str = "select_best", options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Analyze and select photos without writing albums or files. Use action plus action-specific options."""
 
-        payload = await facade_photos_result(
-            state_store=state_store,
-            action=action,
-            run_id=run_id,
-            top_n=top_n,
-            output_dir=output_dir,
-            min_score=min_score,
-            group_by_date=group_by_date,
-            mode=mode,
-        )
-        return _ingest_tool_response("photos_result", payload, state_store)
+        payload = await facade_photos_select(state_store=state_store, action=action, options=options)
+        return _ingest_tool_response("photos_select", payload, state_store)
+
+    @mcp.tool()
+    async def photos_write(action: str = "add_selected_to_album", options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Write selected photos, photo ids, imports, exports, cleanup, or category organization through explicit actions. Use organize_by_category only for category albums. Do not pass target_album_name there."""
+
+        payload = await facade_photos_write(state_store=state_store, action=action, options=options)
+        return _ingest_tool_response("photos_write", payload, state_store)
+
+    @mcp.tool()
+    async def photos_workflow(action: str = "curate_to_album", options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Run one-shot workflows. Use curate_to_album for exactly one target album with scope filters plus target_album_name. Do not pass selected_photo_ids or prior result payloads. Use category workflow only when category albums are desired."""
+
+        payload = await facade_photos_workflow(state_store=state_store, action=action, options=options)
+        return _ingest_tool_response("photos_workflow", payload, state_store)
 
     @mcp.custom_route(config.health_path, methods=["GET"], include_in_schema=False)
     async def http_health_status(_request) -> JSONResponse:

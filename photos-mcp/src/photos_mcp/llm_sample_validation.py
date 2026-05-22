@@ -113,7 +113,7 @@ def sample_catalog() -> list[SampleScenario]:
             sample_id="status-summary",
             title="연결 상태 요약",
             user_prompt="photos-mcp 연결 상태와 현재 준비 상태를 알려줘.",
-            expected_tools=["photos_status"],
+            expected_tools=["photos_query(action=status)"],
             policy=SelectionPolicy(selection_profile="general", quality_top_percent=0, exclude_screenshots=False),
             prerequisites="app 이 실행 중이고 MCP endpoint 가 열려 있어야 한다.",
         ),
@@ -121,7 +121,7 @@ def sample_catalog() -> list[SampleScenario]:
             sample_id="apple-apr16to30-best-to-album",
             title="작년 4월 16일~4월 30일 잘 나온 사진 앨범 저장",
             user_prompt="iCloud 사진 중 작년 4월 16일~작년 4월30일 사진들만 잘 나온 사진들만 앨범을 따로 저장해 만들어줘.",
-            expected_tools=["photos_run", "photos_run"],
+            expected_tools=["photos_workflow(action=curate_to_album)", "photos_write(action=cleanup_album)"],
             policy=SelectionPolicy(selection_profile="general", quality_top_percent=30, exclude_screenshots=True),
             prerequisites="Apple Photos 에 작년 4월 16일~4월 30일 샘플이 있고 album write-back 이 허용되어야 한다.",
         ),
@@ -129,7 +129,7 @@ def sample_catalog() -> list[SampleScenario]:
             sample_id="local-samplephotos-best-to-album",
             title="SamplePhotos 잘 나온 사진 iCloud 앨범 저장",
             user_prompt="로컬 ~/SamplePhotos 디렉토리에 잘 나온 사진들을 골라서 iCloud 에 적절한 이름으로 앨범을 만들어 저장해줘.",
-            expected_tools=["photos_run", "photos_result", "photos_run", "photos_run"],
+            expected_tools=["photos_select(action=select_best)", "photos_query(action=selected)", "photos_write(action=import_to_album)", "photos_write(action=cleanup_album)"],
             policy=SelectionPolicy(selection_profile="general", quality_top_percent=30, exclude_screenshots=True),
             prerequisites="~/SamplePhotos 가 존재하고 import/write-back 이 허용되어야 한다.",
         ),
@@ -137,7 +137,7 @@ def sample_catalog() -> list[SampleScenario]:
             sample_id="apple-apr16to30-person-best-to-local-dir",
             title="작년 4월 16일~4월 30일 특정인 잘 나온 사진 로컬 저장",
             user_prompt="iCloud 사진 중 작년 4월 16일~작년 4월30일 사진들 중 특정인의 사진만 뽑아서 잘 나온 사진들을 로컬의 특정(~/temp) 디렉토리에 저장해줘.",
-            expected_tools=["photos_run", "photos_result"],
+            expected_tools=["photos_select(action=select_best_person)", "photos_write(action=export_selected)"],
             policy=SelectionPolicy(selection_profile="person", quality_top_percent=30, exclude_screenshots=True),
             prerequisites="Apple Photos person metadata 와 target person 값이 필요하다.",
         ),
@@ -294,6 +294,39 @@ def _album_name(config: ValidationConfig, scenario: SampleScenario) -> str:
     return f"photos-mcp llm {scenario.sample_id} {stamp}"
 
 
+def _validate_single_album_writeback(curate_payload: Any, *, target_album_name: str) -> tuple[bool, str]:
+    if not isinstance(curate_payload, dict):
+        return False, "curate payload was not a structured object"
+
+    public_action = str(curate_payload.get("action") or "")
+    writeback_mode = str(curate_payload.get("writeback_mode") or "")
+    if public_action != "curate_to_album" and writeback_mode != "album":
+        return False, "single-album sample must return action=curate_to_album or writeback_mode=album"
+
+    if str(curate_payload.get("target_album_name") or "") != target_album_name:
+        return False, "single-album sample returned a mismatched target_album_name"
+
+    raw_touched = curate_payload.get("touched_album_names")
+    touched_album_names = [
+        str(name).strip()
+        for name in raw_touched
+        if isinstance(name, str) and str(name).strip()
+    ] if isinstance(raw_touched, list) else []
+    if touched_album_names != [target_album_name]:
+        return False, f"single-album sample touched unexpected albums: {touched_album_names or raw_touched!r}"
+
+    if curate_payload.get("classification_album_created") is not False:
+        return False, "single-album sample reported classification_album_created=true"
+
+    album_result = curate_payload.get("album_result")
+    if isinstance(album_result, dict):
+        album_name = str(album_result.get("album") or "")
+        if album_name and album_name != target_album_name:
+            return False, "single-album sample returned an album_result.album that did not match target_album_name"
+
+    return True, ""
+
+
 def _looks_like_screen_capture(item: dict[str, Any]) -> bool:
     parts = [
         str(item.get("photo_id") or ""),
@@ -334,14 +367,16 @@ async def _discover_target_person(
 ) -> str:
     payload = await _call_tool(
         session,
-        "photos_library",
+        "photos_query",
         {
             "action": "list",
-            "source": "apple",
-            "date_from": date_from,
-            "date_to": date_to,
-            "limit": 50,
-            "include_metadata": True,
+            "options": {
+                "source": "apple",
+                "date_from": date_from,
+                "date_to": date_to,
+                "limit": 50,
+                "include_metadata": True,
+            },
         },
         context=context,
     )
@@ -406,9 +441,9 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                 step_index=1,
                 stage_name="status.summary",
                 started_at=status_started,
-                message="requesting photos_status summary",
+                message="requesting photos_query status summary",
             )
-            summary_payload = await _call_tool(session, "photos_status", {"view": "summary"}, context=status_context)
+            summary_payload = await _call_tool(session, "photos_query", {"action": "status", "options": {"view": "summary"}}, context=status_context)
             summary_ok = isinstance(summary_payload, dict) and bool(summary_payload.get("transport"))
             _append_result(
                 results,
@@ -447,22 +482,23 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                 step_index=3,
                 stage_name="curate.await-curate",
                 started_at=scenario_started,
-                message="waiting for photos_run curate response",
+                message="waiting for photos_workflow curate_to_album response",
             )
             album_name = _album_name(config, scenario)
             curate_payload = await _call_tool(
                 session,
-                "photos_run",
+                "photos_workflow",
                 {
-                    "intent": "curate",
-                    "source": "apple",
-                    "date_from": date_from,
-                    "date_to": date_to,
-                    "limit": 20,
-                    "selection_profile": scenario.policy.selection_profile,
-                    "target_album_name": album_name,
-                    "writeback_mode": "album",
-                    "exclude_screenshots": scenario.policy.exclude_screenshots,
+                    "action": "curate_to_album",
+                    "options": {
+                        "source": "apple",
+                        "date_from": date_from,
+                        "date_to": date_to,
+                        "limit": 20,
+                        "selection_profile": scenario.policy.selection_profile,
+                        "target_album_name": album_name,
+                        "exclude_screenshots": scenario.policy.exclude_screenshots,
+                    },
                 },
                 context=curate_context,
             )
@@ -478,6 +514,10 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                     note=f"no selected Apple Photos candidates were found for {date_from}",
                 )
             else:
+                strict_ok, strict_note = _validate_single_album_writeback(
+                    curate_payload,
+                    target_album_name=album_name,
+                )
                 cleanup_context = _emit_progress(
                     progress,
                     scenario_index=2,
@@ -490,10 +530,10 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                 )
                 cleanup_payload = await _call_tool(
                     session,
-                    "photos_run",
+                    "photos_write",
                     {
-                        "intent": "cleanup_album",
-                        "target_album_name": album_name,
+                        "action": "cleanup_album",
+                        "options": {"target_album_name": album_name},
                     },
                     context=cleanup_context,
                 )
@@ -506,14 +546,17 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                     step_index=5,
                     stage_name="result.record",
                     started_at=scenario_started,
-                    message=f"selected_count={selected_count} cleanup_ok={cleanup_ok}",
+                    message=f"selected_count={selected_count} cleanup_ok={cleanup_ok} strict_ok={strict_ok}",
                 )
+                note_parts = ["album is created for validation and should be cleaned up immediately"]
+                if not strict_ok:
+                    note_parts.insert(0, strict_note)
                 _append_result(
                     results,
                     scenario,
-                    status=PASS if cleanup_ok else PARTIAL,
+                    status=PASS if cleanup_ok and strict_ok else PARTIAL if strict_ok else FAIL,
                     evidence={"curate": curate_payload, "cleanup": cleanup_payload},
-                    note="album is created for validation and should be cleaned up immediately",
+                    note="; ".join(part for part in note_parts if part),
                 )
 
             scenario = scenario_map["local-samplephotos-best-to-album"]
@@ -560,15 +603,16 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                 )
                 curate_payload = await _call_tool(
                     session,
-                    "photos_run",
+                    "photos_select",
                     {
-                        "intent": "curate",
-                        "source": "local",
-                        "source_path": str(sample_root),
-                        "limit": 20,
-                        "selection_profile": scenario.policy.selection_profile,
-                        "writeback_mode": "review",
-                        "exclude_screenshots": scenario.policy.exclude_screenshots,
+                        "action": "select_best",
+                        "options": {
+                            "source": "local",
+                            "source_path": str(sample_root),
+                            "limit": 20,
+                            "selection_profile": scenario.policy.selection_profile,
+                            "exclude_screenshots": scenario.policy.exclude_screenshots,
+                        },
                     },
                     context=curate_context,
                 )
@@ -588,8 +632,8 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                     )
                     selected_payload = await _call_tool(
                         session,
-                        "photos_result",
-                        {"action": "selected", "run_id": run_id, "top_n": 200},
+                        "photos_query",
+                        {"action": "selected", "options": {"run_id": run_id, "top_n": 200}},
                         context=selected_context,
                     )
                     selected_items = selected_payload.get("items") if isinstance(selected_payload, dict) else []
@@ -621,11 +665,13 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                         )
                         import_payload = await _call_tool(
                             session,
-                            "photos_run",
+                            "photos_write",
                             {
-                                "intent": "import",
-                                "photo_paths_json": json.dumps(selected_paths, ensure_ascii=False),
-                                "target_album_name": album_name,
+                                "action": "import_to_album",
+                                "options": {
+                                    "photo_paths": selected_paths,
+                                    "target_album_name": album_name,
+                                },
                             },
                             context=import_context,
                         )
@@ -641,10 +687,10 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                         )
                         cleanup_payload = await _call_tool(
                             session,
-                            "photos_run",
+                            "photos_write",
                             {
-                                "intent": "cleanup_album",
-                                "target_album_name": album_name,
+                                "action": "cleanup_album",
+                                "options": {"target_album_name": album_name},
                             },
                             context=cleanup_context,
                         )
@@ -720,21 +766,22 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                     step_index=3,
                     stage_name="curate.await-curate",
                     started_at=scenario_started,
-                    message="waiting for photos_run curate response",
+                    message="waiting for photos_select select_best_person response",
                 )
                 curate_payload = await _call_tool(
                     session,
-                    "photos_run",
+                    "photos_select",
                     {
-                        "intent": "curate",
-                        "source": "apple",
-                        "person": resolved_target_person,
-                        "date_from": date_from,
-                        "date_to": date_to,
-                        "limit": 20,
-                        "selection_profile": scenario.policy.selection_profile,
-                        "writeback_mode": "review",
-                        "exclude_screenshots": scenario.policy.exclude_screenshots,
+                        "action": "select_best_person",
+                        "options": {
+                            "source": "apple",
+                            "person": resolved_target_person,
+                            "date_from": date_from,
+                            "date_to": date_to,
+                            "limit": 20,
+                            "selection_profile": scenario.policy.selection_profile,
+                            "exclude_screenshots": scenario.policy.exclude_screenshots,
+                        },
                     },
                     context=curate_context,
                 )
@@ -764,11 +811,13 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                     )
                     export_payload = await _call_tool(
                         session,
-                        "photos_result",
+                        "photos_write",
                         {
-                            "action": "artifacts",
-                            "run_id": run_id,
-                            "output_dir": output_dir,
+                            "action": "export_selected",
+                            "options": {
+                                "run_id": run_id,
+                                "output_dir": output_dir,
+                            },
                         },
                         context=export_context,
                     )

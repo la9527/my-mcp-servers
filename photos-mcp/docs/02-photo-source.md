@@ -25,7 +25,7 @@
 
 ## 3. 노출 tool
 
-`photo-source` 가 제공하는 tool 은 5개다.
+`photo-source` 가 제공하는 tool 은 6개다.
 
 ### `list_photos`
 
@@ -92,6 +92,22 @@
 - `path_or_bucket`
 - `max_size`
 
+### `prefetch_photos`
+
+역할:
+
+- Apple Photos 원본을 선별/분석 전에 미리 로컬로 확보한다.
+- 이미 로컬에 있는 자산과 새로 내려받은 자산, 실패한 자산을 분리해 반환한다.
+
+주요 인자:
+
+- `source`
+- `photo_ids`
+- `date_from`, `date_to`
+- `album`
+- `person`
+- `limit`
+
 ## 4. `photos-mcp` 안에서 어떻게 쓰이는가
 
 `photos-mcp` 는 `photo-source` 를 두 방식으로 사용한다.
@@ -103,6 +119,7 @@
 - `list_photos`
 - `get_thumbnail`
 - `export_photos`
+- `prefetch_photos`
 
 이 경우 MCP client 요청이 거의 그대로 `photo-source` 로 내려간다.
 

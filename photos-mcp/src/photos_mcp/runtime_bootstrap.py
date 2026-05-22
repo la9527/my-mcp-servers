@@ -43,6 +43,14 @@ def _prepend_sys_path(path: Path) -> None:
         sys.path.insert(0, path_string)
 
 
+def _find_source_tree_python(app_dir: Path) -> Path | None:
+    for candidate_root in (app_dir, *app_dir.parents):
+        candidate_python = candidate_root / ".venv" / "bin" / "python"
+        if candidate_python.exists():
+            return candidate_python
+    return None
+
+
 def ensure_runtime_import_paths(anchor_file: str | Path) -> None:
     bundled_lib_root = find_bundled_lib_root(anchor_file)
     if bundled_lib_root is not None:
@@ -72,5 +80,9 @@ def default_terminal_python(
         bundled_python = resolved_executable_path.with_name("python")
         if bundled_python.exists():
             return str(bundled_python)
+
+    source_tree_python = _find_source_tree_python(app_dir.resolve())
+    if source_tree_python is not None:
+        return str(source_tree_python)
 
     return str(app_dir / ".venv/bin/python")

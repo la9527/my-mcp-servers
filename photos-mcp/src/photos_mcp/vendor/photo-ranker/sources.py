@@ -400,30 +400,6 @@ def _download_missing_apple_photo(photo) -> str | None:
     except ImportError:
         return None
 
-    if _should_use_terminal_helper():
-        try:
-            fetched_path = _run_terminal_fetch_helper(photo.uuid)
-        except Exception as exc:
-            logger.warning(
-                "Terminal helper failed to fetch Apple photo from iCloud: %s (%s)",
-                photo.uuid,
-                exc,
-            )
-            if _should_disable_terminal_helper_after_error(exc):
-                _APPLE_TERMINAL_HELPER_DISABLED = True
-                logger.warning(
-                    "Disabling Terminal helper for remaining Apple fetches in this process."
-                )
-        else:
-            if fetched_path:
-                _APPLE_DOWNLOADED_PATHS[photo.uuid] = fetched_path
-                logger.info(
-                    "Downloaded Apple photo %s via Terminal helper to %s",
-                    photo.uuid,
-                    fetched_path,
-                )
-                return fetched_path
-
     cache_dir = _get_apple_cache_dir() / photo.uuid
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -467,6 +443,30 @@ def _download_missing_apple_photo(photo) -> str | None:
             strategy_name,
             photo.uuid,
         )
+
+    if _should_use_terminal_helper():
+        try:
+            fetched_path = _run_terminal_fetch_helper(photo.uuid)
+        except Exception as exc:
+            logger.warning(
+                "Terminal helper failed to fetch Apple photo from iCloud: %s (%s)",
+                photo.uuid,
+                exc,
+            )
+            if _should_disable_terminal_helper_after_error(exc):
+                _APPLE_TERMINAL_HELPER_DISABLED = True
+                logger.warning(
+                    "Disabling Terminal helper for remaining Apple fetches in this process."
+                )
+        else:
+            if fetched_path:
+                _APPLE_DOWNLOADED_PATHS[photo.uuid] = fetched_path
+                logger.info(
+                    "Downloaded Apple photo %s via Terminal helper to %s",
+                    photo.uuid,
+                    fetched_path,
+                )
+                return fetched_path
 
     return _pick_cached_apple_export(photo.uuid)
 

@@ -93,6 +93,7 @@ class ApplePhotosSource:
         self._db = None
         self._cache_dir: Path | None = None
         self._downloaded_paths: dict[str, str] = {}
+        self._last_fetch_details: dict[str, dict[str, object]] = {}
         self._photokit_disabled = False
         self._terminal_helper_disabled = False
         self._fetch_mode = os.getenv("PHOTO_SOURCE_APPLE_FETCH_MODE", "direct")
@@ -132,43 +133,101 @@ class ApplePhotosSource:
         """List photos matching filters."""
         self._ensure_loaded()
         photos = self._db.photos()
-
-        # Filter by date
-        if date_from or date_to:
-            photos = [
-                p
-                for p in photos
-                if _matches_date_filters(
-                    p.date,
-                    date_from=date_from,
-                    date_to=date_to,
-                )
-            ]
-
-        # Filter by album
-        if album:
-            album_lower = album.lower()
-            photos = [
-                p
-                for p in photos
-                if any(album_lower in a.title.lower() for a in p.album_info if a.title)
-            ]
-
-        # Filter by person
-        if person:
-            person_lower = person.lower()
-            photos = [
-                p
-                for p in photos
-                if any(person_lower in pn.name.lower() for pn in p.person_info if pn.name)
-            ]
-
-        photos = [p for p in photos if _is_supported_photo_asset(p)]
-
-        # Limit
-        photos = photos[:limit]
+        photos = self._filter_source_photos(
+            photos,
+            date_from=date_from,
+            date_to=date_to,
+            album=album,
+            person=person,
+            limit=limit,
+        )
 
         return [self._to_photo(p) for p in photos]
+
+    def prefetch_photos(
+        self,
+        *,
+        photo_ids: list[str] | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        album: str | None = None,
+        person: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        self._ensure_loaded()
+
+        photos = self._matching_source_photos(
+            photo_ids=photo_ids,
+            date_from=date_from,
+            date_to=date_to,
+            album=album,
+            person=person,
+            limit=limit,
+        )
+
+        already_local: list[dict[str, str]] = []
+        downloaded: list[dict[str, str]] = []
+        failed: list[dict[str, str]] = []
+
+        for photo in photos:
+            local_path = self._resolve_photo_path(photo, download_missing=False)
+            if local_path:
+                already_local.append(
+                    {
+                        "photo_id": photo.uuid,
+                        "filename": self._preferred_filename(photo) or photo.uuid,
+                        "path": local_path,
+                        "fetch_strategy": "local_path",
+                    }
+                )
+                continue
+
+            self._last_fetch_details.pop(photo.uuid, None)
+            downloaded_path = self._download_missing_photo(photo)
+            fetch_details = self._last_fetch_details.get(photo.uuid) or {}
+            if downloaded_path:
+                downloaded_entry = {
+                    "photo_id": photo.uuid,
+                    "filename": self._preferred_filename(photo) or photo.uuid,
+                    "path": downloaded_path,
+                }
+                fetch_strategy = str(fetch_details.get("fetch_strategy") or "")
+                if fetch_strategy:
+                    downloaded_entry["fetch_strategy"] = fetch_strategy
+                strategies_tried = fetch_details.get("strategies_tried")
+                if isinstance(strategies_tried, list) and strategies_tried:
+                    downloaded_entry["strategies_tried"] = [str(item) for item in strategies_tried]
+                downloaded.append(downloaded_entry)
+                continue
+
+            failed_entry = {
+                "photo_id": photo.uuid,
+                "filename": self._preferred_filename(photo) or photo.uuid,
+                "reason_code": str(fetch_details.get("reason_code") or "prefetch_failed"),
+            }
+            fetch_strategy = str(fetch_details.get("fetch_strategy") or "")
+            if fetch_strategy:
+                failed_entry["fetch_strategy"] = fetch_strategy
+            strategies_tried = fetch_details.get("strategies_tried")
+            if isinstance(strategies_tried, list) and strategies_tried:
+                failed_entry["strategies_tried"] = [str(item) for item in strategies_tried]
+            reason_detail = str(fetch_details.get("reason_detail") or "")
+            if reason_detail:
+                failed_entry["reason_detail"] = reason_detail
+            if bool(fetch_details.get("photokit_authorization_denied")):
+                failed_entry["photokit_authorization_denied"] = True
+            failed.append(failed_entry)
+
+        return {
+            "source": "apple",
+            "attempted_count": len(photos),
+            "already_local_count": len(already_local),
+            "downloaded_count": len(downloaded),
+            "failed_count": len(failed),
+            "already_local": already_local,
+            "downloaded": downloaded,
+            "failed": failed,
+        }
 
     def get_metadata(self, photo_id: str) -> PhotoMetadata | None:
         """Get detailed metadata for a photo by UUID."""
@@ -196,6 +255,44 @@ class ApplePhotosSource:
             persons=[pn.name for pn in p.person_info if pn.name],
             keywords=list(p.keywords) if p.keywords else [],
         )
+
+    def probe_photokit_permission(
+        self, *, request_if_needed: bool = False
+    ) -> dict[str, int | str | bool]:
+        try:
+            import Photos
+            from osxphotos.photokit import request_photokit_authorization
+        except ImportError as exc:
+            raise RuntimeError(
+                "PhotoKit permission probe requires Photos + osxphotos photokit support."
+            ) from exc
+
+        status_map = {
+            int(Photos.PHAuthorizationStatusNotDetermined): "not_determined",
+            int(Photos.PHAuthorizationStatusRestricted): "restricted",
+            int(Photos.PHAuthorizationStatusDenied): "denied",
+            int(Photos.PHAuthorizationStatusAuthorized): "authorized",
+        }
+
+        status_code = int(Photos.PHPhotoLibrary.authorizationStatus())
+        requested = False
+        if (
+            request_if_needed
+            and status_code == int(Photos.PHAuthorizationStatusNotDetermined)
+        ):
+            status_code = int(request_photokit_authorization())
+            requested = True
+
+        self._photokit_disabled = status_code in {
+            int(Photos.PHAuthorizationStatusRestricted),
+            int(Photos.PHAuthorizationStatusDenied),
+        }
+
+        return {
+            "status": status_map.get(status_code, "unknown"),
+            "status_code": status_code,
+            "requested": requested,
+        }
 
     def get_thumbnail(
         self, photo_id: str, max_size: int = 512
@@ -243,6 +340,72 @@ class ApplePhotosSource:
             if photo.uuid == photo_id:
                 return photo
         return None
+
+    def _filter_source_photos(
+        self,
+        photos,
+        *,
+        date_from: str | None,
+        date_to: str | None,
+        album: str | None,
+        person: str | None,
+        limit: int,
+    ):
+        if date_from or date_to:
+            photos = [
+                p
+                for p in photos
+                if _matches_date_filters(
+                    p.date,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+            ]
+
+        if album:
+            album_lower = album.lower()
+            photos = [
+                p
+                for p in photos
+                if any(album_lower in a.title.lower() for a in p.album_info if a.title)
+            ]
+
+        if person:
+            person_lower = person.lower()
+            photos = [
+                p
+                for p in photos
+                if any(person_lower in pn.name.lower() for pn in p.person_info if pn.name)
+            ]
+
+        photos = [p for p in photos if _is_supported_photo_asset(p)]
+        return photos[:limit]
+
+    def _matching_source_photos(
+        self,
+        *,
+        photo_ids: list[str] | None,
+        date_from: str | None,
+        date_to: str | None,
+        album: str | None,
+        person: str | None,
+        limit: int,
+    ):
+        photos = self._db.photos()
+        if photo_ids:
+            wanted_ids = {photo_id for photo_id in photo_ids if photo_id}
+            photos = [photo for photo in photos if photo.uuid in wanted_ids]
+            photos = [photo for photo in photos if _is_supported_photo_asset(photo)]
+            return photos[:limit]
+
+        return self._filter_source_photos(
+            photos,
+            date_from=date_from,
+            date_to=date_to,
+            album=album,
+            person=person,
+            limit=limit,
+        )
 
     def _get_cache_dir(self) -> Path:
         if self._cache_dir is None:
@@ -324,39 +487,35 @@ class ApplePhotosSource:
         return "auth_status" in message or "authorization" in message
 
     def _download_missing_photo(self, photo) -> str | None:
+        detail: dict[str, object] = {
+            "photo_id": photo.uuid,
+            "fetch_strategy": "",
+            "strategies_tried": [],
+            "reason_code": "",
+            "reason_detail": "",
+            "photokit_authorization_denied": False,
+        }
+
+        def remember_detail() -> None:
+            self._last_fetch_details[photo.uuid] = dict(detail)
+
         try:
             import osxphotos
         except ImportError:
+            detail["reason_code"] = "osxphotos_missing"
+            detail["reason_detail"] = "osxphotos is not installed"
+            remember_detail()
             return None
-
-        if self._should_use_terminal_helper():
-            try:
-                fetched_path = self._run_terminal_helper(photo.uuid)
-            except Exception as exc:
-                logger.warning(
-                    "Terminal helper failed to fetch Apple photo from iCloud: %s (%s)",
-                    photo.uuid,
-                    exc,
-                )
-                if self._should_disable_terminal_helper_after_error(exc):
-                    self._terminal_helper_disabled = True
-                    logger.warning(
-                        "Disabling Terminal helper for remaining Apple fetches in this process."
-                    )
-            else:
-                if fetched_path:
-                    self._downloaded_paths[photo.uuid] = fetched_path
-                    logger.info(
-                        "Downloaded Apple photo %s via Terminal helper to %s",
-                        photo.uuid,
-                        fetched_path,
-                    )
-                    return fetched_path
 
         cache_dir = self._get_cache_dir() / photo.uuid
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         for strategy_name, option_kwargs in self._export_strategies():
+            detail["fetch_strategy"] = strategy_name
+            detail["strategies_tried"] = [
+                *[str(item) for item in detail.get("strategies_tried", [])],
+                strategy_name,
+            ]
             try:
                 export_results = osxphotos.PhotoExporter(photo).export(
                     cache_dir,
@@ -366,10 +525,15 @@ class ApplePhotosSource:
             except Exception as exc:
                 if strategy_name.endswith("_photokit") and self._is_photokit_auth_error(exc):
                     self._photokit_disabled = True
+                    detail["photokit_authorization_denied"] = True
+                    detail["reason_code"] = "download_missing_photokit_permission_denied"
                     logger.warning(
                         "PhotoKit export is not authorized for this process. "
                         "Grant Photos access in System Settings > Privacy & Security > Photos."
                     )
+                else:
+                    detail["reason_code"] = f"{strategy_name}_failed"
+                detail["reason_detail"] = str(exc)
                 logger.warning(
                     "Failed to download Apple photo from iCloud via %s: %s (%s)",
                     strategy_name,
@@ -383,6 +547,11 @@ class ApplePhotosSource:
                 exported_path = Path(exported_file)
                 if exported_path.is_file():
                     self._downloaded_paths[photo.uuid] = str(exported_path)
+                    detail["fetch_strategy"] = strategy_name
+                    detail["path"] = str(exported_path)
+                    detail["reason_code"] = ""
+                    detail["reason_detail"] = ""
+                    remember_detail()
                     logger.info(
                         "Downloaded Apple photo %s to %s via %s",
                         photo.uuid,
@@ -396,8 +565,60 @@ class ApplePhotosSource:
                 strategy_name,
                 photo.uuid,
             )
+            detail["reason_code"] = f"{strategy_name}_returned_no_files"
+            detail["reason_detail"] = f"Apple photo export returned no files via {strategy_name}"
 
-        return self._pick_cached_export(photo.uuid)
+        if self._should_use_terminal_helper():
+            detail["fetch_strategy"] = "terminal_helper"
+            detail["strategies_tried"] = [
+                *[str(item) for item in detail.get("strategies_tried", [])],
+                "terminal_helper",
+            ]
+            try:
+                fetched_path = self._run_terminal_helper(photo.uuid)
+            except Exception as exc:
+                detail["reason_code"] = "terminal_helper_failed"
+                detail["reason_detail"] = str(exc)
+                logger.warning(
+                    "Terminal helper failed to fetch Apple photo from iCloud: %s (%s)",
+                    photo.uuid,
+                    exc,
+                )
+                if self._should_disable_terminal_helper_after_error(exc):
+                    self._terminal_helper_disabled = True
+                    logger.warning(
+                        "Disabling Terminal helper for remaining Apple fetches in this process."
+                    )
+            else:
+                if fetched_path:
+                    self._downloaded_paths[photo.uuid] = fetched_path
+                    detail["path"] = fetched_path
+                    detail["reason_code"] = ""
+                    detail["reason_detail"] = ""
+                    remember_detail()
+                    logger.info(
+                        "Downloaded Apple photo %s via Terminal helper to %s",
+                        photo.uuid,
+                        fetched_path,
+                    )
+                    return fetched_path
+                detail["reason_code"] = "terminal_helper_returned_no_files"
+                detail["reason_detail"] = "Terminal helper returned no local file"
+
+        cached_path = self._pick_cached_export(photo.uuid)
+        if cached_path:
+            detail["fetch_strategy"] = "cached_export"
+            detail["path"] = cached_path
+            detail["reason_code"] = ""
+            detail["reason_detail"] = ""
+            remember_detail()
+            return cached_path
+
+        if not detail["reason_code"]:
+            detail["reason_code"] = "download_missing_failed"
+            detail["reason_detail"] = "Apple photo download did not produce a local file"
+        remember_detail()
+        return None
 
     def _resolve_photo_path(self, photo, *, download_missing: bool) -> str | None:
         path = getattr(photo, "path", None)

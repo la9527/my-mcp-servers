@@ -299,8 +299,9 @@ UI 는 별도 source of truth 를 갖지 않고 `PhotosMcpStateStore` snapshot �
 
 - `src/photos_mcp/preflight.py`
 
-현재 preflight 는 3개다.
+현재 preflight 는 4개다.
 
+- `photos_permission`: PhotosMcp.app 자체의 PhotoKit / Photos permission readiness
 - `photos_read`: Apple Photos library 를 읽을 수 있는가
 - `photos_automation`: Apple Photos automation write path 가 준비됐는가
 - `photos_thumbnail`: Apple Photos analyze 에 필요한 thumbnail byte export 가 준비됐는가
@@ -437,9 +438,10 @@ health/readiness schema:
 
 이 경우는 대개 transport 문제보다 Apple Photos read/automation path 문제다.
 
+- `photos_permission` 실패: PhotosMcp.app first-run prompt, `kTCCServicePhotos`, PhotoKit 상태 확인
 - `photos_read` 실패: `photo-source` / `osxphotos` / Photos DB access 경로 확인
 - `photos_automation` 실패: terminal helper, Apple Events permission, `photo-ranker` write path 확인
-- `photos_thumbnail` 실패: sample asset local path, iCloud download 상태, Photos export permission, `photo-source get_thumbnail` 경로 확인
+- `photos_thumbnail` 실패: sample asset local path, iCloud download 상태, Photos export permission, direct/PhotoKit 후 terminal fallback 경로 확인
 
 ### direct source 실행은 되는데 bundle 에서만 실패한다
 

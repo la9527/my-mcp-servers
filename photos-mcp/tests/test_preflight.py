@@ -9,7 +9,9 @@ from photos_mcp.preflight import (
     aggregate_check_status,
     check_photos_automation_access,
     check_photos_library_readability,
+    check_photos_permission_access,
     check_photos_thumbnail_access,
+    run_startup_checks,
 )
 
 
@@ -86,6 +88,60 @@ def test_check_photos_automation_access_prefers_lightweight_probe(monkeypatch) -
     assert result.status == CHECK_OK
     assert "2 albums" in result.detail
     assert "album-1" in result.detail
+
+
+def test_check_photos_permission_access_requests_photokit_authorization(monkeypatch) -> None:
+    calls: list[bool] = []
+
+    class FakeSource:
+        def probe_photokit_permission(self, *, request_if_needed: bool = False):
+            calls.append(request_if_needed)
+            return {
+                "status": "authorized",
+                "status_code": 3,
+                "requested": True,
+            }
+
+    fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
+    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+
+    result = check_photos_permission_access()
+
+    assert result.status == CHECK_OK
+    assert calls == [True]
+    assert "authorized" in result.detail.lower()
+
+
+def test_run_startup_checks_includes_photos_permission_first(monkeypatch) -> None:
+    def fake_run_check_with_timeout(check_fn, *, timeout_secs, timeout_result):
+        return check_fn()
+
+    monkeypatch.setattr("photos_mcp.preflight._run_check_with_timeout", fake_run_check_with_timeout)
+    monkeypatch.setattr(
+        "photos_mcp.preflight.check_photos_permission_access",
+        lambda: SimpleNamespace(key="photos_permission", status=CHECK_OK),
+    )
+    monkeypatch.setattr(
+        "photos_mcp.preflight.check_photos_library_readability",
+        lambda: SimpleNamespace(key="photos_read", status=CHECK_OK),
+    )
+    monkeypatch.setattr(
+        "photos_mcp.preflight.check_photos_automation_access",
+        lambda: SimpleNamespace(key="photos_automation", status=CHECK_OK),
+    )
+    monkeypatch.setattr(
+        "photos_mcp.preflight.check_photos_thumbnail_access",
+        lambda: SimpleNamespace(key="photos_thumbnail", status=CHECK_OK),
+    )
+
+    results = run_startup_checks()
+
+    assert [result.key for result in results] == [
+        "photos_permission",
+        "photos_read",
+        "photos_automation",
+        "photos_thumbnail",
+    ]
 
 
 def test_check_photos_thumbnail_access_reports_success(monkeypatch) -> None:

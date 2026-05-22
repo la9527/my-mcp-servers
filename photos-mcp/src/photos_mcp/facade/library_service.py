@@ -7,7 +7,7 @@ from photos_mcp.facade.common import call_vendor
 
 APPLE_DOWNLOAD_HINT = (
     "Open the asset in Photos and wait for the original to download locally, then rerun "
-    'photos_library and confirm local_path_available=true before photos_run(intent="analyze").'
+    'photos_query(action="list") and confirm local_path_available=true before photos_select(action="analyze_photo").'
 )
 
 
@@ -27,7 +27,7 @@ def _normalize_library_items(items: Any, *, source: str) -> list[dict[str, Any]]
         local_path_available = bool(normalized_item.get("local_path_available"))
         normalized_item["analyze_recommended"] = local_path_available
         normalized_item["recommended_next_action"] = (
-            "photos_run" if local_path_available else "download_in_photos_then_run"
+            "photos_select" if local_path_available else "download_in_photos_then_run"
         )
         vendor_source = str(normalized_item.get("source") or "")
         if vendor_source and vendor_source != source:
@@ -56,11 +56,32 @@ def _library_response(
         "items": items,
         "analyze_ready_count": analyze_ready_count,
         "download_required_count": download_required_count,
-        "next_suggested_action": "photos_run" if analyze_ready_count else "inspect_or_download",
+        "next_suggested_action": "photos_select" if analyze_ready_count else "inspect_or_download",
     }
     if query:
         response["query"] = query
     return response
+
+
+def _prefetch_response(*, source: str, payload: dict[str, Any]) -> dict[str, Any]:
+    attempted_count = int(payload.get("attempted_count") or 0)
+    already_local_count = int(payload.get("already_local_count") or 0)
+    downloaded_count = int(payload.get("downloaded_count") or 0)
+    failed_count = int(payload.get("failed_count") or 0)
+
+    return {
+        "action": "prefetch",
+        "source": source,
+        "attempted_count": attempted_count,
+        "already_local_count": already_local_count,
+        "downloaded_count": downloaded_count,
+        "failed_count": failed_count,
+        "already_local": payload.get("already_local") if isinstance(payload.get("already_local"), list) else [],
+        "downloaded": payload.get("downloaded") if isinstance(payload.get("downloaded"), list) else [],
+        "failed": payload.get("failed") if isinstance(payload.get("failed"), list) else [],
+        "can_retry_failed": failed_count > 0,
+        "next_suggested_action": "photos_select" if attempted_count > 0 else "photos_query",
+    }
 
 
 def _filter_items_for_action(
@@ -90,6 +111,21 @@ async def photos_library(
     max_size: int = 512,
 ) -> dict[str, Any]:
     normalized_action = (action or "list").strip().lower()
+
+    if normalized_action == "prefetch":
+        payload = await call_vendor(
+            "photo-source",
+            "prefetch_photos",
+            source,
+            path_or_bucket=path_or_bucket,
+            photo_ids=[photo_id] if photo_id else None,
+            date_from=date_from,
+            date_to=date_to,
+            album=album,
+            person=person,
+            limit=limit,
+        )
+        return _prefetch_response(source=source, payload=payload if isinstance(payload, dict) else {})
 
     if normalized_action == "search":
         items = _normalize_library_items(
@@ -134,7 +170,7 @@ async def photos_library(
             "action": "inspect",
             "source": source,
             "item": item,
-            "next_suggested_action": "photos_run",
+            "next_suggested_action": "photos_select",
         }
 
     response_action = "ready_only" if normalized_action == "ready_only" else "list"

@@ -157,11 +157,18 @@ UI 상 의미:
 
 ## 8. preflight 와 permission semantics
 
-현재 startup preflight 는 세 개다.
+현재 startup preflight 는 네 개다.
 
+- `photos_permission`: PhotosMcp.app 자체의 PhotoKit / `kTCCServicePhotos` 권한 상태와 startup prompt 가능 여부
 - `photos_read`: Apple Photos library read 가능 여부
 - `photos_automation`: Apple Photos album write/automation 가능 여부
 - `photos_thumbnail`: analyze 에 필요한 thumbnail export 가능 여부
+
+중요한 분리:
+
+- `photos_permission` 은 PhotosMcp.app 자체가 Photos permission 을 받았는지 본다.
+- `photos_automation` 은 Apple Events / Automation 경로를 본다.
+- 둘은 같은 permission 이 아니다.
 
 ### 8.1 timeout model
 
@@ -197,7 +204,8 @@ Apple Photos read/write 경로는 direct mode 와 terminal helper mode 를 둘 �
 
 1. 명시적 env override
 2. bundled app 실행 중이면 `Contents/MacOS/python`
-3. 그 외에는 app dir 아래 `.venv/bin/python`
+3. 그 외에는 caller 디렉터리에서 상위로 올라가며 찾은 가장 가까운 `.venv/bin/python`
+4. 그래도 못 찾으면 기존 fallback 으로 app dir 아래 `.venv/bin/python`
 
 대표 env:
 
@@ -209,6 +217,8 @@ Apple Photos read/write 경로는 direct mode 와 terminal helper mode 를 둘 �
 - `PHOTO_SOURCE_APPLE_FETCH_MODE`: Apple Photos fetch path (`direct` / `terminal`)
 - `PHOTO_RANKER_APPLE_FETCH_MODE`: `photo-ranker` 쪽 fetch helper mode
 - `PHOTO_RANKER_APPLE_EVENTS_MODE`: album write / automation mode
+
+현재 `terminal` mode 는 Terminal helper 를 우선 쓰지 않는다. app-owned `download_missing` / `download_missing_photokit` 를 먼저 시도하고, 둘 다 실패한 뒤 마지막 fallback 으로 Terminal helper 를 쓴다. 이 순서로 불필요한 Terminal 창 노출을 줄이고, PhotosMcp.app 권한만으로 해결되는 경우 helper 호출을 피한다.
 
 terminal helper 를 실행할 때는 재귀 호출을 막기 위해 child env override 를 direct 로 되돌린다. 동시에 signed bundle 오염을 막기 위해 `PYTHONDONTWRITEBYTECODE=1` 도 강제로 넣는다.
 

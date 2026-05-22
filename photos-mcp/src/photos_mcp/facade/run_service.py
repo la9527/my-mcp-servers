@@ -16,7 +16,7 @@ DEFAULT_ANALYZE_WAIT_TIMEOUT_SECONDS = 120.0
 DEFAULT_ANALYZE_WAIT_POLL_INTERVAL_SECONDS = 3.0
 LOCAL_DOWNLOAD_WAIT_HINT = (
     "Open the asset in Photos and wait for the original to download locally, then rerun "
-    'photos_library and confirm local_path_available=true before photos_run(intent="analyze").'
+    'photos_query(action="list") and confirm local_path_available=true before photos_select(action="analyze_photo").'
 )
 
 
@@ -41,8 +41,9 @@ def _build_analyze_error(
     hint: str,
     next_suggested_action: str,
     can_retry: bool,
+    fetch_detail: dict[str, Any] | None = None,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "status": "blocked",
         "error": error,
         "error_code": error_code,
@@ -55,6 +56,42 @@ def _build_analyze_error(
         "next_suggested_action": next_suggested_action,
         "can_retry": can_retry,
     }
+    if fetch_detail:
+        fetch_strategy = str(fetch_detail.get("fetch_strategy") or "")
+        if fetch_strategy:
+            payload["fetch_strategy"] = fetch_strategy
+        fetch_reason_code = str(fetch_detail.get("reason_code") or "")
+        if fetch_reason_code:
+            payload["fetch_reason_code"] = fetch_reason_code
+        fetch_reason_detail = str(fetch_detail.get("reason_detail") or "")
+        if fetch_reason_detail:
+            payload["fetch_reason_detail"] = fetch_reason_detail
+        strategies_tried = fetch_detail.get("strategies_tried")
+        if isinstance(strategies_tried, list) and strategies_tried:
+            payload["fetch_strategies_tried"] = [str(item) for item in strategies_tried]
+        if bool(fetch_detail.get("photokit_authorization_denied")):
+            payload["photokit_authorization_denied"] = True
+    return payload
+
+
+def _latest_photo_fetch_detail(source: str, photo_id: str) -> dict[str, Any] | None:
+    if source != "apple":
+        return None
+
+    try:
+        module = facade_common.load_vendor_server("photo-source")
+        if not hasattr(module, "_get_apple_source"):
+            return None
+        apple_source = module._get_apple_source()
+        fetch_details = getattr(apple_source, "_last_fetch_details", None)
+        if not isinstance(fetch_details, dict):
+            return None
+        detail = fetch_details.get(photo_id)
+        if not isinstance(detail, dict):
+            return None
+        return dict(detail)
+    except Exception:
+        return None
 
 
 async def _selected_photo_probe(source: str, photo_id: str, path_or_bucket: str) -> dict[str, Any]:
@@ -206,7 +243,7 @@ def _build_waiting_analyze_payload(
         "download_hint": LOCAL_DOWNLOAD_WAIT_HINT,
         "detail": detail,
         "current_photo_local_path_available": current_photo_local_path_available,
-        "next_suggested_action": "photos_result",
+        "next_suggested_action": "photos_query",
         "can_retry": True,
         "progress": {
             "stage": "waiting_for_local_download",
@@ -332,9 +369,9 @@ async def _run_waiting_analyze(
                         error_code="photo_not_found",
                         error="Photo not found for analyze",
                         detail=str(last_error_payload.get("detail") or "No photo metadata was found."),
-                        hint="Use photos_library(action=\"list\"|\"search\") to select a valid photo_id.",
+                        hint="Use photos_query(action=\"list\"|\"search\") to select a valid photo_id.",
                         reason="photo_not_found",
-                        next_suggested_action="photos_library",
+                        next_suggested_action="photos_query",
                         can_retry=False,
                     )
                 )
@@ -377,7 +414,7 @@ async def _run_waiting_analyze(
                         detail=detail,
                         hint=LOCAL_DOWNLOAD_WAIT_HINT,
                         reason="local_download_timeout",
-                        next_suggested_action="photos_library",
+                        next_suggested_action="photos_query",
                         can_retry=True,
                     )
                 )
@@ -401,9 +438,9 @@ async def _run_waiting_analyze(
                 error_code="cancelled",
                 error="Analyze wait cancelled",
                 detail="The local download wait was cancelled before analyze could continue.",
-                hint="Rerun photos_run(intent=\"analyze\", wait_for_local=true) when you want to resume waiting.",
+                hint="Rerun photos_select(action=\"analyze_photo\", wait_for_local=true) when you want to resume waiting.",
                 reason="cancelled",
-                next_suggested_action="photos_run",
+                next_suggested_action="photos_select",
                 can_retry=True,
             )
         )
@@ -443,8 +480,8 @@ async def _resolve_analyze_thumbnail(
             photo_id=photo_id,
             source=source,
             detail="No photo metadata was found for the requested photo_id.",
-            hint="Use photos_library(action=\"list\"|\"search\") to select a valid photo_id.",
-            next_suggested_action="photos_library",
+            hint="Use photos_query(action=\"list\"|\"search\") to select a valid photo_id.",
+            next_suggested_action="photos_query",
             can_retry=False,
         )
 
@@ -461,12 +498,13 @@ async def _resolve_analyze_thumbnail(
             photo_id=photo_id,
             source=source,
             detail=" ".join(detail_parts),
-            hint='Choose a photo item from photos_library(action="list"|"ready_only") instead of a video asset.',
-            next_suggested_action="photos_library",
+            hint='Choose a photo item from photos_query(action="list"|"ready_only") instead of a video asset.',
+            next_suggested_action="photos_query",
             can_retry=False,
         )
 
     photo_probe = await _selected_photo_probe(source, photo_id, path_or_bucket)
+    fetch_detail = _latest_photo_fetch_detail(source, photo_id)
     thumbnail_check = _preflight_check(state_store, "photos_thumbnail") or {}
     filename = str(metadata.get("filename") or "")
     date_taken = str(metadata.get("date_taken") or "")
@@ -483,16 +521,23 @@ async def _resolve_analyze_thumbnail(
         detail_parts.append(f"current_photo_local_path={photo_probe['local_path']}")
     if thumbnail_check.get("status"):
         detail_parts.append(f"runtime_photos_thumbnail_status={thumbnail_check['status']}")
+    if fetch_detail:
+        fetch_strategy = str(fetch_detail.get("fetch_strategy") or "")
+        if fetch_strategy:
+            detail_parts.append(f"fetch_strategy={fetch_strategy}")
+        fetch_reason_code = str(fetch_detail.get("reason_code") or "")
+        if fetch_reason_code:
+            detail_parts.append(f"fetch_reason_code={fetch_reason_code}")
 
     if photo_probe.get("local_path_available") is False:
         hint = (
             "The current photo does not expose a local path for export. Open the asset in Photos, wait for the "
-            'original to download locally, then rerun photos_library and confirm local_path_available=true before '
-            'photos_run(intent="analyze").'
+            'original to download locally, then rerun photos_query(action="list") and confirm local_path_available=true before '
+            'photos_select(action="analyze_photo").'
         )
         if thumbnail_check.get("status") != "ok":
             hint = (
-                "Run photos_status(view=\"checks\") and confirm photos_thumbnail is ok. If not, ensure the asset "
+                "Run photos_query(action=\"status\", options={\"view\": \"checks\"}) and confirm photos_thumbnail is ok. If not, ensure the asset "
                 "is downloaded locally and PhotosMcp can export photo bytes."
             )
         return None, _build_analyze_error(
@@ -502,8 +547,9 @@ async def _resolve_analyze_thumbnail(
             source=source,
             detail=" ".join(detail_parts),
             hint=hint,
-            next_suggested_action="photos_status",
+            next_suggested_action="photos_query",
             can_retry=True,
+            fetch_detail=fetch_detail,
         )
 
     return None, _build_analyze_error(
@@ -513,11 +559,12 @@ async def _resolve_analyze_thumbnail(
         source=source,
         detail=" ".join(detail_parts),
         hint=(
-            "Run photos_status(view=\"checks\") and confirm photos_thumbnail is ok. "
+            "Run photos_query(action=\"status\", options={\"view\": \"checks\"}) and confirm photos_thumbnail is ok. "
             "If not, ensure the asset is downloaded locally and PhotosMcp can export photo bytes."
         ),
-        next_suggested_action="photos_status",
+        next_suggested_action="photos_query",
         can_retry=True,
+        fetch_detail=fetch_detail,
     )
 
 

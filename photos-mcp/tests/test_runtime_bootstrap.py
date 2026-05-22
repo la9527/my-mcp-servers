@@ -86,6 +86,26 @@ def test_default_terminal_python_uses_bundle_python(tmp_path: Path, monkeypatch)
     )
 
 
+def test_default_terminal_python_uses_ancestor_source_venv(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("PHOTO_RANKER_TERMINAL_PYTHON_BIN", raising=False)
+    repo_root = tmp_path / "photos-mcp"
+    app_dir = repo_root / "src" / "photos_mcp" / "vendor" / "photo-ranker"
+    app_dir.mkdir(parents=True)
+    venv_python = repo_root / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+
+    assert (
+        default_terminal_python(
+            "PHOTO_RANKER_TERMINAL_PYTHON_BIN",
+            app_dir,
+        )
+        == str(venv_python)
+    )
+
+
 def test_vendor_script_bootstrap_prefers_bundle_python_root(tmp_path: Path, monkeypatch) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     bootstrap_path = repo_root / "src/photos_mcp/vendor/photo-ranker/scripts/_script_bootstrap.py"

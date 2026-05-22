@@ -35,6 +35,19 @@ class PreflightCheckResult:
 def run_startup_checks() -> list[PreflightCheckResult]:
     return [
         _run_check_with_timeout(
+            check_photos_permission_access,
+            timeout_secs=DEFAULT_PREFLIGHT_TIMEOUT_SECONDS,
+            timeout_result=PreflightCheckResult(
+                key="photos_permission",
+                title="Photos Permission",
+                status=CHECK_WARNING,
+                summary="Apple Photos permission check timed out.",
+                hint=(
+                    "A macOS Photos permission prompt may still be waiting for PhotosMcp.app."
+                ),
+            ),
+        ),
+        _run_check_with_timeout(
             check_photos_library_readability,
             timeout_secs=DEFAULT_PREFLIGHT_TIMEOUT_SECONDS,
             timeout_result=PreflightCheckResult(
@@ -74,6 +87,64 @@ def run_startup_checks() -> list[PreflightCheckResult]:
             ),
         ),
     ]
+
+
+def check_photos_permission_access() -> PreflightCheckResult:
+    try:
+        module = load_vendor_server("photo-source")
+        source = module._get_apple_source()
+        probe_result = source.probe_photokit_permission(request_if_needed=True)
+    except Exception as exc:
+        return PreflightCheckResult(
+            key="photos_permission",
+            title="Photos Permission",
+            status=CHECK_WARNING,
+            summary="Apple Photos permission could not be confirmed.",
+            detail=str(exc),
+            hint=(
+                "PhotosMcp can still read already-local assets, but iCloud-only originals may "
+                "stay unavailable until Photos access is granted."
+            ),
+        )
+
+    status = str(probe_result.get("status") or "unknown")
+    status_code = int(probe_result.get("status_code") or -1)
+    requested = bool(probe_result.get("requested"))
+    detail = (
+        f"PhotoKit status={status} status_code={status_code} "
+        f"requested={'true' if requested else 'false'}"
+    )
+
+    if status == "authorized":
+        return PreflightCheckResult(
+            key="photos_permission",
+            title="Photos Permission",
+            status=CHECK_OK,
+            summary="Apple Photos permission is available.",
+            detail=detail,
+        )
+
+    if status == "denied":
+        hint = (
+            "Open macOS Settings > Privacy & Security > Photos and allow PhotosMcp. "
+            "Without this, iCloud-only originals may require Terminal fallback or remain unavailable."
+        )
+    elif status == "restricted":
+        hint = "This macOS account is restricted from granting Photos access to PhotosMcp."
+    else:
+        hint = (
+            "A Photos permission prompt may still be waiting, or PhotosMcp has not been granted "
+            "PhotoKit access yet."
+        )
+
+    return PreflightCheckResult(
+        key="photos_permission",
+        title="Photos Permission",
+        status=CHECK_WARNING,
+        summary="Apple Photos permission is not ready.",
+        detail=detail,
+        hint=hint,
+    )
 
 
 def check_photos_library_readability() -> PreflightCheckResult:
