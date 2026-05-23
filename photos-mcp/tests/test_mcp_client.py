@@ -53,6 +53,8 @@ def test_photos_workflow_description_guides_single_album_requests_to_curate_to_a
     assert "category workflow" in description
     assert "Do not pass selected_photo_ids" in description
     assert "scope filters plus target_album_name" in description
+    assert "flat options dict" in description
+    assert "Do not nest filters under scope or selection" in description
 
 
 def test_photos_write_description_guides_category_organize_requests() -> None:

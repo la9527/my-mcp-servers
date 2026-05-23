@@ -180,9 +180,9 @@ _register(ActionSpec(
     forbidden=_set("writeback_mode", "album_prefix", "results_json", "output_dir", "group_by_date"),
     defaults={"source": "apple", "source_path": "", "album": "", "person": "", "date_from": "", "date_to": "", "limit": 50, "selection_profile": "general", "exclude_screenshots": True, "folder": "", "wait_for_local": False, "wait_timeout_seconds": 120.0, "wait_poll_interval_seconds": 3.0},
     usage_hint=(
-        "Use scope filters plus target_album_name only. Do not pass selected_photo_ids, "
-        "results_json, or prior result payloads. This workflow already selects the best photos "
-        "and writes them into exactly one target album."
+        "Use flat options only: scope filters plus target_album_name. Do not nest filters under "
+        "scope or selection. Do not pass selected_photo_ids, results_json, or prior result payloads. "
+        "This workflow already selects the best photos and writes them into exactly one target album."
     ),
 ))
 _register(ActionSpec(

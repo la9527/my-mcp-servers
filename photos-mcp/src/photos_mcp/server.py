@@ -152,7 +152,7 @@ def build_server(
 
     @mcp.tool()
     async def photos_workflow(action: str = "curate_to_album", options: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run one-shot workflows. Use curate_to_album for exactly one target album with scope filters plus target_album_name. Do not pass selected_photo_ids or prior result payloads. Use category workflow only when category albums are desired."""
+        """Run one-shot workflows. Use curate_to_album for exactly one target album with a flat options dict: scope filters plus target_album_name. Do not nest filters under scope or selection. Do not pass selected_photo_ids or prior result payloads. Use category workflow only when category albums are desired."""
 
         payload = await facade_photos_workflow(state_store=state_store, action=action, options=options)
         return _ingest_tool_response("photos_workflow", payload, state_store)

@@ -145,6 +145,47 @@ async def test_photos_workflow_curate_to_album_rejects_selected_photo_ids_with_r
 
 
 @pytest.mark.asyncio
+async def test_photos_workflow_curate_to_album_rejects_nested_scope_and_selection_wrappers(monkeypatch) -> None:
+    async def fail_call_vendor(*_args, **_kwargs):
+        raise AssertionError("vendor should not be called for invalid workflow options")
+
+    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fail_call_vendor)
+    client = _client()
+
+    payload = await client.call_tool(
+        "photos_workflow",
+        {
+            "action": "curate_to_album",
+            "options": {
+                "scope": {
+                    "date_range": {"start": "2025-09-01", "end": "2025-09-30"},
+                },
+                "selection": {
+                    "top_percent": 20,
+                },
+                "target_album_name": "single album",
+            },
+        },
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["error_code"] == "invalid_options_for_action"
+    assert payload["invalid_options"] == ["scope", "selection"]
+    assert "flat options" in payload["usage_hint"]
+    assert "scope" in payload["usage_hint"]
+    assert "selection" in payload["usage_hint"]
+    assert payload["retry_example"] == {
+        "source": "apple",
+        "target_album_name": "single album",
+        "selection_profile": "general",
+        "exclude_screenshots": True,
+        "wait_for_local": False,
+        "wait_timeout_seconds": 120.0,
+        "wait_poll_interval_seconds": 3.0,
+    }
+
+
+@pytest.mark.asyncio
 async def test_photos_workflow_curate_to_album_forces_album_writeback(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
