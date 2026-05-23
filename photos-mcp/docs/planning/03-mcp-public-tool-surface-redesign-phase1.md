@@ -675,6 +675,8 @@ Nanobot 은 MCP wrapper 를 통해 새 tool 목록을 그대로 받는다. 별�
 
 - `docs/llm-sample-validation-report-latest.md`
   - validator 재실행 뒤 최신 결과 반영
+- `docs/live-validation-report-latest.md`
+  - `--include-workflows` 재실행 뒤 최신 live 결과 반영
 
 현재 반영 상태:
 
@@ -683,6 +685,7 @@ Nanobot 은 MCP wrapper 를 통해 새 tool 목록을 그대로 받는다. 별�
 - [x] `docs/07-facade-tool-contracts.md`
 - [x] `docs/18-llm-integration-sample-tests.md`
 - [x] `docs/llm-sample-validation-report-latest.md`
+- [x] `docs/live-validation-report-latest.md`
 
 ## rollout 순서
 
@@ -774,6 +777,7 @@ phase 1 이 완료됐다고 보려면 아래가 모두 충족되어야 한다.
 - [x] `docs/07-facade-tool-contracts.md` 갱신
 - [x] `docs/18-llm-integration-sample-tests.md` 갱신
 - [x] `docs/llm-sample-validation-report-latest.md` 최신 결과 반영
+- [x] `docs/live-validation-report-latest.md` 최신 결과 반영
 
 ### live gate
 
@@ -790,3 +794,6 @@ phase 1 이 완료됐다고 보려면 아래가 모두 충족되어야 한다.
 - 2026-05-23: flushed websocket session 기준 WebUI single-album prompt 는 `mcp_photos-mcp_photos_query` / `mcp_photos-mcp_photos_select` / `mcp_photos-mcp_photos_workflow` 를 순서대로 사용했다.
 - 2026-05-23: `photos_workflow(action="curate_to_album")` 의 첫 시도는 `selected_photo_ids` 를 넣어 structured blocked payload 를 받았고, 즉시 허용 option 만 남긴 재시도로 성공했다.
 - 2026-05-23: 최종 결과는 `classification_album_created=false` 와 단일 `touched_album_names` 로 확인됐다.
+- 2026-05-23: `validate_llm_samples.py` 재실행으로 `docs/llm-sample-validation-report-latest.md` 를 갱신했고, sample 4개가 모두 통과했다.
+- 2026-05-23: `live_validate.py --include-workflows` 재실행으로 `docs/live-validation-report-latest.md` 를 갱신했고 `include_workflows=true` 기준 최신 runtime evidence 를 기록했다.
+- 2026-05-23: 다만 live report 에서는 local/non-local analyze 계열이 현재 `mlx-vlm is not installed. Install with: uv pip install mlx-vlm` 때문에 여전히 실패로 남아 있다.
