@@ -167,9 +167,9 @@ class PhotosMcpStateStore:
                 )
                 cancelled_payload.setdefault(
                     "hint",
-                    "Rerun photos_run(intent=\"analyze\", wait_for_local=true) when you want to resume waiting.",
+                    "Rerun photos_select(action=\"analyze_photo\", options={\"wait_for_local\": true, ...}) when you want to resume waiting.",
                 )
-                cancelled_payload.setdefault("next_suggested_action", "photos_run")
+                cancelled_payload.setdefault("next_suggested_action", "photos_select")
                 cancelled_payload.setdefault("can_retry", True)
                 cancelled_payload["finished_at"] = _utcnow_iso()
                 self._synthetic_runs[run_id] = cancelled_payload

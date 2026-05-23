@@ -302,6 +302,19 @@ def test_check_photos_thumbnail_access_reports_silent_photokit_permission_denied
     assert "candidates_tried=1" in result.detail
 
 
+def test_check_photos_thumbnail_access_error_hint_uses_grouped_tool_name(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "photos_mcp.preflight.load_vendor_server",
+        lambda _name: (_ for _ in ()).throw(RuntimeError("thumbnail unavailable")),
+    )
+
+    result = check_photos_thumbnail_access()
+
+    assert result.status == CHECK_ERROR
+    assert "photos_select(action=\"analyze_photo\")" in result.hint
+    assert "photos_run" not in result.hint
+
+
 def test_aggregate_check_status_prioritizes_error_then_warning() -> None:
     ok = SimpleNamespace(status=CHECK_OK)
     warning = SimpleNamespace(status=CHECK_WARNING)

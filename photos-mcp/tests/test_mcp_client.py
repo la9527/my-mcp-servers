@@ -662,6 +662,8 @@ async def test_mock_mcp_client_photos_run_wait_for_local_can_cancel(monkeypatch)
     assert summary["terminal"] is True
     assert summary["error_code"] == "cancelled"
     assert summary["wait_status"] == "cancelled"
+    assert "photos_select(action=\"analyze_photo\"" in summary["hint"]
+    assert summary["next_suggested_action"] == "photos_select"
     assert result["status"] == "cancelled"
     assert result["result_available"] is False
     assert snapshot.daemon_status == "ready"

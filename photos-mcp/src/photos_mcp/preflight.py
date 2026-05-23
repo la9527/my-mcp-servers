@@ -234,7 +234,7 @@ def check_photos_thumbnail_access() -> PreflightCheckResult:
             status=CHECK_ERROR,
             summary="Apple Photos thumbnail access could not be checked.",
             detail=str(exc),
-            hint="Thumbnail export must work before photos_run(intent=\"analyze\") can succeed.",
+            hint="Thumbnail export must work before photos_select(action=\"analyze_photo\") can succeed.",
         )
 
     if not photos:
