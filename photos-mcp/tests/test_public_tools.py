@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -180,14 +181,201 @@ async def test_photos_workflow_curate_to_album_forces_album_writeback(monkeypatc
         },
     )
 
+    await asyncio.sleep(0)
+
     assert captured["vendor"] == "photo-ranker"
     assert captured["function_name"] == "curate_best_photos"
     assert captured["kwargs"]["writeback_mode"] == "album"
     assert captured["kwargs"]["target_album_name"] == "single album"
     assert "album_prefix" not in captured["kwargs"]
     assert payload["action"] == "curate_to_album"
-    assert payload["touched_album_names"] == ["single album"]
-    assert payload["classification_album_created"] is False
+    assert payload["target_album_name"] == "single album"
+    assert payload["terminal"] is False
+
+
+@pytest.mark.asyncio
+async def test_photos_workflow_curate_to_album_returns_accepted_first_response(monkeypatch) -> None:
+    async def fake_call_vendor(vendor: str, function_name: str, *args, **kwargs):
+        assert vendor == "photo-ranker"
+        assert function_name == "curate_best_photos"
+        return {
+            "job_id": "job-accepted-1",
+            "status": "completed",
+            "selected_count": 2,
+            "target_album_name": kwargs["target_album_name"],
+            "touched_album_names": [kwargs["target_album_name"]],
+            "classification_album_created": False,
+            "album_result": {"album": kwargs["target_album_name"], "added": 2, "failed": 0},
+        }
+
+    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
+    client = _client()
+
+    payload = await client.call_tool(
+        "photos_workflow",
+        {
+            "action": "curate_to_album",
+            "options": {
+                "source": "apple",
+                "date_from": "2025-06-30",
+                "date_to": "2025-06-30",
+                "target_album_name": "single album",
+            },
+        },
+    )
+
+    assert payload["job_id"]
+    assert payload["run_id"] == payload["job_id"]
+    assert payload["status"] == "pending"
+    assert payload["terminal"] is False
+    assert payload["summary_available"] is False
+    assert payload["result_available"] is False
+    assert payload["action"] == "curate_to_album"
+    assert payload["target_album_name"] == "single album"
+    assert "submitted_at" in payload
+
+    await asyncio.sleep(0)
+
+    summary = await client.call_tool(
+        "photos_query",
+        {"action": "result_summary", "options": {"run_id": payload["run_id"]}},
+    )
+
+    assert summary["run_id"] == payload["run_id"]
+    assert summary["status"] == "completed"
+    assert summary["terminal"] is True
+    assert summary["summary_available"] is True
+    assert summary["result_available"] is True
+    assert summary["target_album_name"] == "single album"
+    assert summary["vendor_job_id"] == "job-accepted-1"
+
+
+@pytest.mark.asyncio
+async def test_photos_write_import_to_album_returns_accepted_first_response(monkeypatch) -> None:
+    async def fake_call_vendor(vendor: str, function_name: str, *args, **kwargs):
+        assert vendor == "photo-ranker"
+        assert function_name == "import_photos"
+        return {
+            "job_id": "import-job-1",
+            "status": "completed",
+            "imported": 2,
+            "album": kwargs["album_name"],
+        }
+
+    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
+    client = _client()
+
+    payload = await client.call_tool(
+        "photos_write",
+        {
+            "action": "import_to_album",
+            "options": {
+                "photo_paths": ["/tmp/a.jpeg", "/tmp/b.jpeg"],
+                "target_album_name": "imports",
+            },
+        },
+    )
+
+    assert payload["status"] == "pending"
+    assert payload["terminal"] is False
+    assert payload["result_available"] is False
+    assert payload["target_album_name"] == "imports"
+
+    await asyncio.sleep(0)
+
+    summary = await client.call_tool(
+        "photos_query",
+        {"action": "result_summary", "options": {"run_id": payload["run_id"]}},
+    )
+
+    assert summary["status"] == "completed"
+    assert summary["vendor_job_id"] == "import-job-1"
+    assert summary["target_album_name"] == "imports"
+
+
+@pytest.mark.asyncio
+async def test_photos_write_organize_by_category_returns_accepted_first_response(monkeypatch) -> None:
+    async def fake_call_vendor(vendor: str, function_name: str, *args, **kwargs):
+        assert vendor == "photo-ranker"
+        assert function_name == "organize_results"
+        assert args == ("existing-run",)
+        return {
+            "job_id": "organize-job-1",
+            "status": "completed",
+            "organized": 3,
+            "album_prefix": kwargs["album_prefix"],
+        }
+
+    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
+    client = _client()
+
+    payload = await client.call_tool(
+        "photos_write",
+        {
+            "action": "organize_by_category",
+            "options": {
+                "run_id": "existing-run",
+                "album_prefix": "AI 분류",
+            },
+        },
+    )
+
+    assert payload["status"] == "pending"
+    assert payload["terminal"] is False
+    assert payload["result_available"] is False
+
+    await asyncio.sleep(0)
+
+    summary = await client.call_tool(
+        "photos_query",
+        {"action": "result_summary", "options": {"run_id": payload["run_id"]}},
+    )
+
+    assert summary["status"] == "completed"
+    assert summary["vendor_job_id"] == "organize-job-1"
+
+
+@pytest.mark.asyncio
+async def test_photos_workflow_classify_then_organize_returns_accepted_first_response(monkeypatch) -> None:
+    async def fake_call_vendor(vendor: str, function_name: str, *args, **kwargs):
+        assert vendor == "photo-ranker"
+        assert function_name == "classify_and_organize"
+        return {
+            "job_id": "classify-organize-job-1",
+            "status": "completed",
+            "organized": 4,
+            "album_prefix": kwargs["album_prefix"],
+        }
+
+    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
+    client = _client()
+
+    payload = await client.call_tool(
+        "photos_workflow",
+        {
+            "action": "classify_then_organize_by_category",
+            "options": {
+                "source": "apple",
+                "date_from": "2025-06-01",
+                "date_to": "2025-06-30",
+                "album_prefix": "AI 분류",
+            },
+        },
+    )
+
+    assert payload["status"] == "pending"
+    assert payload["terminal"] is False
+    assert payload["result_available"] is False
+
+    await asyncio.sleep(0)
+
+    summary = await client.call_tool(
+        "photos_query",
+        {"action": "result_summary", "options": {"run_id": payload["run_id"]}},
+    )
+
+    assert summary["status"] == "completed"
+    assert summary["vendor_job_id"] == "classify-organize-job-1"
 
 
 @pytest.mark.asyncio
