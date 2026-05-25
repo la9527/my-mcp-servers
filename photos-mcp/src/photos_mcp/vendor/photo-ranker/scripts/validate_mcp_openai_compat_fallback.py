@@ -33,6 +33,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[5]
 from _script_bootstrap import prepare_photo_ranker_runtime
 
 prepare_photo_ranker_runtime(__file__)
@@ -98,7 +99,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--server-args",
         nargs="+",
-        default=["run", "--python", "3.12", "server.py"],
+        default=[
+            "run",
+            "--python",
+            "3.12",
+            "python",
+            "-c",
+            (
+                'from photos_mcp.vendor_loader import load_vendor_server; '
+                'load_vendor_server("photo-ranker").mcp.run()'
+            ),
+        ],
         help="Arguments used to launch the MCP server over stdio.",
     )
     return parser.parse_args()
@@ -146,7 +157,7 @@ async def run_mcp_smoke(args: argparse.Namespace, image_b64: str, fallback_api_k
     server = StdioServerParameters(
         command=args.server_command,
         args=args.server_args,
-        cwd=PROJECT_ROOT,
+        cwd=REPO_ROOT,
         env=server_env,
     )
     async with stdio_client(server) as (read_stream, write_stream):
