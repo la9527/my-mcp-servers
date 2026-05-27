@@ -9,6 +9,7 @@ import time
 
 from mcp.server.fastmcp import FastMCP
 from photos_mcp.logging_setup import ToolLogContext, log_context
+from photos_mcp.runtime_broker_client import default_runtime_broker_client
 
 from .artifacts import job_results_path, save_face_crop, save_job_results, save_preview
 from .album_writer import AlbumWriter
@@ -98,6 +99,20 @@ def release_vlm() -> None:
         _vlm = None
 
 
+async def _run_vlm_tool(callable_):
+    broker = default_runtime_broker_client()
+    await broker.acquire()
+    try:
+        result = callable_()
+        await broker.mark_used()
+        return result
+    finally:
+        try:
+            await broker.release()
+        finally:
+            release_vlm()
+
+
 def get_aesthetic() -> AestheticEngine:
     global _aesthetic
     if _aesthetic is None:
@@ -184,11 +199,10 @@ async def describe_scene(image_b64: str, prompt: str = "") -> str:
     Returns:
         JSON with scene description, people count, event type, etc.
     """
-    try:
-        scene = get_vlm().describe_scene(image_b64, prompt or None)
-        return json.dumps(scene.to_dict())
-    finally:
-        release_vlm()
+    scene = await _run_vlm_tool(
+        lambda: get_vlm().describe_scene(image_b64, prompt or None)
+    )
+    return json.dumps(scene.to_dict())
 
 
 @mcp.tool()
@@ -201,13 +215,12 @@ async def classify_event(image_b64: str) -> str:
     Returns:
         JSON with event_type and confidence.
     """
-    try:
-        event_type, confidence = get_vlm().classify_event(image_b64)
-        return json.dumps(
-            {"event_type": event_type.value, "confidence": round(confidence, 3)}
-        )
-    finally:
-        release_vlm()
+    event_type, confidence = await _run_vlm_tool(
+        lambda: get_vlm().classify_event(image_b64)
+    )
+    return json.dumps(
+        {"event_type": event_type.value, "confidence": round(confidence, 3)}
+    )
 
 
 @mcp.tool()

@@ -61,6 +61,18 @@ def test_resolve_runtime_config_uses_openai_compat_local_llm_fallbacks(monkeypat
     assert runtime.api_base == "http://127.0.0.1:9999/v1"
     assert runtime.api_key == "local-test-key"
     assert runtime.auto_unload is True
+    assert runtime.target == "qwen3-vl-4b"
+
+
+def test_resolve_runtime_config_prefers_explicit_runtime_target(monkeypatch) -> None:
+    vlm = _load_vlm_module()
+
+    monkeypatch.setenv("PHOTO_RANKER_VLM_BACKEND", "openai_compat")
+    monkeypatch.setenv("PHOTO_RANKER_VLM_TARGET", "qwen3-vl-8b")
+
+    runtime = vlm.resolve_runtime_config()
+
+    assert runtime.target == "qwen3-vl-8b"
 
 
 def test_fallback_validator_defaults_to_vendor_loader_server_launch(monkeypatch) -> None:
@@ -82,13 +94,23 @@ def test_fallback_validator_defaults_to_vendor_loader_server_launch(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_describe_scene_releases_vlm_after_tool_response(monkeypatch) -> None:
+async def test_describe_scene_acquires_marks_used_and_releases_broker_lease(monkeypatch) -> None:
     server = _load_server_module()
-    release_calls: list[str] = []
+    lease_calls: list[str] = []
 
     class FakeScene:
         def to_dict(self) -> dict[str, object]:
             return {"scene": "ok", "event_type": "daily"}
+
+    class FakeBrokerClient:
+        async def acquire(self) -> None:
+            lease_calls.append("acquire")
+
+        async def mark_used(self) -> None:
+            lease_calls.append("mark_used")
+
+        async def release(self) -> None:
+            lease_calls.append("release")
 
     class FakeVLM:
         def describe_scene(self, image_b64: str, prompt: str | None = None) -> FakeScene:
@@ -96,18 +118,54 @@ async def test_describe_scene_releases_vlm_after_tool_response(monkeypatch) -> N
             assert prompt == "prompt"
             return FakeScene()
 
+    monkeypatch.setattr(server, "default_runtime_broker_client", lambda: FakeBrokerClient(), raising=False)
     monkeypatch.setattr(server, "get_vlm", lambda: FakeVLM())
-    monkeypatch.setattr(server, "release_vlm", lambda: release_calls.append("released"))
+    monkeypatch.setattr(server, "release_vlm", lambda: None)
 
     payload = await server.describe_scene("image-data", "prompt")
 
     assert '"scene": "ok"' in payload
-    assert release_calls == ["released"]
+    assert lease_calls == ["acquire", "mark_used", "release"]
 
 
 @pytest.mark.asyncio
-async def test_pipeline_run_releases_vlm_after_stage2_when_auto_unload_enabled(monkeypatch) -> None:
+async def test_classify_event_acquires_marks_used_and_releases_broker_lease(monkeypatch) -> None:
+    server = _load_server_module()
+    lease_calls: list[str] = []
+
+    class FakeEventType:
+        value = "travel"
+
+    class FakeBrokerClient:
+        async def acquire(self) -> None:
+            lease_calls.append("acquire")
+
+        async def mark_used(self) -> None:
+            lease_calls.append("mark_used")
+
+        async def release(self) -> None:
+            lease_calls.append("release")
+
+    class FakeVLM:
+        def classify_event(self, image_b64: str) -> tuple[FakeEventType, float]:
+            assert image_b64 == "image-data"
+            return FakeEventType(), 0.75
+
+    monkeypatch.setattr(server, "default_runtime_broker_client", lambda: FakeBrokerClient(), raising=False)
+    monkeypatch.setattr(server, "get_vlm", lambda: FakeVLM())
+    monkeypatch.setattr(server, "release_vlm", lambda: None)
+
+    payload = await server.classify_event("image-data")
+
+    assert '"event_type": "travel"' in payload
+    assert '"confidence": 0.75' in payload
+    assert lease_calls == ["acquire", "mark_used", "release"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_run_acquires_marks_used_and_releases_broker_lease(monkeypatch) -> None:
     pipeline_module = _load_pipeline_module()
+    lease_calls: list[str] = []
 
     monkeypatch.setattr(pipeline_module, "DedupEngine", lambda: SimpleNamespace())
     monkeypatch.setattr(pipeline_module, "FaceEngine", lambda: SimpleNamespace())
@@ -116,14 +174,29 @@ async def test_pipeline_run_releases_vlm_after_stage2_when_auto_unload_enabled(m
     pipeline = pipeline_module.Pipeline()
     fake_vlm = SimpleNamespace(should_auto_unload=True, unload_calls=0)
 
+    class FakeBrokerClient:
+        async def acquire(self) -> None:
+            lease_calls.append("acquire")
+
+        async def mark_used(self) -> None:
+            lease_calls.append("mark_used")
+
+        async def release(self) -> None:
+            lease_calls.append("release")
+
     def fake_unload() -> None:
         fake_vlm.unload_calls += 1
 
     fake_vlm.unload = fake_unload
     pipeline._vlm = fake_vlm
+    monkeypatch.setattr(pipeline_module, "default_runtime_broker_client", lambda: FakeBrokerClient(), raising=False)
 
     async def fake_stage1(photo_id: str, image_b64: str):
-        return pipeline_module.PhotoCandidate(photo_id=photo_id, image_b64=image_b64)
+        return pipeline_module.PhotoCandidate(
+            photo_id=photo_id,
+            image_b64=image_b64,
+            technical_score=20.0,
+        )
 
     async def fake_stage2(candidate) -> None:
         candidate.scene_description = "ok"
@@ -135,5 +208,6 @@ async def test_pipeline_run_releases_vlm_after_stage2_when_auto_unload_enabled(m
 
     await pipeline.run([{"photo_id": "photo-1", "image_b64": "image-data"}])
 
+    assert lease_calls == ["acquire", "mark_used", "release"]
     assert fake_vlm.unload_calls == 1
     assert pipeline._vlm is None

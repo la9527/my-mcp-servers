@@ -59,6 +59,7 @@ class VLMRuntimeConfig:
     api_base: str | None
     api_key: str | None
     auto_unload: bool
+    target: str
 
 
 @dataclass(frozen=True)
@@ -234,6 +235,10 @@ def resolve_runtime_config(model_path: str | None = None) -> VLMRuntimeConfig:
     if backend not in {"mlx", "openai_compat"}:
         logger.warning("Unknown PHOTO_RANKER_VLM_BACKEND=%s, falling back to %s", backend, DEFAULT_BACKEND)
         backend = DEFAULT_BACKEND
+    target = (
+        _env_first("PHOTO_RANKER_VLM_TARGET", default="qwen3-vl-4b")
+        or "qwen3-vl-4b"
+    ).strip() or "qwen3-vl-4b"
 
     if backend == "openai_compat":
         resolved_model = model_path or _env_first(
@@ -259,6 +264,7 @@ def resolve_runtime_config(model_path: str | None = None) -> VLMRuntimeConfig:
         api_base=api_base,
         api_key=api_key,
         auto_unload=auto_unload,
+        target=target,
     )
 
 
@@ -272,6 +278,7 @@ class VLMEngine:
         self._api_base = runtime.api_base
         self._api_key = runtime.api_key
         self._should_auto_unload = runtime.auto_unload
+        self._target = runtime.target
         self._model = None
         self._processor = None
         self._config = None

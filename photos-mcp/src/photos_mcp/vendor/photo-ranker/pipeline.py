@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 
 from photos_mcp.logging_setup import ToolLogContext, log_context
+from photos_mcp.runtime_broker_client import default_runtime_broker_client
 
 from . import db as db_module
 from .engines.aesthetic import score_technical_quality
@@ -300,29 +301,44 @@ class Pipeline:
 
         self._log_workflow(logging.INFO, job, stage2_step or stage1_step or 1, "stage2 start candidates=%d", len(stage2_candidates))
 
-        for i, cand in enumerate(stage2_candidates):
-            if cand.photo_id in s2_done:
-                self._apply_vlm_checkpoint(cand, s2_done[cand.photo_id])
-            else:
-                await self._stage2(cand)
-                if self._db and job:
-                    self._db.save_checkpoint(
-                        job.id, "vlm", cand.photo_id,
-                        self._snapshot_candidate(cand),
+        stage2_runtime_client = (
+            default_runtime_broker_client()
+            if any(cand.photo_id not in s2_done for cand in stage2_candidates)
+            else None
+        )
+        try:
+            if stage2_runtime_client is not None:
+                await stage2_runtime_client.acquire()
+
+            for i, cand in enumerate(stage2_candidates):
+                if cand.photo_id in s2_done:
+                    self._apply_vlm_checkpoint(cand, s2_done[cand.photo_id])
+                else:
+                    await self._stage2(cand)
+                    if stage2_runtime_client is not None:
+                        await stage2_runtime_client.mark_used()
+                    if self._db and job:
+                        self._db.save_checkpoint(
+                            job.id, "vlm", cand.photo_id,
+                            self._snapshot_candidate(cand),
+                        )
+                if job:
+                    job.progress.completed = i + 1
+                    job.progress.current_file = cand.photo_id
+                if stage2_step:
+                    self._log_workflow(
+                        logging.INFO,
+                        job,
+                        stage2_step,
+                        "stage2 progress %d/%d current=%s",
+                        i + 1,
+                        len(stage2_candidates),
+                        cand.photo_id,
                     )
-            if job:
-                job.progress.completed = i + 1
-                job.progress.current_file = cand.photo_id
-            if stage2_step:
-                self._log_workflow(
-                    logging.INFO,
-                    job,
-                    stage2_step,
-                    "stage2 progress %d/%d current=%s",
-                    i + 1,
-                    len(stage2_candidates),
-                    cand.photo_id,
-                )
+        finally:
+            if stage2_runtime_client is not None:
+                await stage2_runtime_client.release()
+            self._release_vlm_if_needed()
 
         t_s2 = time.perf_counter() - t_s2_start
         self._log_workflow(logging.INFO, job, stage2_step or stage1_step or 1, "stage2 done processed=%d in %.2fs", len(stage2_candidates), t_s2)
@@ -363,8 +379,6 @@ class Pipeline:
             t_dedup,
             t_s2,
         )
-
-        self._release_vlm_if_needed()
 
         return ranked
 
