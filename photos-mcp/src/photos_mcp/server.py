@@ -176,6 +176,12 @@ def build_server(
             options,
         )
         if approval_payload is not None:
+            if action.strip().lower().replace("-", "_") == "resume" and state_store is not None:
+                run_id = str((options or {}).get("run_id") or "") if isinstance(options, dict) else ""
+                recovery = state_store.get_recovery_plan(run_id)
+                if recovery.get("status") != "ready_for_approval":
+                    return recovery
+                approval_payload["recovery_plan"] = recovery["recovery_plan"]
             return approval_payload
 
         payload = await facade_photos_workflow(

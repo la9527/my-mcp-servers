@@ -60,6 +60,7 @@ def _accepted_payload(
     source: str,
     submitted_at: str,
     target_album_name: str = "",
+    request_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "run_id": run_id,
@@ -78,6 +79,13 @@ def _accepted_payload(
     }
     if target_album_name:
         payload["target_album_name"] = target_album_name
+    if request_options is not None:
+        payload["resume_request"] = {
+            "tool": tool_name,
+            "action": action,
+            "options": {key: value for key, value in request_options.items() if key != "approval_token"},
+        }
+        payload["resume_policy"] = "user_approval_required"
     return payload
 
 
@@ -91,6 +99,7 @@ def _terminalize_background_payload(
     source: str,
     submitted_at: str,
     target_album_name: str = "",
+    request_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized = _complete_payload(payload, action=action, target_album_name=target_album_name)
     vendor_run_id = str(normalized.get("run_id") or "")
@@ -107,6 +116,13 @@ def _terminalize_background_payload(
     normalized.setdefault("source", source)
     normalized.setdefault("submitted_at", submitted_at)
     normalized.setdefault("started_at", submitted_at)
+    if request_options is not None:
+        normalized["resume_request"] = {
+            "tool": tool_name,
+            "action": action,
+            "options": {key: value for key, value in request_options.items() if key != "approval_token"},
+        }
+        normalized["resume_policy"] = "user_approval_required"
     if normalized.get("terminal") and not normalized.get("finished_at"):
         normalized["finished_at"] = _utcnow_iso()
     return normalized
@@ -122,6 +138,7 @@ def _failed_background_payload(
     submitted_at: str,
     exc: Exception,
     target_album_name: str = "",
+    request_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = _accepted_payload(
         run_id=run_id,
@@ -131,6 +148,7 @@ def _failed_background_payload(
         source=source,
         submitted_at=submitted_at,
         target_album_name=target_album_name,
+        request_options=request_options,
     )
     payload.update(
         {
@@ -154,6 +172,7 @@ def _start_background_action(
     source: str,
     operation: Callable[[], Awaitable[Any]],
     target_album_name: str = "",
+    request_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     run_id = new_run_id(intent)
     submitted_at = _utcnow_iso()
@@ -165,6 +184,7 @@ def _start_background_action(
         source=source,
         submitted_at=submitted_at,
         target_album_name=target_album_name,
+        request_options=request_options,
     )
 
     async def _runner() -> None:
@@ -181,6 +201,7 @@ def _start_background_action(
                     submitted_at=submitted_at,
                     exc=exc,
                     target_album_name=target_album_name,
+                    request_options=request_options,
                 )
             )
             return
@@ -195,6 +216,7 @@ def _start_background_action(
                 source=source,
                 submitted_at=submitted_at,
                 target_album_name=target_album_name,
+                request_options=request_options,
             )
         )
 
@@ -221,6 +243,10 @@ async def photos_query(
         return photos_status(health_payload=health_payload, view=str(opts["view"]))
     if selected_action == "guide":
         return photos_guide(goal=str(opts["goal"]))
+    if selected_action == "resume_plan":
+        if state_store is None:
+            return {"status": "blocked", "error_code": "state_store_unavailable"}
+        return state_store.get_recovery_plan(str(opts["run_id"]))
 
     if selected_action in {"list", "ready_only", "search", "inspect", "prefetch"}:
         return await photos_library(
@@ -394,6 +420,7 @@ async def photos_write(
                 action=selected_action,
                 intent="organize",
                 source="",
+                request_options=opts,
                 operation=lambda: photos_run(
                     state_store=None,
                     intent="organize",
@@ -426,6 +453,7 @@ async def photos_write(
                 intent="import",
                 source="",
                 target_album_name=target_album_name,
+                request_options=opts,
                 operation=lambda: photos_run(
                     state_store=None,
                     intent="import",
@@ -467,6 +495,43 @@ async def photos_workflow(
     selected_action = validated.action
     opts = dict(validated.options)
     opts.pop("approval_token", None)
+    if selected_action == "resume":
+        if state_store is None:
+            return {"status": "blocked", "error_code": "state_store_unavailable"}
+        previous_run_id = str(opts["run_id"])
+        recovery = state_store.get_recovery_plan(previous_run_id)
+        if recovery.get("status") != "ready_for_approval":
+            return recovery
+        request = recovery["recovery_plan"]["request"]
+        request_tool = str(request["tool"])
+        request_action = str(request["action"])
+        request_options = dict(request.get("options") or {})
+        if request_tool == "photos_write":
+            resumed = await photos_write(
+                state_store=state_store,
+                action=request_action,
+                options=request_options,
+            )
+        elif request_tool == "photos_workflow" and request_action != "resume":
+            resumed = await photos_workflow(
+                state_store=state_store,
+                action=request_action,
+                options=request_options,
+            )
+        else:
+            return {
+                "status": "blocked",
+                "error_code": "unsupported_recovery_request",
+                "run_id": previous_run_id,
+                "request_tool": request_tool,
+                "request_action": request_action,
+            }
+        resumed_run_id = str(resumed.get("run_id") or resumed.get("job_id") or "")
+        if resumed_run_id:
+            state_store.mark_synthetic_run_resumed(previous_run_id, resumed_run_id)
+        resumed["resumed_from_run_id"] = previous_run_id
+        resumed["resume_mode"] = "restart_as_new_run"
+        return resumed
     if selected_action == "curate_to_album":
         target_album_name = str(opts["target_album_name"])
         if state_store is not None:
@@ -477,6 +542,7 @@ async def photos_workflow(
                 intent="curate",
                 source=str(opts.get("source") or "apple"),
                 target_album_name=target_album_name,
+                request_options=opts,
                 operation=lambda: photos_run(
                     state_store=None,
                     intent="curate",
@@ -539,6 +605,7 @@ async def photos_workflow(
                 action=selected_action,
                 intent="organize",
                 source=str(opts.get("source") or "apple"),
+                request_options=opts,
                 operation=lambda: photos_run(
                     state_store=None,
                     intent="organize",

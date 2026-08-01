@@ -66,6 +66,7 @@ Actions:
 | `selected` | selected review item 조회 | `run_id`, `top_n` |
 | `artifacts` | result artifact/export 조회 | `run_id`, `output_dir` |
 | `cancel` | 대기 중인 synthetic run 취소 | `run_id` |
+| `resume_plan` | 중단 또는 실패 run의 저장된 요청과 재실행 계획 조회 | `run_id` |
 
 `status` 예:
 
@@ -192,6 +193,7 @@ Actions:
 | `curate_to_directory` | 잘 나온 사진을 골라 local directory 로 export | `output_dir` |
 | `classify_then_organize_by_category` | classify 후 category album/directory 로 정리 | `album_prefix` 또는 `folder` |
 | `import_then_curate_to_album` | local photos import 중심 workflow | `photo_paths`, `target_album_name` |
+| `resume` | 실패 또는 재시작으로 중단된 background run을 승인 후 새 run으로 재실행 | `run_id` |
 
 `curate_to_album` 예:
 

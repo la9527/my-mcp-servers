@@ -35,6 +35,7 @@
 - `selected`
 - `artifacts`
 - `cancel`
+- `resume_plan`
 
 언제 쓰나:
 
@@ -44,6 +45,7 @@
 - 특정 사진 inspect
 - run summary/result/selected/artifact 조회
 - synthetic wait run 취소
+- 중단 또는 실패한 background run의 저장된 원요청과 재실행 계획 확인
 
 예:
 
@@ -137,6 +139,7 @@ photos_write(
 - `curate_to_directory`
 - `classify_then_organize_by_category`
 - `import_then_curate_to_album`
+- `resume`
 
 가장 중요한 action 은 `curate_to_album` 이다. 이 action 은 잘 나온 사진을 선별해 정확히 하나의 Apple Photos 앨범에 저장한다. public option 에 `writeback_mode` 를 받지 않으며, 내부적으로는 single-album write-back 경로만 사용한다.
 

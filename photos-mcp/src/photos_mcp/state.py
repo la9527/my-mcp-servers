@@ -2,13 +2,20 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+import json
+import logging
+from pathlib import Path
 from threading import RLock
 from typing import Any
 
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 ACTIVE_JOB_STATUSES = {"pending", "running"}
+RECOVERY_JOB_STATUSES = {"awaiting_resume_approval"}
 DAEMON_STATUSES = {"stopped", "starting", "ready", "busy", "degraded", "stopping"}
 CHECK_STATUSES = {"pending", "ok", "warning", "error"}
+
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow_iso() -> str:
@@ -83,7 +90,13 @@ class PreflightCheckSnapshot:
 
 
 class PhotosMcpStateStore:
-    def __init__(self, *, endpoint: str, health_endpoint: str) -> None:
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        health_endpoint: str,
+        persistence_path: Path | None = None,
+    ) -> None:
         self._endpoint = endpoint
         self._health_endpoint = health_endpoint
         self._daemon_status = "stopped"
@@ -94,6 +107,8 @@ class PhotosMcpStateStore:
         self._last_preflight_at = ""
         self._last_updated_at = _utcnow_iso()
         self._lock = RLock()
+        self._persistence_path = persistence_path
+        self._load_synthetic_runs()
 
     def set_daemon_status(self, status: str) -> None:
         if status not in DAEMON_STATUSES:
@@ -136,6 +151,7 @@ class PhotosMcpStateStore:
                 self._synthetic_tasks.pop(run_id, None)
             self._last_updated_at = _utcnow_iso()
             self._sync_busy_state_locked()
+            self._persist_synthetic_runs_locked()
 
     def get_synthetic_run(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -179,6 +195,7 @@ class PhotosMcpStateStore:
                 self._synthetic_tasks.pop(run_id, None)
             self._last_updated_at = _utcnow_iso()
             self._sync_busy_state_locked()
+            self._persist_synthetic_runs_locked()
             return True
 
     def clear_synthetic_history(self, statuses: tuple[str, ...] | None = None) -> list[str]:
@@ -195,7 +212,75 @@ class PhotosMcpStateStore:
             if deleted_run_ids:
                 self._last_updated_at = _utcnow_iso()
                 self._sync_busy_state_locked()
+                self._persist_synthetic_runs_locked()
         return deleted_run_ids
+
+    def get_recovery_plan(self, run_id: str) -> dict[str, Any]:
+        with self._lock:
+            payload = self._synthetic_runs.get(run_id)
+            if payload is None:
+                return {
+                    "status": "blocked",
+                    "error_code": "recovery_run_not_found",
+                    "run_id": run_id,
+                }
+
+            request = payload.get("resume_request")
+            if not isinstance(request, dict) or not request.get("tool") or not request.get("action"):
+                return {
+                    "status": "blocked",
+                    "error_code": "recovery_request_unavailable",
+                    "run_id": run_id,
+                    "run_status": job_status_value(payload.get("status")),
+                }
+
+            status = job_status_value(payload.get("status"))
+            if payload.get("resumed_as_run_id"):
+                return {
+                    "status": "blocked",
+                    "error_code": "recovery_run_already_resumed",
+                    "run_id": run_id,
+                    "resumed_as_run_id": str(payload["resumed_as_run_id"]),
+                }
+            if status not in {"failed", "cancelled"} | RECOVERY_JOB_STATUSES:
+                return {
+                    "status": "blocked",
+                    "error_code": "recovery_run_not_ready",
+                    "run_id": run_id,
+                    "run_status": status,
+                }
+
+            return {
+                "status": "ready_for_approval",
+                "run_id": run_id,
+                "run_status": status,
+                "approval_required": True,
+                "recovery_plan": {
+                    "mode": "restart_as_new_run",
+                    "request": dict(request),
+                    "previous_error": str(payload.get("error") or payload.get("reason") or ""),
+                },
+                "next_suggested_action": "photos_workflow",
+                "next_action": "resume",
+            }
+
+    def mark_synthetic_run_resumed(self, run_id: str, resumed_as_run_id: str) -> None:
+        with self._lock:
+            payload = self._synthetic_runs.get(run_id)
+            if payload is None:
+                return
+            updated = dict(payload)
+            updated["resume_approved_at"] = _utcnow_iso()
+            updated["resumed_as_run_id"] = resumed_as_run_id
+            if job_status_value(updated.get("status")) in RECOVERY_JOB_STATUSES:
+                updated["status"] = "cancelled"
+                updated["terminal"] = True
+                updated["finished_at"] = _utcnow_iso()
+                updated["reason"] = "resumed_as_new_run"
+            self._synthetic_runs[run_id] = updated
+            self._last_updated_at = _utcnow_iso()
+            self._sync_busy_state_locked()
+            self._persist_synthetic_runs_locked()
 
     def replace_preflight_checks(self, checks: list[PreflightCheckSnapshot]) -> None:
         with self._lock:
@@ -217,7 +302,7 @@ class PhotosMcpStateStore:
                 reverse=True,
             )
             recent_jobs = sorted(
-                (job for job in all_jobs if job.is_terminal),
+                (job for job in all_jobs if job.is_terminal or job.status in RECOVERY_JOB_STATUSES),
                 key=lambda item: item.sort_key,
                 reverse=True,
             )
@@ -254,6 +339,60 @@ class PhotosMcpStateStore:
         if "warning" in statuses:
             return "warning"
         return "ok"
+
+    def _load_synthetic_runs(self) -> None:
+        if self._persistence_path is None:
+            return
+        if not self._persistence_path.exists():
+            self._persist_synthetic_runs_locked()
+            return
+        try:
+            raw = json.loads(self._persistence_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not load synthetic run state from %s: %s", self._persistence_path, exc)
+            return
+        if not isinstance(raw, dict):
+            return
+
+        recovered_at = _utcnow_iso()
+        for run_id, value in raw.items():
+            if not isinstance(value, dict):
+                continue
+            payload = dict(value)
+            payload.setdefault("run_id", str(run_id))
+            payload.setdefault("job_id", str(run_id))
+            if job_status_value(payload.get("status")) in ACTIVE_JOB_STATUSES:
+                payload.update(
+                    {
+                        "status": "awaiting_resume_approval",
+                        "terminal": False,
+                        "summary_available": True,
+                        "result_available": False,
+                        "interrupted_at": recovered_at,
+                        "reason": "app_restarted",
+                        "approval_required": True,
+                        "can_resume": isinstance(payload.get("resume_request"), dict),
+                        "next_suggested_action": "photos_query",
+                        "hint": "Inspect resume_plan and explicitly approve photos_workflow(action='resume').",
+                    }
+                )
+            self._synthetic_runs[str(run_id)] = payload
+        self._persist_synthetic_runs_locked()
+
+    def _persist_synthetic_runs_locked(self) -> None:
+        if self._persistence_path is None:
+            return
+        try:
+            self._persistence_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = self._persistence_path.with_suffix(f"{self._persistence_path.suffix}.tmp")
+            temporary_path.write_text(
+                json.dumps(self._synthetic_runs, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+            temporary_path.chmod(0o600)
+            temporary_path.replace(self._persistence_path)
+        except OSError as exc:
+            logger.warning("Could not persist synthetic run state to %s: %s", self._persistence_path, exc)
 
 
 def job_snapshot_from_payload(payload: dict[str, Any]) -> JobSnapshot:

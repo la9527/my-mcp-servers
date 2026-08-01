@@ -147,15 +147,25 @@ token은 15분 동안 한 번만 유효하다. 앨범 이름, 사진 목록, run
 
 `classify_range → result_detail 확인 → photos_write(organize_by_category) plan → 사용자 승인 → 적용` 순서를 권장한다. 단일 앨범 요청에는 `organize_by_category`를 사용하지 않는다.
 
+### 중단되거나 실패한 workflow를 다시 실행할 때
+
+앱 재시작으로 중단되었거나 실패한 background workflow는 자동으로 재개되지 않는다. 먼저 저장된 원요청을 확인한다.
+
+```python
+photos_query(action="resume_plan", options={"run_id": "중단된 run ID"})
+```
+
+내용을 확인한 뒤 `photos_workflow(action="resume", options={"run_id": "..."})`를 호출하면 mutation plan과 일회성 승인 token이 반환된다. 사용자가 명시적으로 승인한 경우에만 같은 options에 token을 추가해 다시 호출한다. 복구 작업은 기존 run을 몰래 이어서 실행하지 않고 새 run ID로 시작하며 `resumed_from_run_id`를 남긴다.
+
 ## 6. 추가 사용성 개선 후보
 
-현재 `guide`, VLM 상태 노출과 2단계 쓰기 승인은 구현됐다. 다음 개선 효과가 크다.
+현재 `guide`, VLM 상태 노출, 2단계 쓰기 승인과 영속 run 재실행 승인은 구현됐다. 다음 개선 효과가 크다.
 
 1. 메뉴 앱에서 mutation plan을 사진 thumbnail과 함께 승인하거나 거부하는 UI
 2. Linux 부팅, 원본 다운로드, VLM 분석, 앨범 쓰기 단계를 실시간으로 보여주는 progress timeline
 3. “지난 주말 가족 사진”, “여행 베스트 20장” 같은 저장 가능한 recipe와 반복 실행
 4. workflow 분석 후 실제 선택된 사진 목록을 대상으로 하는 최종 2차 승인
-5. 실패 workflow의 재개 가능한 stage와 예상 변경을 보여주는 재개 승인 화면
+5. 실패 workflow의 재개 가능한 checkpoint와 예상 변경을 보여주는 메뉴 승인 화면
 6. 대규모 보관함을 위한 cursor pagination과 예상 처리 시간 표시
 
-우선순위는 상세 mutation plan과 메뉴 승인 UI, persistent job 재개 승인, progress timeline 순서가 적절하다.
+우선순위는 상세 mutation plan과 메뉴 승인 UI, vendor checkpoint를 포함한 in-place resume, progress timeline 순서가 적절하다.

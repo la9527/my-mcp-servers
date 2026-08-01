@@ -1,7 +1,7 @@
 # photos-mcp 기능 개선 로드맵
 
 - 작성일: 2026-08-01
-- 상태: 운영 정책 확정, 구현 대기
+- 상태: 운영 정책 확정, Phase 1 최소 구현 진행 중
 - 기준 저장소: `photos-mcp`
 - 선행 문서: `01`, `02`, `03` planning 문서와 `docs/15-refactor-direction.md`
 
@@ -28,8 +28,37 @@
 - [x] `/v1/models` 기반 multimodal preflight와 실제 이미지 smoke 검증
 - [x] `photos_query(action="guide")`와 health에 vision runtime 정보 노출
 - [x] 모든 write/workflow에 scope plan과 일회성 승인 token 적용
+- [x] 재실행 후 Apple Photos 권한, 읽기, 앨범 자동화, thumbnail capability 실기기 검증
+- [x] 21,786장 보관함 cold start에 맞춰 preflight timeout을 10초에서 30초로 조정
+- [x] facade background run의 영속 저장과 재시작 시 `awaiting_resume_approval` 전환
+- [x] `resume_plan` 조회 후 승인 token으로 기존 요청을 새 run으로 재실행하는 복구 경로
 - [ ] 분석 후 확정된 photo ID를 포함하는 상세 `MutationPlan`과 메뉴 승인 UI
-- [ ] 영속 Job Coordinator와 실패 workflow 재개 승인
+- [ ] vendor SQLite 작업까지 포함하는 단일 영속 Job Coordinator 통합
+
+### 1.2 재실행 운영 검증
+
+2026-08-01 20:02 KST에 설치 앱을 다시 실행한 뒤 `http://127.0.0.1:18791/health`를 확인했다.
+
+| 항목 | 결과 | 확인 내용 |
+| --- | --- | --- |
+| 데몬 | `ready` | HTTP/MCP endpoint 정상 |
+| Photos 권한 | `ok` | PhotoKit `authorized` |
+| 라이브러리 읽기 | `ok` | 실제 사진 21,786개 DB 로드, sample 조회 성공 |
+| 앨범 자동화 | `ok` | 46개 앨범 조회와 automation probe 성공 |
+| thumbnail | `ok` | 실제 sample thumbnail export 성공, fallback 미사용 |
+| 기본 VLM | `on_demand` | Linux Qwen3.6, 요청 전에는 endpoint를 상주시킬 필요 없음 |
+
+재실행 전에 발생했던 `not_determined`와 timeout은 앱 권한 승인 및 재실행 후 해소되었다. 이 상태에서 조회와 쓰기 preflight를 통과하므로 다음 기능 검증을 진행할 수 있다.
+
+후속 번들 재검증에서 10초 제한이 photo source의 cold start보다 짧아 완료 직전 thread를 버리고 재시도 경합을 만드는 현상을 확인했다. 기본값을 30초로 늘렸고 `PHOTOS_MCP_PREFLIGHT_TIMEOUT_SECONDS`로 시스템별 조정이 가능하다.
+
+이번 Phase 1 최소 구현은 facade가 생성하는 background run을 `~/.photos-mcp/runtime/synthetic-runs.json`에 `0600` 권한으로 저장한다. 앱이 종료될 때 `pending` 또는 `running`이었던 run은 다음 시작에서 자동 실행하지 않고 `awaiting_resume_approval`로 복구한다. 사용자는 `photos_query(action="resume_plan")`으로 저장된 원요청을 검토한 다음, `photos_workflow(action="resume")`의 plan을 별도로 승인해야 새 run이 시작된다.
+
+현재 재개 의미는 완료 checkpoint에서 이어 붙이는 in-place resume가 아니라 동일 요청을 새 run으로 안전하게 다시 시작하는 방식이다. vendor SQLite checkpoint와 facade run을 하나의 ID와 상태 전이로 합치는 작업은 Phase 1의 남은 범위다.
+
+실제 설치 앱에서도 가짜 `pending` run을 영속 파일에 넣고 재시작하는 smoke를 수행했다. run은 `awaiting_resume_approval`, `reason=app_restarted`, `can_resume=true`로 전환됐고 `background_job_running=false`를 유지했다. `resume_plan`의 저장 요청 확인까지만 수행하고 승인 token은 보내지 않아 사진이나 앨범은 변경되지 않았다. smoke 레코드는 제거했으며 운영 파일은 빈 `{}` 상태로 복원했다.
+
+30초 preflight 보정 후 새 서명의 첫 cold start에서 `photos_read`, automation, thumbnail이 timeout 없이 완료됐고, TCC가 새 CDHash를 반영한 다음 실행에서는 네 capability가 모두 `ok`였다. 최종 설치 앱은 `daemon=ready`, `preflight=ok`, background job 없음으로 확인했다.
 
 ## 2. 검토 범위와 기준
 

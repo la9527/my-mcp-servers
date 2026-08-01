@@ -64,6 +64,13 @@ _register(ActionSpec(
 ))
 _register(ActionSpec(
     tool="photos_query",
+    action="resume_plan",
+    allowed=_set("run_id"),
+    required=_set("run_id"),
+    usage_hint="Inspect the saved request before explicitly approving photos_workflow(action='resume').",
+))
+_register(ActionSpec(
+    tool="photos_query",
     action="list",
     allowed=_set("source", "album", "person", "date_from", "date_to", "limit", "include_thumbnail", "include_metadata", "max_size"),
     defaults={"source": "apple", "limit": 20, "include_thumbnail": False, "include_metadata": False, "max_size": 512},
@@ -183,6 +190,13 @@ _register(ActionSpec(
     defaults={"folder": ""},
 ))
 
+_register(ActionSpec(
+    tool="photos_workflow",
+    action="resume",
+    allowed=_set("run_id"),
+    required=_set("run_id"),
+    usage_hint="Restart a persisted failed or interrupted background run only after reviewing resume_plan.",
+))
 _register(ActionSpec(
     tool="photos_workflow",
     action="curate_to_album",

@@ -101,7 +101,7 @@ def photos_guide(goal: str = "overview") -> dict[str, Any]:
         "safety": {
             "write_plan_approval_required": True,
             "failed_workflow_resume_approval_required": True,
-            "failed_workflow_resume_approval_status": "roadmap_pending",
+            "failed_workflow_resume_approval_status": "restart_as_new_run_available",
             "remote_vlm_default_allowed": True,
             "local_only_override": "PHOTOS_MCP_VLM_POLICY=local_only",
         },

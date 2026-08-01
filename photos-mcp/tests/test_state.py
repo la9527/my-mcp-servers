@@ -196,3 +196,76 @@ def test_state_store_merges_synthetic_runs_into_snapshot() -> None:
 
     assert snapshot.daemon_status == "ready"
     assert [job["job_id"] for job in snapshot.recent_jobs] == ["analyze-wait-1"]
+
+
+def test_state_store_persists_and_recovers_interrupted_run_for_approval(tmp_path) -> None:
+    persistence_path = tmp_path / "synthetic-runs.json"
+    store = PhotosMcpStateStore(
+        endpoint="http://127.0.0.1:18791/mcp",
+        health_endpoint="http://127.0.0.1:18791/health",
+        persistence_path=persistence_path,
+    )
+    assert persistence_path.exists()
+    assert persistence_path.stat().st_mode & 0o777 == 0o600
+    store.upsert_synthetic_run(
+        {
+            "run_id": "workflow-1",
+            "job_id": "workflow-1",
+            "request_kind": "photos_workflow",
+            "status": "running",
+            "started_at": "2026-08-01T10:00:00+00:00",
+            "resume_request": {
+                "tool": "photos_workflow",
+                "action": "curate_to_album",
+                "options": {"target_album_name": "복구 앨범", "limit": 5},
+            },
+        }
+    )
+
+    recovered = PhotosMcpStateStore(
+        endpoint="http://127.0.0.1:18791/mcp",
+        health_endpoint="http://127.0.0.1:18791/health",
+        persistence_path=persistence_path,
+    )
+    recovered.set_daemon_status("ready")
+
+    payload = recovered.get_synthetic_run("workflow-1")
+    assert payload is not None
+    assert payload["status"] == "awaiting_resume_approval"
+    assert payload["reason"] == "app_restarted"
+    assert payload["can_resume"] is True
+    assert recovered.snapshot().background_job_running is False
+    assert recovered.snapshot().recent_jobs[0]["job_id"] == "workflow-1"
+
+    plan = recovered.get_recovery_plan("workflow-1")
+    assert plan["status"] == "ready_for_approval"
+    assert plan["recovery_plan"]["mode"] == "restart_as_new_run"
+    assert plan["recovery_plan"]["request"]["action"] == "curate_to_album"
+
+    recovered.mark_synthetic_run_resumed("workflow-1", "workflow-2")
+    repeated = recovered.get_recovery_plan("workflow-1")
+    assert repeated["status"] == "blocked"
+    assert repeated["error_code"] == "recovery_run_already_resumed"
+    assert repeated["resumed_as_run_id"] == "workflow-2"
+
+
+def test_completed_run_cannot_be_resumed() -> None:
+    store = PhotosMcpStateStore(
+        endpoint="http://127.0.0.1:18791/mcp",
+        health_endpoint="http://127.0.0.1:18791/health",
+    )
+    store.upsert_synthetic_run(
+        {
+            "run_id": "completed-1",
+            "status": "completed",
+            "resume_request": {
+                "tool": "photos_workflow",
+                "action": "curate_to_album",
+                "options": {"target_album_name": "완료 앨범"},
+            },
+        }
+    )
+
+    plan = store.get_recovery_plan("completed-1")
+    assert plan["status"] == "blocked"
+    assert plan["error_code"] == "recovery_run_not_ready"

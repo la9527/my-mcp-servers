@@ -93,6 +93,63 @@ async def test_photos_query_guide_returns_runtime_and_safe_flow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_interrupted_workflow_requires_plan_and_approval_before_resume(monkeypatch) -> None:
+    async def fake_photos_run(**_kwargs):
+        return {"status": "completed", "run_id": "vendor-resumed"}
+
+    monkeypatch.setattr("photos_mcp.facade.public_tools.photos_run", fake_photos_run)
+    state_store = PhotosMcpStateStore(
+        endpoint="http://127.0.0.1:18791/mcp",
+        health_endpoint="http://127.0.0.1:18791/health",
+    )
+    state_store.set_daemon_status("ready")
+    state_store.upsert_synthetic_run(
+        {
+            "run_id": "interrupted-1",
+            "job_id": "interrupted-1",
+            "request_kind": "photos_workflow",
+            "status": "awaiting_resume_approval",
+            "resume_request": {
+                "tool": "photos_workflow",
+                "action": "curate_to_album",
+                "options": {"target_album_name": "복구 앨범", "limit": 5},
+            },
+        }
+    )
+    client = MockMcpClient(build_server(config=load_config(), state_store=state_store))
+
+    recovery = await client.call_tool(
+        "photos_query",
+        {"action": "resume_plan", "options": {"run_id": "interrupted-1"}},
+    )
+    assert recovery["status"] == "ready_for_approval"
+    assert recovery["recovery_plan"]["request"]["options"]["target_album_name"] == "복구 앨범"
+
+    approval = await client.call_tool(
+        "photos_workflow",
+        {"action": "resume", "options": {"run_id": "interrupted-1"}},
+    )
+    assert approval["status"] == "awaiting_approval"
+    assert approval["recovery_plan"]["request"]["action"] == "curate_to_album"
+
+    resumed = await client.call_tool(
+        "photos_workflow",
+        {
+            "action": "resume",
+            "options": {
+                "run_id": "interrupted-1",
+                "approval_token": approval["approval_token"],
+            },
+        },
+    )
+    assert resumed["status"] == "pending"
+    assert resumed["resumed_from_run_id"] == "interrupted-1"
+    assert resumed["run_id"] != "interrupted-1"
+    assert state_store.get_synthetic_run("interrupted-1")["resumed_as_run_id"] == resumed["run_id"]
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
 async def test_photos_select_rejects_write_options_before_vendor(monkeypatch) -> None:
     async def fail_call_vendor(*_args, **_kwargs):
         raise AssertionError("vendor should not be called for invalid select options")

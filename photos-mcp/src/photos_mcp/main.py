@@ -62,6 +62,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             state_store = PhotosMcpStateStore(
                 endpoint=config.endpoint,
                 health_endpoint=config.health_endpoint,
+                persistence_path=config.runtime_root / "synthetic-runs.json",
             )
             daemon_controller = PhotosMcpDaemonController(config, state_store)
             logger.info("launching menu app endpoint=%s", config.endpoint)

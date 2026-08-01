@@ -33,10 +33,10 @@
 
 대표 기능:
 
-- `photos_query`: guide/status/list/search/inspect/result/cancel
+- `photos_query`: guide/status/list/search/inspect/result/cancel/resume_plan
 - `photos_select`: analyze/classify/select
 - `photos_write`: 승인 기반 album/export/import/cleanup
-- `photos_workflow`: 승인 기반 curate/organize/import workflow
+- `photos_workflow`: 승인 기반 curate/organize/import workflow와 중단 run 재실행
 
 ### 2.2 Internal photos source access (`photo-source` 계열)
 
