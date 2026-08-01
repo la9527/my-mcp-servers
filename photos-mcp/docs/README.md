@@ -58,6 +58,7 @@
 - `16-vendor-import-inventory.md`: phase-1 기준 top-level vendor import 목록과 전환 순서
 - `17-live-validation-checklist.md`: live endpoint, facade tool, intent/action 별 실검증 체크리스트와 기록 템플릿
 - `18-llm-integration-sample-tests.md`: LLM client 연결 시 실제로 호출해 볼 샘플과 sample validator 문서
+- `19-linux-vlm-benchmark-2026-08-01.md`: Linux llama.cpp 멀티모달 모델의 동일 사진 집합 비교, 운영 모델 판정과 재현 절차
 
 ### planning
 
