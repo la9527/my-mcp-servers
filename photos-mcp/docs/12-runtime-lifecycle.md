@@ -247,7 +247,8 @@ menu UI 는 별도 model layer 없이 `PhotosMcpStateStore.snapshot()` 을 렌�
 - `PHOTOS_MCP_START_DAEMON_ON_LAUNCH`: app launch 직후 daemon 자동 시작 여부
 - `PHOTOS_MCP_JOB_POLL_INTERVAL_SECONDS`: menu refresh / job poll 간격
 - `PHOTOS_MCP_SINGLE_INSTANCE`: single-instance lock on/off
-- `NANOBOT_PHOTOS_MCP_PREFLIGHT_TIMEOUT_SECONDS`: preflight timeout
+- `PHOTOS_MCP_PREFLIGHT_TIMEOUT_SECONDS`: preflight timeout, 기본 30초
+- `NANOBOT_PHOTOS_MCP_PREFLIGHT_TIMEOUT_SECONDS`: 이전 이름과의 호환용 설정
 - `PHOTO_SOURCE_APPLE_FETCH_MODE`: Apple Photos read helper mode
 - `PHOTO_RANKER_APPLE_FETCH_MODE`: `photo-ranker` fetch helper mode
 - `PHOTO_RANKER_APPLE_EVENTS_MODE`: Apple Events album write helper mode

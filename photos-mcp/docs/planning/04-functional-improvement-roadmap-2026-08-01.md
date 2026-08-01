@@ -29,7 +29,7 @@
 - [x] `photos_query(action="guide")`와 health에 vision runtime 정보 노출
 - [x] 모든 write/workflow에 scope plan과 일회성 승인 token 적용
 - [x] 재실행 후 Apple Photos 권한, 읽기, 앨범 자동화, thumbnail capability 실기기 검증
-- [x] 21,786장 보관함 cold start에 맞춰 preflight timeout을 10초에서 30초로 조정
+- [x] macOS Photos 권한 팝업 응답 시간을 확보하도록 preflight timeout을 10초에서 30초로 조정
 - [x] facade background run의 영속 저장과 재시작 시 `awaiting_resume_approval` 전환
 - [x] `resume_plan` 조회 후 승인 token으로 기존 요청을 새 run으로 재실행하는 복구 경로
 - [ ] 분석 후 확정된 photo ID를 포함하는 상세 `MutationPlan`과 메뉴 승인 UI
@@ -50,7 +50,7 @@
 
 재실행 전에 발생했던 `not_determined`와 timeout은 앱 권한 승인 및 재실행 후 해소되었다. 이 상태에서 조회와 쓰기 preflight를 통과하므로 다음 기능 검증을 진행할 수 있다.
 
-후속 번들 재검증에서 10초 제한이 photo source의 cold start보다 짧아 완료 직전 thread를 버리고 재시도 경합을 만드는 현상을 확인했다. 기본값을 30초로 늘렸고 `PHOTOS_MCP_PREFLIGHT_TIMEOUT_SECONDS`로 시스템별 조정이 가능하다.
+후속 번들 재검증에서는 macOS Photos 권한 팝업이 표시된 뒤 사용자가 허용을 누르기 전에 10초 제한이 먼저 끝난 것이 timeout의 주원인이었다. 이때 `not_determined`, `requested=true`가 기록됐으며 사용자 승인 후 다음 실행에서는 `authorized`가 확인됐다. 사진 보관함 초기화 시간도 일부 포함될 수 있지만, 21,786장이라는 사진 수만으로 timeout 원인을 단정할 근거는 없다. 권한 응답 시간을 확보하기 위해 기본값을 30초로 늘렸고 `PHOTOS_MCP_PREFLIGHT_TIMEOUT_SECONDS`로 시스템별 조정이 가능하다.
 
 이번 Phase 1 최소 구현은 facade가 생성하는 background run을 `~/.photos-mcp/runtime/synthetic-runs.json`에 `0600` 권한으로 저장한다. 앱이 종료될 때 `pending` 또는 `running`이었던 run은 다음 시작에서 자동 실행하지 않고 `awaiting_resume_approval`로 복구한다. 사용자는 `photos_query(action="resume_plan")`으로 저장된 원요청을 검토한 다음, `photos_workflow(action="resume")`의 plan을 별도로 승인해야 새 run이 시작된다.
 
@@ -58,7 +58,7 @@
 
 실제 설치 앱에서도 가짜 `pending` run을 영속 파일에 넣고 재시작하는 smoke를 수행했다. run은 `awaiting_resume_approval`, `reason=app_restarted`, `can_resume=true`로 전환됐고 `background_job_running=false`를 유지했다. `resume_plan`의 저장 요청 확인까지만 수행하고 승인 token은 보내지 않아 사진이나 앨범은 변경되지 않았다. smoke 레코드는 제거했으며 운영 파일은 빈 `{}` 상태로 복원했다.
 
-30초 preflight 보정 후 새 서명의 첫 cold start에서 `photos_read`, automation, thumbnail이 timeout 없이 완료됐고, TCC가 새 CDHash를 반영한 다음 실행에서는 네 capability가 모두 `ok`였다. 최종 설치 앱은 `daemon=ready`, `preflight=ok`, background job 없음으로 확인했다.
+30초 preflight 보정 후 새 서명의 첫 실행에서 사용자가 권한 팝업에 응답할 시간이 확보됐고 `photos_read`, automation, thumbnail도 완료됐다. TCC가 새 CDHash를 반영한 다음 실행에서는 네 capability가 모두 `ok`였다. 최종 설치 앱은 `daemon=ready`, `preflight=ok`, background job 없음으로 확인했다.
 
 ## 2. 검토 범위와 기준
 

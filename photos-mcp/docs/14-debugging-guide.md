@@ -1,6 +1,6 @@
 # photos-mcp 디버깅 가이드
 
-Apple Photos 사진 수가 많은 시스템에서 첫 실행의 `photos_read` 또는 `photos_thumbnail`만 timeout이면 권한 거부로 단정하지 않는다. 기본 preflight 제한은 30초이며, cold start가 더 긴 시스템에서는 `PHOTOS_MCP_PREFLIGHT_TIMEOUT_SECONDS`를 늘린 뒤 재실행한다.
+첫 실행에서 Photos 권한 팝업이 표시되면 preflight 시간에 사용자의 응답 대기 시간이 포함된다. `not_determined`, `requested=true`와 함께 `photos_read` 또는 `photos_thumbnail` timeout이 나타났다면 권한 팝업에 응답한 뒤 상태를 다시 확인한다. 기본 제한은 30초이며 더 긴 시간이 필요하면 `PHOTOS_MCP_PREFLIGHT_TIMEOUT_SECONDS`를 조정한다. 사진 수만으로 timeout 원인을 단정하지 않는다.
 
 ## 1. 가장 먼저 구분할 질문
 
