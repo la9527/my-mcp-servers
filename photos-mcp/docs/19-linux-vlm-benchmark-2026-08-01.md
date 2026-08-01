@@ -34,6 +34,21 @@ Qwen3-VL은 평균 지연시간이 약 27.6% 짧고 생성 처리량은 약 34.9
 - Qwen3-VL은 같은 음료 장면 중 5장을 `daily`로, 공원 가족 셀카 일부를 `portrait` 또는 `daily`로 분류했다. 장면 설명은 대체로 사실이지만 인물 수나 가족 단서가 빠지는 경우가 있었다.
 - 이전 `photo-ranker` 실행 결과의 비-`other` 이벤트 22건은 정답 라벨이 아니라 참고용 기존 출력이다. 이 참고 결과와의 일치 수는 Qwen3.6 10건, Qwen3-VL 3건이었다. 따라서 이 수치는 품질 보조 신호일 뿐 정확도로 해석하지 않는다.
 
+## 장면 서술 시각 검토
+
+모델의 JSON 형식 준수와 이벤트 라벨만으로 장면 이해 품질을 단정하지 않는다. 실제 미리보기를 보면서 서로 다른 두 모델의 장면 서술을 대조한 표적 검토도 수행했다.
+
+- 카페에서 아이가 병 음료를 마시는 사진: 두 모델 모두 장면을 사실적으로 서술했다. Qwen3.6의 `meal`은 분류 규칙에 맞았고, Qwen3-VL의 `daily`는 핵심 행동을 덜 반영했다.
+- 공원 가족 셀카: Qwen3.6은 가족, 3명, 야외를 서술했다. Qwen3-VL은 구조화 필드의 인물 수와 가족 여부는 맞췄지만 장면 문장에서는 나무가 많은 공원이라는 배경만 말해 핵심 피사체가 누락됐다.
+- 해변 데크의 어린이: 두 모델 모두 해변, 나무, 데크, 어린이를 사실적으로 서술했다. 이벤트는 자연 야외 기준상 Qwen3.6의 `outdoor`가 더 적합했다.
+- 어두운 실내에서 창밖으로 본 일몰: 두 모델 모두 사실적인 장면 서술을 했고, Qwen3-VL의 보수적인 `other`가 `travel`보다 규칙에 더 맞았다.
+
+이 검토는 의도적으로 불일치 사례 4장을 뽑은 표적 점검이므로 전체 정확도 수치가 아니다. 장면 서술의 강점은 Qwen3.6이 더 풍부한 피사체 설명을 제공한다는 점이고, Qwen3-VL의 강점은 모호한 풍경에서 과도한 이벤트 추론을 덜 한다는 점이다.
+
+비공개 검토 파일을 집계한 결과는 아래와 같다. 사실성은 두 모델 모두 4/4였으나, 핵심 피사체 포착도는 Qwen3.6이 2.00/2, Qwen3-VL이 1.75/2였다. 이벤트 정확성은 Qwen3.6이 3/4, Qwen3-VL이 1/4였다. Qwen3.6은 일몰 사진에서 해변과 여행을 다소 과도하게 추론해 근거 없는 세부 주장 없음 비율이 3/4였고, Qwen3-VL은 4/4였다.
+
+향후에는 `scripts/review_vlm_descriptions.py`로 비공개 검토 템플릿을 만든다. 검토자는 각 응답에 대해 사진 사실성, 핵심 피사체 포착도, 이벤트 정확성, 근거 없는 주장을 점수화하고 집계를 생성한다. 검토 파일에는 개인 사진 관련 서술이 포함될 수 있으므로 Git에 커밋하지 않는다.
+
 ## 재현 방법
 
 `scripts/benchmark_openai_compat_vlm.py`는 사진 원본을 복사하지 않고 지정한 이미지 경로를 OpenAI 호환 endpoint에 전송해 집계 JSON을 만든다.
@@ -50,6 +65,19 @@ python3 scripts/benchmark_openai_compat_vlm.py \
 
 ```bash
 ssh -N -L 18083:127.0.0.1:8083 la9527@linux-workstation
+```
+
+장면 품질 검토 템플릿과 집계는 아래처럼 생성한다.
+
+```bash
+python3 scripts/review_vlm_descriptions.py \
+  --result qwen36=/tmp/qwen36.json \
+  --result qwen3vl=/tmp/qwen3vl.json \
+  --write-template /tmp/private-vlm-review.json
+
+# 사진을 보며 /tmp/private-vlm-review.json의 점수를 채운 뒤 실행한다.
+python3 scripts/review_vlm_descriptions.py \
+  --review-file /tmp/private-vlm-review.json
 ```
 
 ## 운영 적용 전 조건
