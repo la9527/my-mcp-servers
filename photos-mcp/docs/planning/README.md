@@ -9,12 +9,14 @@
 - `01-streamable-http-daemon-redesign-phase1.md`: `PhotosMcp.app` 을 user-launched localhost `streamable HTTP` MCP daemon 으로 재정의하는 구조 변경 문서
 - `02-streamable-http-daemon-implementation-phase1.md`: 위 구조 변경안을 실제 구현 작업 묶음으로 내린 phase-1 실행 계획
 - `03-mcp-public-tool-surface-redesign-phase1.md`: `photos-mcp` public MCP tool surface 를 `photos_query`, `photos_select`, `photos_write`, `photos_workflow` 4개 group tool 로 재설계하는 phase-1 구조 변경 문서
+- `04-functional-improvement-roadmap-2026-08-01.md`: 현재 기능 구조를 다시 분석하고 작업 영속성, 사진 원본 준비, 안전한 쓰기, VLM 독립화와 설명 품질 검증을 중심으로 정리한 개선 로드맵
 
 ## 읽는 순서
 
 1. `01-streamable-http-daemon-redesign-phase1.md`
 2. `02-streamable-http-daemon-implementation-phase1.md`
 3. `03-mcp-public-tool-surface-redesign-phase1.md`
-4. top-level `../01-architecture.md`, `../11-feature-map.md`, `../15-refactor-direction.md`
+4. `04-functional-improvement-roadmap-2026-08-01.md`
+5. top-level `../01-architecture.md`, `../11-feature-map.md`, `../15-refactor-direction.md`
 
 설계 변경 배경과 목표는 redesign 문서를 먼저 보고, 실제 코드/검증 순서는 implementation 문서를 기준으로 읽는 편이 맞다.
