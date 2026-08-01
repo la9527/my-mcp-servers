@@ -17,11 +17,8 @@
 4. `03-photo-ranker.md`
 5. `04-mcp-tool-catalog.md`
 6. `05-mcp-call-flows.md`
-7. `06-tool-surface-simplification-direction.md`
+7. `20-usage-guide.md`
 8. `07-facade-tool-contracts.md`
-9. `08-legacy-to-facade-mapping.md`
-10. `09-orchestration-layer-design.md`
-11. `10-implementation-and-validation-plan.md`
 
 이 순서면 `photos-mcp` 가 무엇인지, 왜 `photo-source` 와 `photo-ranker` 가 필요한지, 실제 호출이 어떻게 흘러가는지까지 한 번에 따라갈 수 있다.
 
@@ -39,15 +36,14 @@
 
 ### MCP 표면과 사용 흐름
 
-- `04-mcp-tool-catalog.md`: 현재 38개 tool 의 카테고리별 목록과 내부 매핑
+- `04-mcp-tool-catalog.md`: 현재 4개 public tool과 action별 역할 및 내부 매핑
 - `05-mcp-call-flows.md`: health, source access, classify job, organize workflow 등 성공 흐름 예시
-- `06-tool-surface-simplification-direction.md`: MCP surface 를 3~4개 facade tool 로 줄이기 위한 기본 방향 문서
-- `07-facade-tool-contracts.md`: 새 4개 facade tool 의 입력/출력 계약 초안
-- `08-legacy-to-facade-mapping.md`: 기존 38개 tool 을 새 facade tool 로 매핑한 표와 제외 범위
-- `09-orchestration-layer-design.md`: app-owned orchestration layer 와 server export 구조 제안
-- `10-implementation-and-validation-plan.md`: 단계별 구현 범위와 검증 계획
+- `07-facade-tool-contracts.md`: 현재 4개 facade tool의 입력/출력과 승인 계약
 - `11-feature-map.md`: endpoint, UI, 테스트 범위, 제약을 요약한 기능 참조 문서
 - `18-llm-integration-sample-tests.md`: LLM client 연결 시 사용할 자연어 샘플, expected tool route, 실행 validator 와 최신 report 기준
+- `20-usage-guide.md`: 처음 호출하는 순서, Linux Qwen3.6과 안전한 쓰기 방법
+
+이전 surface의 설계 이력은 `06-tool-surface-simplification-direction.md`, `08-legacy-to-facade-mapping.md`, `09-orchestration-layer-design.md`, `10-implementation-and-validation-plan.md`에 남아 있다. 이 문서의 옛 도구명은 현재 사용법이 아니라 전환 당시 기록이다.
 
 ### 운영 / 구현 reference
 
@@ -59,12 +55,15 @@
 - `17-live-validation-checklist.md`: live endpoint, facade tool, intent/action 별 실검증 체크리스트와 기록 템플릿
 - `18-llm-integration-sample-tests.md`: LLM client 연결 시 실제로 호출해 볼 샘플과 sample validator 문서
 - `19-linux-vlm-benchmark-2026-08-01.md`: Linux llama.cpp 멀티모달 모델의 동일 사진 집합 비교, 운영 모델 판정과 재현 절차
+- `20-usage-guide.md`: Linux Qwen3.6 기본 VLM, `guide` action, 조회·분석과 2단계 쓰기 승인 사용법
 
 ### planning
 
 - `planning/README.md`: `PhotosMcp` 전용 planning 문서 인덱스와 읽기 순서
 - `planning/01-streamable-http-daemon-redesign-phase1.md`: localhost `streamable HTTP` daemon 구조 재정의 문서
 - `planning/02-streamable-http-daemon-implementation-phase1.md`: 위 구조 변경의 phase-1 구현 계획
+- `planning/03-mcp-public-tool-surface-redesign-phase1.md`: 현재 4개 group tool로 전환한 설계와 완료 기록
+- `planning/04-functional-improvement-roadmap-2026-08-01.md`: 작업 영속성, 안전한 쓰기, VLM과 품질 평가 개선 로드맵
 
 ## 어떤 문서를 언제 보면 되는가
 
@@ -86,6 +85,7 @@
 - `05-mcp-call-flows.md`
 - `11-feature-map.md`
 - `18-llm-integration-sample-tests.md`
+- `20-usage-guide.md`
 
 ### 소스 수정 전에 현재 제약과 구조를 파악하고 싶을 때
 
@@ -96,9 +96,7 @@
 
 ## 현재 작업 기준
 
-이슈 수정은 `15-refactor-direction.md` 의 phase 순서를 우선한다. 특히 현재는 개별 preflight 오류를 먼저 숨기기보다, vendor package namespace 와 `~/.photos-mcp` 앱 전용 runtime/cache ownership 문제를 먼저 정리하는 것이 기준이다.
-
-작업이 완료될 때마다 `15-refactor-direction.md` 의 checkbox 를 `[x]` 로 바꾸고, 완료 메모에 날짜와 검증 결과를 남긴다. 코드만 고치고 문서의 진행 상태를 업데이트하지 않는 방식은 피한다.
+기존 packaging과 namespace 리팩터링은 `15-refactor-direction.md`에 완료 기록이 있다. 새 기능은 `planning/04-functional-improvement-roadmap-2026-08-01.md`의 우선순위를 기준으로 진행하고 완료 상태와 검증 결과를 함께 갱신한다.
 
 ## 빠른 코드 맵
 
@@ -106,7 +104,9 @@
 - `src/photos_mcp/main.py`: CLI 모드와 app main entrypoint
 - `src/photos_mcp/config.py`: app/runtime/endpoint 기본값과 env override
 - `src/photos_mcp/runtime_paths.py`: `~/.photos-mcp` home, runtime/cache/logs 기본 경로와 하위 cache path 계약
-- `src/photos_mcp/server.py`: unified FastMCP server, `/health`, vendored tool 재등록
+- `src/photos_mcp/server.py`: 4개 facade FastMCP tool, `/health`, 쓰기 승인 경계
+- `src/photos_mcp/vision_runtime.py`: Linux Qwen3.6 기본 VLM과 실행 정책
+- `src/photos_mcp/mutation_approval.py`: write/workflow plan과 일회성 승인 token
 - `src/photos_mcp/daemon.py`: uvicorn 기반 HTTP daemon controller
 - `src/photos_mcp/menu_app.py`: menu bar popover UI
 - `src/photos_mcp/state.py`: daemon 상태, preflight 상태, job snapshot store

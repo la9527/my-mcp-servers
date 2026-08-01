@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from dataclasses import replace
 import json
 from typing import Any, Mapping
 
@@ -50,6 +51,16 @@ _register(ActionSpec(
     action="status",
     allowed=_set("view"),
     defaults={"view": "summary"},
+))
+_register(ActionSpec(
+    tool="photos_query",
+    action="guide",
+    allowed=_set("goal"),
+    defaults={"goal": "overview"},
+    usage_hint=(
+        "Use goal=overview|browse|analyze|select|album|categories|troubleshoot "
+        "to get a machine-readable safe call flow and the current VLM runtime."
+    ),
 ))
 _register(ActionSpec(
     tool="photos_query",
@@ -208,6 +219,18 @@ _register(ActionSpec(
     forbidden=_set("album_prefix", "writeback_mode", "results_json", "group_by_date"),
     defaults={"selection_profile": "general", "exclude_screenshots": True, "folder": ""},
 ))
+
+
+for _key, _spec in list(ACTION_SPECS.items()):
+    if _spec.tool not in {"photos_write", "photos_workflow"}:
+        continue
+    _defaults = dict(_spec.defaults)
+    _defaults["approval_token"] = ""
+    ACTION_SPECS[_key] = replace(
+        _spec,
+        allowed=_spec.allowed | _set("approval_token"),
+        defaults=_defaults,
+    )
 
 
 def _parse_options(options: Any) -> dict[str, Any]:

@@ -80,9 +80,14 @@ python3 scripts/review_vlm_descriptions.py \
   --review-file /tmp/private-vlm-review.json
 ```
 
-## 운영 적용 전 조건
+## 운영 적용 결과
 
-1. `PHOTO_RANKER_VLM_BACKEND=openai_compat`로 전환한다.
-2. Mac의 `photos-mcp`가 Linux loopback endpoint를 호출할 수 있도록 SSH 터널 또는 제한된 LAN 프록시를 둔다.
-3. 원격 깨우기와 유휴 종료를 연동할 경우 VLM 요청도 Linux LLM 활동으로 기록한다.
-4. 기본 모델 변경 전에는 생일, 졸업, 식사, 인물, 야외, 여행을 균형 있게 포함한 정답 라벨 세트로 재시험한다.
+2026-08-01에 다음 항목을 기본 동작으로 반영했다.
+
+1. 환경변수가 없으면 `openai_compat`, `Qwen3.6-35B-A3B-Q4_K_M.gguf`, `http://127.0.0.1:12801/v1`을 선택한다.
+2. 첫 VLM 요청에서 `~/bin/ensure-linux-llama-cpp`를 실행해 Wake-on-LAN, llama.cpp와 SSH 터널을 준비한다.
+3. `/v1/models`의 `multimodal` capability를 확인한 뒤 이미지 요청을 수행한다.
+4. 실제 `resources/PhotosMcp-preview.png` 입력으로 기본 경로의 장면 설명과 JSON 계약을 검증했다.
+5. `PHOTOS_MCP_VLM_POLICY=local_only`이면 원격 경로 대신 Mac MLX VLM을 선택한다.
+
+균형 잡힌 정답 라벨 세트 확대와 비식별 개인 thumbnail 평가는 계속 진행할 품질 개선 항목이다.

@@ -8,16 +8,12 @@
 - health: `http://127.0.0.1:18791/health`
 - health capabilities: `http://127.0.0.1:18791/health/capabilities`
 
-### 진단 tool
-
-- `photos_status`
-
 ### facade tools
 
-- `photos_status`
-- `photos_library`
-- `photos_run`
-- `photos_result`
+- `photos_query`
+- `photos_select`
+- `photos_write`
+- `photos_workflow`
 
 ### app shell
 
@@ -37,10 +33,10 @@
 
 대표 기능:
 
-- `photos_status`: 상태/health/current/latest 실행 요약
-- `photos_library`: browse/search/inspect
-- `photos_run`: analyze/classify/curate/organize/import
-- `photos_result`: summary/result/artifacts/selected/cancel
+- `photos_query`: guide/status/list/search/inspect/result/cancel
+- `photos_select`: analyze/classify/select
+- `photos_write`: 승인 기반 album/export/import/cleanup
+- `photos_workflow`: 승인 기반 curate/organize/import workflow
 
 ### 2.2 Internal photos source access (`photo-source` 계열)
 
@@ -103,7 +99,15 @@
 - `clear_job_history`
 - `list_jobs`
 
-현재 public surface 는 이 job 계열을 직접 노출하기보다 `photos_run` 과 `photos_result` 뒤로 숨긴다. 이유는 MCP 응답과 menu UI 가 같은 state store 를 읽으면서도, LLM 에게는 단순한 facade surface 만 보이게 하기 위해서다.
+현재 public surface는 이 job 계열을 직접 노출하지 않고 `photos_select`, `photos_workflow`, `photos_query` 뒤로 숨긴다. MCP 응답과 menu UI가 같은 state store를 읽으면서도 LLM에는 단순한 facade surface만 보이기 위해서다.
+
+### 2.7 Vision runtime과 쓰기 승인
+
+- 기본 VLM: Linux `Qwen3.6-35B-A3B-Q4_K_M.gguf`
+- 기본 정책: `remote_allowed`, 요청 시 Wake-on-LAN과 SSH tunnel 준비
+- 로컬 강제: `PHOTOS_MCP_VLM_POLICY=local_only`
+- 상태 확인: `photos_query(action="guide")` 응답의 `vision_runtime`
+- 모든 `photos_write`와 `photos_workflow`: plan 확인 후 일회성 `approval_token` 필요
 
 ### 2.6 internal Apple Photos write / organize
 

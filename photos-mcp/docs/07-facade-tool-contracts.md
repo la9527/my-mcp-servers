@@ -54,6 +54,7 @@ Actions:
 
 | action | 설명 | 주요 options |
 | --- | --- | --- |
+| `guide` | 목적별 사용 흐름, action catalog와 VLM 상태 | `goal` |
 | `status` | transport/capability/job status | `view` |
 | `list` | source photo 목록 | `source`, `album`, `date_from`, `date_to`, `limit`, `include_metadata` |
 | `ready_only` | local path 가 준비된 항목만 조회 | `source`, `album`, `date_from`, `date_to`, `limit` |
@@ -131,6 +132,8 @@ photos_select(
 
 역할: 이미 선택되었거나 명시된 photo id/path 를 외부 destination 에 쓴다.
 
+모든 action은 첫 호출에서 실행되지 않고 `status="awaiting_approval"`, `mutation_plan`, `approval_token`을 반환한다. 사용자가 승인한 뒤 같은 options에 token을 추가한 두 번째 호출만 실행된다. token은 15분 동안 한 번만 유효하고 options가 바뀌면 무효다.
+
 Actions:
 
 | action | 설명 | required options |
@@ -179,6 +182,8 @@ photos_write(
 
 역할: 하나의 사용자 목표를 end-to-end 로 수행한다. 모델이 여러 단계 조합을 잘못 선택하기 쉬운 요청은 workflow action 을 우선 사용한다.
 
+모든 workflow도 `photos_write`와 같은 2단계 승인 계약을 사용한다. 현재 첫 plan은 source 범위와 destination을 확인하는 scope plan이며, 분석 후 확정된 photo ID의 상세 재승인은 후속 개선 범위다.
+
 Actions:
 
 | action | 설명 | 주요 required options |
@@ -217,6 +222,8 @@ photos_workflow(
 - "선택된 결과를 앨범에 추가", "내보내기", "import", "cleanup" 요청은 `photos_write` 를 사용한다.
 - "잘 나온 사진을 골라 하나의 앨범으로 만들어줘" 는 `photos_workflow(action="curate_to_album")` 를 사용한다.
 - "AI 분류 앨범들로 나눠줘" 는 `photos_workflow(action="classify_then_organize_by_category")` 또는 `photos_write(action="organize_by_category")` 를 사용한다.
+- 도구 선택이 불확실하면 먼저 `photos_query(action="guide", options={"goal": "overview"})`를 호출한다.
+- 쓰기 plan을 받으면 사용자에게 보여주고 명시적으로 승인받기 전에는 `approval_token`을 다시 보내지 않는다.
 
 혼동 방지 rule:
 

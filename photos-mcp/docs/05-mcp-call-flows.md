@@ -90,7 +90,8 @@
 ### 흐름 E: selected 결과를 단일 앨범에 추가
 
 1. `photos_select(action="select_best", options={...})` 또는 기존 완료 run 확보
-2. `photos_write(action="add_selected_to_album", options={"run_id": "...", "target_album_name": "..."})`
+2. `photos_write(action="add_selected_to_album", options={"run_id": "...", "target_album_name": "..."})`로 plan 확인
+3. 사용자가 승인하면 같은 options에 `approval_token`을 추가해 다시 호출
 
 성공 신호:
 
@@ -101,7 +102,8 @@
 ### 흐름 F: classify 결과를 category album 으로 정리
 
 1. `photos_select(action="classify_range", options={...})` 또는 기존 완료 run 확보
-2. `photos_write(action="organize_by_category", options={"run_id": "...", "album_prefix": "AI 분류"})`
+2. `photos_write(action="organize_by_category", options={"run_id": "...", "album_prefix": "AI 분류"})`로 plan 확인
+3. 사용자가 승인하면 같은 options에 `approval_token`을 추가해 다시 호출
 
 이 흐름만 여러 `AI 분류 - ...` 앨범 생성을 허용한다. 단일 앨범 요청에는 사용하지 않는다.
 
@@ -112,6 +114,8 @@
 대표 tool:
 
 - `photos_workflow(action="curate_to_album")`
+
+첫 호출은 scope와 target album을 담은 plan만 반환한다. 사용자가 이를 승인한 뒤 같은 options에 `approval_token`을 추가한 두 번째 호출부터 background workflow가 시작된다.
 
 예:
 

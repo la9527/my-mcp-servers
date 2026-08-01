@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
+import shlex
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+from photos_mcp.vision_runtime import DEFAULT_PROVIDER, resolve_vision_runtime_settings
+
+
 DEFAULT_NANOBOT_SOURCE_ROOT = "/Volumes/ExtData/Nanobot/source"
-DEFAULT_RUNTIME_TARGET = "qwen3-vl-4b"
 DEFAULT_HOLDER_ID = f"photo-ranker:pid-{os.getpid()}"
 LOCAL_API_HOSTS = {"127.0.0.1", "localhost", "0.0.0.0"}
+
+logger = logging.getLogger(__name__)
 
 
 class NoopRuntimeBrokerClient:
@@ -19,6 +26,51 @@ class NoopRuntimeBrokerClient:
         return None
 
     async def release(self) -> None:
+        return None
+
+
+class CommandRuntimeBrokerClient:
+    def __init__(self, *, command: str, timeout_seconds: float) -> None:
+        self.command = command
+        self.timeout_seconds = timeout_seconds
+
+    async def acquire(self) -> None:
+        argv = shlex.split(self.command)
+        if not argv:
+            raise RuntimeError("Vision runtime prepare command is empty")
+
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=self.timeout_seconds,
+            )
+        except TimeoutError as exc:
+            process.kill()
+            await process.communicate()
+            raise RuntimeError(
+                f"Vision runtime prepare command timed out after {self.timeout_seconds:.0f}s"
+            ) from exc
+
+        if process.returncode != 0:
+            detail = stderr.decode("utf-8", errors="replace").strip()
+            if not detail:
+                detail = stdout.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"Vision runtime prepare command failed with exit code {process.returncode}: {detail}"
+            )
+        logger.info("Vision runtime prepare command completed: %s", self.command)
+
+    async def mark_used(self) -> None:
+        # The inference HTTP request itself is the Linux idle-watch activity signal.
+        return None
+
+    async def release(self) -> None:
+        # Keep the tunnel available; Linux applies its own idle power-off policy.
         return None
 
 
@@ -55,13 +107,6 @@ class RuntimeBrokerClient:
         await self._broker.release(self.target, self.holder)
 
 
-def _env_first(*names: str, default: str | None = None) -> str | None:
-    for name in names:
-        if name in os.environ:
-            return os.environ[name]
-    return default
-
-
 def _is_local_openai_compat_runtime(api_base: str | None) -> bool:
     if not api_base:
         return False
@@ -69,19 +114,28 @@ def _is_local_openai_compat_runtime(api_base: str | None) -> bool:
     return host in LOCAL_API_HOSTS
 
 
-def default_runtime_broker_client() -> RuntimeBrokerClient | NoopRuntimeBrokerClient:
-    backend = (
-        _env_first("PHOTO_RANKER_VLM_BACKEND", default="mlx") or "mlx"
-    ).strip().lower()
-    if backend != "openai_compat":
+def default_runtime_broker_client() -> (
+    CommandRuntimeBrokerClient | RuntimeBrokerClient | NoopRuntimeBrokerClient
+):
+    settings = resolve_vision_runtime_settings()
+    if settings.backend != "openai_compat":
         return NoopRuntimeBrokerClient()
 
-    api_base = _env_first("PHOTO_RANKER_VLM_API_BASE", "LOCAL_LLM_BASE_URL")
-    if not _is_local_openai_compat_runtime(api_base):
+    if settings.provider == DEFAULT_PROVIDER:
+        return CommandRuntimeBrokerClient(
+            command=settings.prepare_command,
+            timeout_seconds=settings.prepare_timeout_seconds,
+        )
+
+    if not _is_local_openai_compat_runtime(settings.api_base):
         return NoopRuntimeBrokerClient()
 
-    target = (
-        _env_first("PHOTO_RANKER_VLM_TARGET", default=DEFAULT_RUNTIME_TARGET)
-        or DEFAULT_RUNTIME_TARGET
-    ).strip() or DEFAULT_RUNTIME_TARGET
-    return RuntimeBrokerClient(target=target, holder=DEFAULT_HOLDER_ID)
+    try:
+        return RuntimeBrokerClient(target=settings.target, holder=DEFAULT_HOLDER_ID)
+    except ModuleNotFoundError as exc:
+        logger.warning(
+            "Runtime broker unavailable for target %s; continuing without broker: %s",
+            settings.target,
+            exc,
+        )
+        return NoopRuntimeBrokerClient()

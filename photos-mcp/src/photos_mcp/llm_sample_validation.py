@@ -279,6 +279,27 @@ async def _call_tool(
         return {"text": text_blocks[0]}
 
 
+async def _call_tool_with_test_approval(
+    session: ClientSession,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    context: ToolLogContext | None = None,
+) -> Any:
+    plan = await _call_tool(session, name, arguments, context=context)
+    if not isinstance(plan, dict) or plan.get("status") != "awaiting_approval":
+        return plan
+
+    approved_arguments = {
+        "action": arguments["action"],
+        "options": {
+            **arguments.get("options", {}),
+            "approval_token": plan["approval_token"],
+        },
+    }
+    return await _call_tool(session, name, approved_arguments, context=context)
+
+
 def _payload_has_error(payload: Any) -> bool:
     return isinstance(payload, dict) and bool(payload.get("error"))
 
@@ -485,7 +506,7 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                 message="waiting for photos_workflow curate_to_album response",
             )
             album_name = _album_name(config, scenario)
-            curate_payload = await _call_tool(
+            curate_payload = await _call_tool_with_test_approval(
                 session,
                 "photos_workflow",
                 {
@@ -528,7 +549,7 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                     started_at=scenario_started,
                     message=f"target_album_name={album_name}",
                 )
-                cleanup_payload = await _call_tool(
+                cleanup_payload = await _call_tool_with_test_approval(
                     session,
                     "photos_write",
                     {
@@ -663,7 +684,7 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                                 f"selected_paths={len(selected_paths)} dropped_screen_captures={len(dropped_paths)}"
                             ),
                         )
-                        import_payload = await _call_tool(
+                        import_payload = await _call_tool_with_test_approval(
                             session,
                             "photos_write",
                             {
@@ -685,7 +706,7 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                             started_at=scenario_started,
                             message=f"target_album_name={album_name}",
                         )
-                        cleanup_payload = await _call_tool(
+                        cleanup_payload = await _call_tool_with_test_approval(
                             session,
                             "photos_write",
                             {
@@ -809,7 +830,7 @@ async def run_sample_validation(config: ValidationConfig) -> ValidationReport:
                         started_at=scenario_started,
                         message=f"output_dir={output_dir}",
                     )
-                    export_payload = await _call_tool(
+                    export_payload = await _call_tool_with_test_approval(
                         session,
                         "photos_write",
                         {

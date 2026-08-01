@@ -13,12 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from photos_mcp.vision_runtime import resolve_vision_runtime_settings
+
 from ..models import EventType, SceneDescription
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
-DEFAULT_BACKEND = "mlx"
+DEFAULT_MODEL = "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+DEFAULT_BACKEND = "openai_compat"
 _LOCAL_VISION_PREFLIGHT_TTL_SECONDS = 30.0
 _LOCAL_VISION_PREFLIGHT_CACHE: dict[tuple[str, str], tuple[float, tuple[bool, bool, str]]] = {}
 
@@ -199,12 +201,31 @@ def probe_openai_compat_vision_support(
         close_client = True
 
     try:
+        models_response = client.get("/models")
+        if models_response.is_success:
+            models_payload = models_response.json()
+            advertised_models = models_payload.get("models") or models_payload.get("data") or []
+            for advertised in advertised_models:
+                capabilities = {str(item).lower() for item in advertised.get("capabilities") or []}
+                if "multimodal" in capabilities or "vision" in capabilities:
+                    result = (True, True, "vision capability advertised by /models")
+                    _LOCAL_VISION_PREFLIGHT_CACHE[cache_key] = (
+                        now + _LOCAL_VISION_PREFLIGHT_TTL_SECONDS,
+                        result,
+                    )
+                    return result
+
+        from PIL import Image
+
+        probe_image = Image.new("RGB", (32, 32), color=(128, 128, 128))
+        probe_buffer = io.BytesIO()
+        probe_image.save(probe_buffer, format="JPEG", quality=80)
         response = client.post(
             "/chat/completions",
             json=build_openai_compat_payload(
                 model_path=model_path,
                 prompt_text="Return exactly one JSON object.",
-                image_b64="/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQDxAQEA8PEA8PDw8PEA8PDw8PDw8PFREWFhURFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGi0lHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAEBAQEAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAXEAADAQAAAAAAAAAAAAAAAAAAAREC/9oACAEBAAEFAmP/xAAVEQEBAAAAAAAAAAAAAAAAAAABAP/aAAgBAwEBPwEf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAgEBPwEf/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJf/8QAFBABAAAAAAAAAAAAAAAAAAAAEP/aAAgBAQABPyFf/9k=",
+                image_b64=base64.b64encode(probe_buffer.getvalue()).decode("ascii"),
             ),
         )
         mapped_error = explain_openai_compat_error(
@@ -231,40 +252,15 @@ def probe_openai_compat_vision_support(
 
 
 def resolve_runtime_config(model_path: str | None = None) -> VLMRuntimeConfig:
-    backend = (_env_first("PHOTO_RANKER_VLM_BACKEND", default=DEFAULT_BACKEND) or DEFAULT_BACKEND).strip().lower()
-    if backend not in {"mlx", "openai_compat"}:
-        logger.warning("Unknown PHOTO_RANKER_VLM_BACKEND=%s, falling back to %s", backend, DEFAULT_BACKEND)
-        backend = DEFAULT_BACKEND
-    target = (
-        _env_first("PHOTO_RANKER_VLM_TARGET", default="qwen3-vl-4b")
-        or "qwen3-vl-4b"
-    ).strip() or "qwen3-vl-4b"
-
-    if backend == "openai_compat":
-        resolved_model = model_path or _env_first(
-            "PHOTO_RANKER_VLM_MODEL",
-            "LOCAL_LLM_MODEL",
-            default=DEFAULT_MODEL,
-        ) or DEFAULT_MODEL
-    else:
-        resolved_model = model_path or _env_first(
-            "PHOTO_RANKER_VLM_MODEL",
-            default=DEFAULT_MODEL,
-        ) or DEFAULT_MODEL
-    api_base = _env_first("PHOTO_RANKER_VLM_API_BASE", "LOCAL_LLM_BASE_URL")
-    api_key = _env_first("PHOTO_RANKER_VLM_API_KEY", "LOCAL_LLM_API_KEY", default="")
-    auto_unload = _flag_enabled(
-        _env_first("PHOTO_RANKER_VLM_AUTO_UNLOAD", default="1"),
-        default=True,
-    )
+    settings = resolve_vision_runtime_settings(model_path)
 
     return VLMRuntimeConfig(
-        backend=backend,
-        model_path=resolved_model,
-        api_base=api_base,
-        api_key=api_key,
-        auto_unload=auto_unload,
-        target=target,
+        backend=settings.backend,
+        model_path=settings.model,
+        api_base=settings.api_base,
+        api_key=settings.api_key,
+        auto_unload=settings.auto_unload,
+        target=settings.target,
     )
 
 

@@ -114,10 +114,12 @@ def test_single_instance_lock_rejects_second_process(tmp_path: Path) -> None:
 def test_build_server_registers_facade_tools() -> None:
     mcp = build_server()
 
-    assert "photos_status" in mcp._tool_manager._tools
-    assert "photos_library" in mcp._tool_manager._tools
-    assert "photos_run" in mcp._tool_manager._tools
-    assert "photos_result" in mcp._tool_manager._tools
+    assert sorted(mcp._tool_manager._tools) == [
+        "photos_query",
+        "photos_select",
+        "photos_workflow",
+        "photos_write",
+    ]
 
 
 def test_build_health_payload_reflects_state_store_status() -> None:

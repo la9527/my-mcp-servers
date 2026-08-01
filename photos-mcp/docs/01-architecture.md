@@ -32,13 +32,14 @@
 MCP client
   -> PhotosMcp.app
 	  -> facade FastMCP server
-		  -> photos_status
-		  -> photos_library
-		  -> photos_run
-		  -> photos_result
+		  -> photos_query
+		  -> photos_select
+		  -> photos_write
+		  -> photos_workflow
 	  -> facade orchestration layer
 		  -> photo-source
 		  -> photo-ranker
+		  -> Linux Qwen3.6 VLM
 	  -> PhotosMcpStateStore
 	  -> menu bar UI / health endpoints
 ```
@@ -47,13 +48,13 @@ MCP client
 
 ### 조회 중심 요청
 
-`photos_library(action="list"|"search"|"inspect")`
+`photos_query(action="list"|"search"|"inspect")`
 
 이 요청들은 대부분 `photo-source` 로 내려가고, Apple Photos 또는 다른 source adapter 가 실제 데이터를 읽는다.
 
 ### 분석/분류 중심 요청
 
-`photos_run(intent="analyze"|"classify"|"curate"|"organize"|"import")`
+`photos_select(action="analyze_photo"|"classify_range"|"select_best")` 또는 승인된 `photos_workflow`
 
 이 요청들은 `photo-ranker` 로 내려가고, 필요한 경우 `photo-source` 를 다시 호출해 원본 사진을 읽은 뒤 분석/정리 결과를 만든다.
 
@@ -74,7 +75,11 @@ MCP client
 3. facade layer 가 필요한 vendor runtime 과 internal substep 을 결정한다.
 4. 실제 vendor 함수가 실행된다.
 5. 응답이 job payload 이면 facade layer 가 공통 envelope 로 정규화한다.
-6. `PhotosMcpStateStore` 가 갱신되고, menu UI 와 `/health`, `photos_status` 가 같은 snapshot 을 읽는다.
+6. `PhotosMcpStateStore`가 갱신되고 menu UI, `/health`, `photos_query(action="status")`가 같은 snapshot을 읽는다.
+
+분석 단계는 기본적으로 `vision_runtime.py` 설정을 통해 Linux Qwen3.6을 선택한다. Linux가 준비되지 않았으면 command runtime adapter가 Wake-on-LAN, llama.cpp와 SSH tunnel을 준비한 뒤 OpenAI 호환 image 요청을 수행한다.
+
+`photos_write`와 `photos_workflow`는 vendor 호출 전에 `mutation_approval.py`를 지난다. 첫 호출은 plan만 반환하고, 같은 options에 유효한 `approval_token`이 있을 때만 facade 실행으로 넘어간다.
 
 ### 4.3 background job 반영 흐름
 
@@ -130,7 +135,9 @@ runtime/cache ownership:
 역할:
 
 - `FastMCP("photos-mcp")` 인스턴스를 만든다.
-- `photos_status`, `photos_library`, `photos_run`, `photos_result` tool 을 제공한다.
+- `photos_query`, `photos_select`, `photos_write`, `photos_workflow` tool을 제공한다.
+- `photos_query(action="guide")`로 action catalog와 권장 사용 흐름을 제공한다.
+- `/health/capabilities`에 vision runtime 정책과 상태를 포함한다.
 - `/health`, `/health/capabilities` route 를 유지한다.
 - facade service 를 통해 내부 `photo-source`, `photo-ranker` 호출을 orchestration 한다.
 - job 계열 응답을 정규화해 state store 와 UI 에서 일관되게 사용할 수 있게 한다.

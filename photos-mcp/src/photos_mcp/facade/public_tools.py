@@ -11,6 +11,7 @@ from photos_mcp.facade.library_service import photos_library
 from photos_mcp.facade.result_service import photos_result
 from photos_mcp.facade.run_service import photos_run
 from photos_mcp.facade.status_service import photos_status
+from photos_mcp.facade.usage_service import photos_guide
 from photos_mcp.state import PhotosMcpStateStore
 
 
@@ -218,6 +219,8 @@ async def photos_query(
     opts = validated.options
     if selected_action == "status":
         return photos_status(health_payload=health_payload, view=str(opts["view"]))
+    if selected_action == "guide":
+        return photos_guide(goal=str(opts["goal"]))
 
     if selected_action in {"list", "ready_only", "search", "inspect", "prefetch"}:
         return await photos_library(
@@ -336,7 +339,8 @@ async def photos_write(
         return _validation_payload(exc)
 
     selected_action = validated.action
-    opts = validated.options
+    opts = dict(validated.options)
+    opts.pop("approval_token", None)
     if selected_action == "add_selected_to_album":
         run_id = str(opts["run_id"])
         target_album_name = str(opts["target_album_name"])
@@ -461,7 +465,8 @@ async def photos_workflow(
         return _validation_payload(exc)
 
     selected_action = validated.action
-    opts = validated.options
+    opts = dict(validated.options)
+    opts.pop("approval_token", None)
     if selected_action == "curate_to_album":
         target_album_name = str(opts["target_album_name"])
         if state_store is not None:

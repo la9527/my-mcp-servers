@@ -23,6 +23,7 @@
 
 대표 action:
 
+- `guide`
 - `status`
 - `list`
 - `ready_only`
@@ -37,6 +38,7 @@
 
 언제 쓰나:
 
+- 목적별 권장 호출 순서, action catalog와 현재 VLM 상태 확인
 - app/transport/capability 상태 확인
 - Apple Photos 목록 조회
 - 특정 사진 inspect
@@ -216,13 +218,17 @@ review / write-back / workflow:
 
 진단, source access, 단건 분석, classify, result 조회, write-back 을 차례로 검증하려면 아래 순서가 좋다.
 
-1. `photos_query(action="status", options={"view": "summary"})`
-2. `photos_query(action="list", options={"source": "apple", "limit": 20})`
-3. `photos_query(action="inspect", options={"source": "apple", "photo_id": "..."})`
-4. `photos_select(action="analyze_photo", options={"source": "apple", "photo_id": "..."})`
-5. `photos_select(action="classify_range", options={"source": "apple", "limit": 100})`
-6. `photos_query(action="result_summary", options={"run_id": "..."})`
-7. `photos_query(action="result_detail", options={"run_id": "..."})`
-8. `photos_write(action="organize_by_category", options={"run_id": "...", "album_prefix": "AI 분류"})`
+1. `photos_query(action="guide", options={"goal": "overview"})`
+2. `photos_query(action="status", options={"view": "summary"})`
+3. `photos_query(action="list", options={"source": "apple", "limit": 20})`
+4. `photos_query(action="inspect", options={"source": "apple", "photo_id": "..."})`
+5. `photos_select(action="analyze_photo", options={"source": "apple", "photo_id": "..."})`
+6. `photos_select(action="classify_range", options={"source": "apple", "limit": 100})`
+7. `photos_query(action="result_summary", options={"run_id": "..."})`
+8. `photos_query(action="result_detail", options={"run_id": "..."})`
+9. `photos_write(action="organize_by_category", options={"run_id": "...", "album_prefix": "AI 분류"})`로 plan 확인
+10. 같은 options에 `approval_token`을 추가해 승인된 쓰기 실행
 
 단일 앨범에 바로 저장하려면 위 sequence 대신 `photos_workflow(action="curate_to_album")` 을 우선 사용한다.
+
+모든 `photos_write`와 `photos_workflow`는 첫 호출에서 `status="awaiting_approval"`과 `mutation_plan`을 반환한다. 사용자가 승인한 경우에만 변경되지 않은 options에 반환된 `approval_token`을 추가해 다시 호출한다.

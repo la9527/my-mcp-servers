@@ -295,6 +295,25 @@ async def _call_tool(session: ClientSession, name: str, arguments: dict[str, Any
         return {"text": text_blocks[0]}
 
 
+async def _call_tool_with_test_approval(
+    session: ClientSession,
+    name: str,
+    arguments: dict[str, Any],
+) -> Any:
+    plan = await _call_tool(session, name, arguments)
+    if not isinstance(plan, dict) or plan.get("status") != "awaiting_approval":
+        return plan
+
+    approved_arguments = {
+        "action": arguments["action"],
+        "options": {
+            **arguments.get("options", {}),
+            "approval_token": plan["approval_token"],
+        },
+    }
+    return await _call_tool(session, name, approved_arguments)
+
+
 async def _wait_for_terminal_summary(
     session: ClientSession,
     *,
@@ -819,7 +838,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                                 {"action": "artifacts", "options": {"run_id": classify_run_id}},
                             )
                             progress(f"photos_write workflows: organizing run_id={classify_run_id}")
-                            organize_payload = await _call_tool(
+                            organize_payload = await _call_tool_with_test_approval(
                                 session,
                                 "photos_write",
                                 {
@@ -845,7 +864,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                                 },
                             )
                             progress("photos_write workflows: running import no-op")
-                            import_payload = await _call_tool(
+                            import_payload = await _call_tool_with_test_approval(
                                 session,
                                 "photos_write",
                                 {

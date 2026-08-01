@@ -31,6 +31,23 @@ def _client() -> MockMcpClient:
     return MockMcpClient(build_server(config=load_config(), state_store=state_store))
 
 
+async def _call_with_approval(
+    client: MockMcpClient,
+    tool: str,
+    arguments: dict,
+) -> dict:
+    plan = await client.call_tool(tool, arguments)
+    assert plan["status"] == "awaiting_approval"
+    approved_arguments = {
+        "action": arguments["action"],
+        "options": {
+            **arguments.get("options", {}),
+            "approval_token": plan["approval_token"],
+        },
+    }
+    return await client.call_tool(tool, approved_arguments)
+
+
 @pytest.mark.asyncio
 async def test_public_tool_surface_exposes_only_group_tools() -> None:
     client = _client()
@@ -52,6 +69,27 @@ async def test_photos_query_status_routes_to_status_summary() -> None:
     assert payload["status"] == "ok"
     assert payload["transport"]["status"] == "ok"
     assert payload["running"]["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_photos_query_guide_returns_runtime_and_safe_flow() -> None:
+    client = _client()
+
+    payload = await client.call_tool(
+        "photos_query",
+        {"action": "guide", "options": {"goal": "album"}},
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["goal"] == "album"
+    assert payload["vision_runtime"]["provider"] == "linux_qwen36"
+    assert payload["vision_runtime"]["model"] == "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+    assert payload["safety"]["write_plan_approval_required"] is True
+    assert payload["guide"]["steps"][-1] == {
+        "tool": "photos_write",
+        "action": "add_selected_to_album",
+    }
+    assert "photos_workflow" in payload["action_catalog"]
 
 
 @pytest.mark.asyncio
@@ -206,7 +244,8 @@ async def test_photos_workflow_curate_to_album_forces_album_writeback(monkeypatc
     monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
     client = _client()
 
-    payload = await client.call_tool(
+    payload = await _call_with_approval(
+        client,
         "photos_workflow",
         {
             "action": "curate_to_album",
@@ -252,7 +291,8 @@ async def test_photos_workflow_curate_to_album_returns_accepted_first_response(m
     monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
     client = _client()
 
-    payload = await client.call_tool(
+    payload = await _call_with_approval(
+        client,
         "photos_workflow",
         {
             "action": "curate_to_album",
@@ -306,7 +346,8 @@ async def test_photos_write_import_to_album_returns_accepted_first_response(monk
     monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
     client = _client()
 
-    payload = await client.call_tool(
+    payload = await _call_with_approval(
+        client,
         "photos_write",
         {
             "action": "import_to_album",
@@ -350,7 +391,8 @@ async def test_photos_write_organize_by_category_returns_accepted_first_response
     monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
     client = _client()
 
-    payload = await client.call_tool(
+    payload = await _call_with_approval(
+        client,
         "photos_write",
         {
             "action": "organize_by_category",
@@ -391,7 +433,8 @@ async def test_photos_workflow_classify_then_organize_returns_accepted_first_res
     monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
     client = _client()
 
-    payload = await client.call_tool(
+    payload = await _call_with_approval(
+        client,
         "photos_workflow",
         {
             "action": "classify_then_organize_by_category",

@@ -21,6 +21,16 @@
 
 즉시 전면 재작성하거나 Swift 네이티브 앱으로 교체할 필요는 없다. 현재 외부 계약을 고정한 채 내부를 단계적으로 교체하는 편이 위험과 회귀 비용이 가장 낮다.
 
+### 1.1 2026-08-01 구현 진행
+
+- [x] Linux Qwen3.6을 기본 vision runtime으로 지정
+- [x] Nanobot import 없이 Linux wake, service와 SSH tunnel을 준비하는 command adapter 추가
+- [x] `/v1/models` 기반 multimodal preflight와 실제 이미지 smoke 검증
+- [x] `photos_query(action="guide")`와 health에 vision runtime 정보 노출
+- [x] 모든 write/workflow에 scope plan과 일회성 승인 token 적용
+- [ ] 분석 후 확정된 photo ID를 포함하는 상세 `MutationPlan`과 메뉴 승인 UI
+- [ ] 영속 Job Coordinator와 실패 workflow 재개 승인
+
 ## 2. 검토 범위와 기준
 
 이번 검토는 다음 코드를 기준으로 했다.

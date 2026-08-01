@@ -12,7 +12,9 @@ from photos_mcp.facade.public_tools import photos_query as facade_photos_query
 from photos_mcp.facade.public_tools import photos_select as facade_photos_select
 from photos_mcp.facade.public_tools import photos_workflow as facade_photos_workflow
 from photos_mcp.facade.public_tools import photos_write as facade_photos_write
+from photos_mcp.mutation_approval import require_mutation_approval
 from photos_mcp.state import PhotosMcpStateStore, TERMINAL_JOB_STATUSES, job_snapshot_from_payload
+from photos_mcp.vision_runtime import vision_runtime_summary
 
 
 JOB_PAYLOAD_KEYS = {"job_id", "id", "status"}
@@ -80,6 +82,7 @@ def build_health_payload(config, state_store: PhotosMcpStateStore | None) -> dic
         "status": preflight_status,
         "checks": snapshot.preflight_checks if snapshot else [],
         "last_checked_at": snapshot.last_preflight_at if snapshot else "",
+        "vision_runtime": vision_runtime_summary(check_ready=True),
     }
     return {
         "status": transport_status,
@@ -115,9 +118,10 @@ def build_server(
     mcp = FastMCP(
         "photos-mcp",
         instructions=(
-            "Simplified Photos MCP facade for Nanobot. "
-            "Expose a small set of high-level tools that orchestrate internal "
-            "photo-source and photo-ranker workflows behind PhotosMcp.app."
+            "Photos MCP facade with four high-level tools. Start with "
+            "photos_query(action='guide') when the correct flow is unclear. "
+            "Read and analyze before writing, and require user approval of the "
+            "mutation plan before any album change."
         ),
         host=config.host,
         port=config.port,
@@ -126,7 +130,7 @@ def build_server(
 
     @mcp.tool()
     async def photos_query(action: str = "status", options: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Read-only diagnostics, library browsing, inspection, and result lookup. Use action plus action-specific options."""
+        """Read-only guide, diagnostics, library browsing, inspection, and result lookup. Start with action='guide' when unsure."""
 
         payload = await facade_photos_query(
             state_store=state_store,
@@ -145,16 +149,40 @@ def build_server(
 
     @mcp.tool()
     async def photos_write(action: str = "add_selected_to_album", options: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Write selected photos, photo ids, imports, exports, cleanup, or category organization through explicit actions. Use organize_by_category only for category albums. Do not pass target_album_name there."""
+        """Plan a write first and repeat unchanged options with approval_token after user approval. Use organize_by_category only for category albums. Do not pass target_album_name there."""
 
-        payload = await facade_photos_write(state_store=state_store, action=action, options=options)
+        approval_payload, approved_options = require_mutation_approval(
+            "photos_write",
+            action,
+            options,
+        )
+        if approval_payload is not None:
+            return approval_payload
+
+        payload = await facade_photos_write(
+            state_store=state_store,
+            action=action,
+            options=approved_options if approved_options is not None else options,
+        )
         return _ingest_tool_response("photos_write", payload, state_store)
 
     @mcp.tool()
     async def photos_workflow(action: str = "curate_to_album", options: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run one-shot workflows. Use curate_to_album for exactly one target album with a flat options dict: scope filters plus target_album_name. Do not nest filters under scope or selection. Do not pass selected_photo_ids or prior result payloads. Use category workflow only when category albums are desired."""
+        """Plan a workflow first and run it after approval_token. Use curate_to_album for exactly one target album with a flat options dict containing scope filters plus target_album_name; use category workflow only for category albums. Do not nest filters under scope or selection. Do not pass selected_photo_ids or prior result payloads."""
 
-        payload = await facade_photos_workflow(state_store=state_store, action=action, options=options)
+        approval_payload, approved_options = require_mutation_approval(
+            "photos_workflow",
+            action,
+            options,
+        )
+        if approval_payload is not None:
+            return approval_payload
+
+        payload = await facade_photos_workflow(
+            state_store=state_store,
+            action=action,
+            options=approved_options if approved_options is not None else options,
+        )
         return _ingest_tool_response("photos_workflow", payload, state_store)
 
     @mcp.custom_route(config.health_path, methods=["GET"], include_in_schema=False)

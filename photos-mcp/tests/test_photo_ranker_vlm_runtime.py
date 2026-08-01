@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import base64
+import io
 from pathlib import Path
 import sys
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from photos_mcp.vendor_loader import prepare_vendor_runtime
 
@@ -73,6 +76,70 @@ def test_resolve_runtime_config_prefers_explicit_runtime_target(monkeypatch) -> 
     runtime = vlm.resolve_runtime_config()
 
     assert runtime.target == "qwen3-vl-8b"
+
+
+def test_vision_preflight_uses_advertised_multimodal_capability(monkeypatch) -> None:
+    vlm = _load_vlm_module()
+
+    class FakeResponse:
+        is_success = True
+
+        def json(self):
+            return {"models": [{"capabilities": ["completion", "multimodal"]}]}
+
+    class FakeClient:
+        def get(self, path: str):
+            assert path == "/models"
+            return FakeResponse()
+
+        def post(self, *_args, **_kwargs):
+            raise AssertionError("image probe should not run when /models advertises multimodal")
+
+    result = vlm.probe_openai_compat_vision_support(
+        "http://127.0.0.1:19991/v1",
+        "vision-model",
+        client=FakeClient(),
+    )
+
+    assert result == (True, True, "vision capability advertised by /models")
+
+
+def test_vision_preflight_fallback_uses_valid_32px_jpeg(monkeypatch) -> None:
+    vlm = _load_vlm_module()
+    captured: dict[str, object] = {}
+
+    class ModelsResponse:
+        is_success = True
+
+        def json(self):
+            return {"data": [{"capabilities": ["completion"]}]}
+
+    class ProbeResponse:
+        status_code = 200
+        text = "{}"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeClient:
+        def get(self, _path: str):
+            return ModelsResponse()
+
+        def post(self, _path: str, *, json: dict):
+            captured.update(json)
+            return ProbeResponse()
+
+    result = vlm.probe_openai_compat_vision_support(
+        "http://127.0.0.1:19992/v1",
+        "vision-model",
+        client=FakeClient(),
+    )
+
+    image_url = captured["messages"][1]["content"][1]["image_url"]["url"]
+    image_bytes = base64.b64decode(image_url.split(",", 1)[1])
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        assert image.size == (32, 32)
+    assert result == (True, True, "vision preflight passed")
 
 
 def test_fallback_validator_defaults_to_vendor_loader_server_launch(monkeypatch) -> None:

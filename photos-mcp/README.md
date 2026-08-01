@@ -21,12 +21,14 @@
 
 현재 기본 MCP public surface 는 4개 facade tool 이다.
 
-- `photos_status`
-- `photos_library`
-- `photos_run`
-- `photos_result`
+- `photos_query`
+- `photos_select`
+- `photos_write`
+- `photos_workflow`
 
-Apple Photos 에서 선택한 사진이 iCloud-only 인 경우에는 `photos_run(intent="analyze", wait_for_local=true)` 로 즉시 실패 대신 background wait run 을 만들 수 있다. 이때 첫 응답은 `wait_status=waiting_for_local_download` 와 함께 돌아오고, 이후 `photos_result(action="summary"|"result")` 로 진행 상황을 조회하거나 `photos_result(action="cancel")` 로 대기를 중단할 수 있다. startup preflight 가 warning 이어도 개별 asset wait run 은 시작될 수 있으며, 이 경우 summary 에 `permission_warning=true` 가 같이 표시될 수 있다.
+어떤 도구와 action을 써야 할지 모르면 `photos_query(action="guide", options={"goal": "overview"})`로 시작한다. Apple Photos에서 선택한 사진이 iCloud-only이면 `photos_select(action="analyze_photo", options={"wait_for_local": true, ...})`로 background wait run을 만들고, 이후 `photos_query(action="result_summary"|"result_detail")`로 조회하거나 `photos_query(action="cancel")`로 중단한다.
+
+사진 분석 기본 VLM은 Linux 워크스테이션의 `Qwen3.6-35B-A3B-Q4_K_M.gguf`다. 첫 분석 요청이 Linux 깨우기, llama.cpp 준비와 SSH 터널 연결을 자동 수행한다. 원격 전송을 금지하려면 PhotosMcp 앱을 `PHOTOS_MCP_VLM_POLICY=local_only` 환경으로 다시 실행한다.
 
 기존 `photo-source`, `photo-ranker` 의 세부 tool 은 내부 implementation detail 로 유지되며, 기본 `list_tools` 에서는 직접 노출하지 않는다.
 
@@ -49,7 +51,7 @@ Apple Photos 에서 선택한 사진이 iCloud-only 인 경우에는 `photos_run
 
 1. `PhotosMcp.app` 이 정상 실행된다.
 2. `http://127.0.0.1:18791/health` 가 응답한다.
-3. MCP client 에서 `photos_status` 와 대표 facade tool 호출이 성공한다.
+3. MCP client에서 `photos_query(action="status")`와 `photos_query(action="guide")`가 성공한다.
 
 기본 endpoint 는 아래와 같다.
 
@@ -76,13 +78,15 @@ health 해석 기준:
 대표 호출 흐름은 아래와 같다.
 
 1. MCP client 가 facade tool 을 호출한다.
-2. `server.py` 가 `photos_status`, `photos_library`, `photos_run`, `photos_result` 중 하나를 받는다.
+2. `server.py`가 `photos_query`, `photos_select`, `photos_write`, `photos_workflow` 중 하나를 받는다.
 3. facade layer 가 필요한 vendor runtime 을 준비하고 내부 substep 을 결정한다.
 4. `photo-source` 또는 `photo-ranker` 함수가 실제 작업을 수행한다.
 5. job 관련 응답이면 facade layer 가 공통 envelope 로 정규화하고 `PhotosMcpStateStore` 를 갱신한다.
 6. menu bar UI 와 health payload 가 같은 state snapshot 을 읽는다.
 
-`wait_for_local=true` 인 analyze 는 예외다. 이 경우 vendor job queue 대신 facade synthetic run 이 state store 에 저장되고, app 이 Apple Photos local download 가능 여부를 polling 하다가 준비되면 analyze 를 자동으로 이어서 수행한다.
+`wait_for_local=true`인 analyze는 예외다. 이 경우 vendor job queue 대신 facade synthetic run이 state store에 저장되고, app이 Apple Photos local download 가능 여부를 polling하다가 준비되면 analyze를 자동으로 이어서 수행한다.
+
+`photos_write`와 `photos_workflow`는 첫 호출에서 실행하지 않고 `mutation_plan`과 `approval_token`을 반환한다. 사용자가 계획을 확인하고 승인한 경우에만 같은 action과 변경되지 않은 options에 token을 추가해 다시 호출한다. token은 15분 동안 한 번만 유효하며 options가 바뀌면 거부된다.
 
 즉, `photos-mcp` 는 단순 proxy 가 아니라 아래 역할까지 같이 맡는다.
 
@@ -113,6 +117,7 @@ health 해석 기준:
 - 기능 참조: `docs/11-feature-map.md`
 - 디버깅 순서: `docs/14-debugging-guide.md`
 - 리팩터링 방향: `docs/15-refactor-direction.md`
+- 개선된 사용법: `docs/20-usage-guide.md`
 
 ## 서브시스템 요약
 
@@ -169,7 +174,9 @@ standalone build 와 bundle smoke 는 `docs/13-build-and-validation.md` 를 기�
 ## 코드 기준 빠른 맵
 
 - `src/photos_mcp/server.py`: facade FastMCP server, `/health`, 4개 public tool export
-- `src/photos_mcp/facade.py`: facade orchestration layer와 vendor 호출 조합
+- `src/photos_mcp/facade/`: facade action 검증, 조회, 실행, 결과와 사용 가이드
+- `src/photos_mcp/vision_runtime.py`: Linux Qwen3.6 기본 VLM과 `local_only` 정책
+- `src/photos_mcp/mutation_approval.py`: 쓰기 및 workflow plan 승인 gate
 - `src/photos_mcp/vendor_loader.py`: `photo-source`, `photo-ranker` runtime loader
 - `src/photos_mcp/daemon.py`: uvicorn daemon controller
 - `src/photos_mcp/menu_app.py`: menu bar app UI
