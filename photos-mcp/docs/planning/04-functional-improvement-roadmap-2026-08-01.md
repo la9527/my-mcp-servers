@@ -1,7 +1,7 @@
 # photos-mcp 기능 개선 로드맵
 
 - 작성일: 2026-08-01
-- 상태: 검토 완료, 구현 대기
+- 상태: 운영 정책 확정, 구현 대기
 - 기준 저장소: `photos-mcp`
 - 선행 문서: `01`, `02`, `03` planning 문서와 `docs/15-refactor-direction.md`
 
@@ -16,6 +16,8 @@
 3. 앨범 쓰기 작업에 미리보기, 멱등성, 실행 영수증과 부분 실패 복구를 추가한다.
 4. VLM 실행을 Nanobot 내부 구현에서 분리하고 로컬 Mac, Linux 원격 서버, OpenAI 호환 서버를 같은 공급자 계약으로 다룬다.
 5. 사진 설명 품질을 고정 데이터셋과 독립 평가기로 반복 검증해 모델 선택 근거로 사용한다.
+
+운영 정책은 원격 Linux VLM 기본 허용, 모든 앨범 변경 전 plan 승인, 실패 workflow의 사용자 승인 기반 재개, 비식별 개인 thumbnail의 품질 평가 세트 포함으로 확정한다.
 
 즉시 전면 재작성하거나 Swift 네이티브 앱으로 교체할 필요는 없다. 현재 외부 계약을 고정한 채 내부를 단계적으로 교체하는 편이 위험과 회귀 비용이 가장 낮다.
 
@@ -186,15 +188,16 @@ flowchart LR
 5. 변경 작업은 계획과 적용을 구분하고 모든 적용 결과를 영수증으로 남긴다.
 6. Nanobot은 MCP client일 뿐 photos-mcp 핵심 코드의 dependency가 되지 않는다.
 7. 모델 선택은 이름이 아니라 capability와 품질 profile을 기준으로 한다.
-8. 테스트용 평가 데이터와 실제 개인 사진 산출물을 분리한다.
+8. 공개 평가 데이터와 사용자가 승인한 비식별 개인 thumbnail을 함께 사용하되, 평가 자산은 실제 개인 사진 및 운영 산출물과 분리 보관한다.
 
 ## 7. 세부 개선안
 
 ### 7.1 단일 영속 Job Coordinator
 
 - `run_id`를 facade와 vendor 전체에서 유일 식별자로 사용한다.
-- `queued`, `running`, `waiting_source`, `waiting_model`, `writing`, `succeeded`, `failed`, `cancelled`, `interrupted` 상태 전이를 고정한다.
-- 앱 시작 시 `running` 상태를 검사해 재개 가능한 작업과 중단 처리할 작업을 조정한다.
+- `queued`, `running`, `waiting_source`, `waiting_model`, `writing`, `succeeded`, `failed`, `cancelled`, `interrupted`, `awaiting_resume_approval` 상태 전이를 고정한다.
+- 앱 시작 시 미완료 작업을 검사해 안전하게 중단하고 `awaiting_resume_approval`로 전환한다. 실패하거나 중단된 workflow는 자동 재개하지 않는다.
+- 재개 가능한 stage, 이미 완료된 변경, 재실행 시 예상 동작을 사용자에게 보여주고 명시적 승인 token을 받은 뒤에만 재개한다.
 - 취소 요청을 DB에 먼저 기록하고 단계 경계에서 cooperative cancellation을 확인한다.
 - 상위 workflow와 하위 stage를 parent/child 관계로 저장한다.
 - UI, MCP status, result 조회는 모두 같은 repository를 사용한다.
@@ -219,6 +222,8 @@ flowchart LR
 
 - 모든 변경 action이 먼저 `MutationPlan`을 만든다.
 - plan에는 생성 또는 재사용할 앨범, 추가할 사진, 건너뛸 사진, 삭제 후보와 예상 변경 수를 포함한다.
+- 새 앨범 생성뿐 아니라 기존 앨범에 사진을 추가하는 작업도 항상 plan을 사용자에게 제시하고 승인받은 뒤 실행한다.
+- 승인 token은 plan 내용의 hash와 연결하고, plan 대상이 바뀌거나 만료되면 다시 승인받는다.
 - 적용 요청은 `idempotency_key`를 받아 같은 요청의 중복 실행을 막는다.
 - 완료 후 `MutationReceipt`에 실제 변경, 실패 항목, helper 응답과 재조정 결과를 기록한다.
 - timeout 뒤에는 실패로 단정하지 않고 Apple Photos 상태를 다시 읽어 결과를 조정한다.
@@ -231,7 +236,8 @@ flowchart LR
 - Linux adapter가 wake, readiness, model lease, 호출, release를 책임지고 photos-mcp는 Nanobot 코드를 import하지 않는다.
 - `fast_tagging`, `detailed_caption`, `people_event`, `document_ocr` 같은 profile을 정의한다.
 - 결과에 provider, model revision, quantization, prompt version, latency와 fallback을 기록한다.
-- 원격 전송은 `local_only`, `remote_allowed`, `remote_preferred` 정책으로 사용자가 제어한다.
+- 기본 개인정보 정책은 `remote_allowed`로 두어 Linux VLM 사용을 허용한다. 품질과 작업 profile에 따라 원격 모델을 자동 선택할 수 있으며 사용자는 요청별 또는 전역 `local_only` 설정으로 원격 전송을 차단할 수 있다.
+- 실제 원격 전송 전에는 원본 대신 작업에 필요한 최소 해상도의 thumbnail을 만들고 EXIF와 위치 metadata를 제거한다.
 
 ### 7.6 Apple Photos helper 안정화
 
@@ -254,12 +260,14 @@ flowchart LR
 
 모델이 생성한 설명을 단순 성공 여부로 평가하지 않고 다음 방식으로 검증한다.
 
-1. 개인 사진이 아닌 고정 평가 세트 100~200장을 유형별로 구성한다.
+1. 공개 또는 합성 이미지와 사용자가 포함을 승인한 비식별 개인 thumbnail로 고정 평가 세트 100~200장을 유형별로 구성한다.
 2. 인물 수, 주요 사물, 장소 유형, 행동, 시간대, 텍스트 존재 여부를 정답 label로 기록한다.
 3. 각 모델의 출력 형식 유효성, 사실 일치, 누락, 환각, 세부 설명, 처리 시간을 자동 채점한다.
 4. 독립 judge 모델은 후보 모델 이름을 가린 상태에서 설명을 비교한다.
 5. 일부 표본은 사람이 원본 사진과 함께 재검토해 judge 편향을 보정한다.
 6. prompt와 모델 revision이 바뀔 때 같은 세트로 회귀 시험을 수행한다.
+
+개인 thumbnail은 평가 세트에 넣기 전에 얼굴, 차량 번호, 주소, 문서와 화면의 식별 가능한 문자열을 가리고 EXIF, GPS, 원본 파일명과 Photos 식별자를 제거한다. 비식별 변환본과 변환 이력은 로컬 암호화 저장소에서만 관리하며 Git, 일반 로그, 원격 artifact 저장소에는 포함하지 않는다. 사용자는 개별 자산 또는 평가 세트 전체를 철회하고 삭제할 수 있어야 한다.
 
 권장 핵심 지표는 다음과 같다.
 
@@ -288,10 +296,10 @@ flowchart LR
 
 - 단일 `run_id`, 상태 전이와 repository를 도입한다.
 - 메모리 synthetic run을 영속 작업으로 대체한다.
-- 앱 재시작 조정, 취소와 재시도 시험을 추가한다.
+- 앱 재시작 조정, 취소, 사용자 승인 재개 시험을 추가한다.
 - UI와 MCP 응답을 같은 상태 source로 전환한다.
 
-완료 조건: 실행 중 앱을 재시작해도 모든 작업이 재개 또는 `interrupted`로 일관되게 정리된다.
+완료 조건: 실행 중 앱을 재시작해도 모든 작업이 `interrupted` 또는 `awaiting_resume_approval`로 일관되게 정리되고, 사용자 승인 없이 자동 재개되지 않는다.
 
 ### Phase 2. action handler 분리
 
@@ -316,7 +324,7 @@ flowchart LR
 - `MutationPlan`, `idempotency_key`, `MutationReceipt`를 도입한다.
 - 앨범 생성, 사진 추가, category organize, cleanup 순서로 적용한다.
 - timeout 후 상태 재조정과 부분 실패 복구를 구현한다.
-- destructive action의 dry-run과 confirmation 정책을 고정한다.
+- 앨범 추가를 포함한 모든 write action에 plan 확인과 승인 token을 적용하고, destructive action에는 dry-run을 추가로 강제한다.
 
 완료 조건: 동일 요청을 반복해도 중복 변경이 없고 실제 변경 결과를 photo ID 단위로 추적할 수 있다.
 
@@ -324,8 +332,8 @@ flowchart LR
 
 - Nanobot 직접 import를 제거하고 `VisionRuntimePort`를 도입한다.
 - Mac MLX, 일반 OpenAI 호환, Linux on-demand adapter를 구현한다.
-- profile별 모델 선택, timeout, fallback과 개인정보 정책을 적용한다.
-- 고정 사진 데이터셋과 독립 품질 평가를 CI 외 정기 benchmark로 실행한다.
+- Linux 원격 사용을 기본 허용한 상태에서 profile별 모델 선택, timeout, fallback과 `local_only` 예외 정책을 적용한다.
+- 공개 이미지와 로컬 보관 비식별 개인 thumbnail로 구성된 고정 데이터셋 및 독립 품질 평가를 CI 외 정기 benchmark로 실행한다.
 
 완료 조건: MCP client가 Nanobot이 아니어도 같은 VLM 기능이 동작하고, 모델 선택 이유가 품질 보고서로 재현된다.
 
@@ -367,9 +375,12 @@ flowchart LR
 
 - HTTP initialize부터 background 결과 조회까지 전 흐름
 - 작업 중 앱 재시작 후 상태 조정
+- 실패 또는 중단된 workflow가 승인 전에는 실행되지 않고 유효한 승인 token으로만 재개되는지 확인
 - iCloud 미다운로드 사진의 대기, timeout과 재시도
 - VLM provider 실패 후 정책에 따른 fallback
+- 기본 정책에서 Linux VLM이 선택 가능하고 `local_only` 요청에서는 원격 호출이 차단되는지 확인
 - Apple Photos 쓰기 timeout 뒤 실제 상태 재조정
+- 앨범 추가가 plan 승인 전에는 실행되지 않고, plan 변경 뒤 이전 승인 token이 거부되는지 확인
 - 동일 mutation 반복 실행 시 중복 없음
 
 ### 10.3 실환경 검증
@@ -383,8 +394,9 @@ flowchart LR
 ## 11. 성공 지표
 
 - background 작업의 100%가 시작 전에 영속 저장된다.
-- 앱 재시작 뒤 orphan 상태가 발생하지 않는다.
+- 앱 재시작 뒤 orphan 상태가 발생하지 않고 실패 workflow가 사용자 승인 없이 자동 재개되지 않는다.
 - 동일 쓰기 요청 재시도에서 중복 앨범과 중복 사진 추가가 0건이다.
+- 앨범 추가를 포함한 write action의 plan 승인 누락 실행이 0건이다.
 - 코드와 생성 문서의 action catalog 불일치가 0건이다.
 - photos-mcp 핵심 package에서 Nanobot import가 0건이다.
 - 원본 이미지와 base64 payload의 기본 로그 기록이 0건이다.
@@ -415,13 +427,11 @@ flowchart LR
 - 개인 원본 사진이나 원본 benchmark 산출물을 Git에 저장하지 않는다.
 - 자동 judge 점수 하나만으로 운영 모델을 결정하지 않는다.
 
-## 14. 의사결정이 필요한 항목
+## 14. 확정 운영 정책
 
-구현 단계에서 다음 정책만 사용자와 확정하면 된다.
+다음 정책을 구현 기본값으로 확정한다.
 
-1. 원격 Linux VLM 사용을 기본 허용할지, 명시적으로 선택한 작업에만 허용할지
-2. 앨범 추가도 항상 plan 확인을 거칠지, cleanup 같은 파괴적 작업만 확인할지
-3. 실패한 workflow를 앱 재시작 후 자동 재개할지, 사용자 재개 승인을 받을지
-4. 품질 평가 세트에 개인 사진의 비식별 thumbnail을 포함할지, 공개/합성 이미지로만 구성할지
-
-권장 기본값은 `remote_allowed`를 명시 설정으로 두고, 비파괴 추가는 멱등성 보호 아래 즉시 실행하며, 파괴적 변경은 확인을 요구하고, 재시작 후에는 분석만 자동 재개하는 방식이다.
+1. 원격 Linux VLM 사용은 기본 허용한다. 작업 profile과 품질 정책이 원격 모델을 자동 선택할 수 있으며 `local_only`를 명시한 요청만 원격 전송을 금지한다.
+2. 앨범 생성, 기존 앨범 사진 추가, 분류 앨범 구성과 cleanup을 포함한 모든 write action은 `MutationPlan`을 먼저 보여주고 사용자 승인을 받은 뒤 실행한다.
+3. 실패하거나 앱 재시작으로 중단된 workflow는 자동 재개하지 않는다. 재개 범위와 예상 변경을 보여주고 사용자 승인 token을 받은 뒤 이어서 실행한다.
+4. 품질 평가 세트에는 사용자가 승인한 개인 사진의 비식별 thumbnail을 포함한다. 식별 정보 제거, 로컬 암호화 보관, Git 제외와 철회 삭제를 필수 조건으로 한다.
