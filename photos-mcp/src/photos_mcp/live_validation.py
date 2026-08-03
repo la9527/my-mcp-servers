@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import math
 import shutil
@@ -28,6 +29,39 @@ SKIP = "skip"
 
 EXPECTED_TOOLS = ["photos_query", "photos_select", "photos_workflow", "photos_write"]
 VIDEO_SUFFIXES = (".mov", ".mp4", ".m4v", ".avi", ".mkv")
+_PREVIEW_REDACTED_VALUE_KEYS = {
+    "album",
+    "albums",
+    "api_key",
+    "asset_id",
+    "detail",
+    "error",
+    "error_message",
+    "fetch_reason_detail",
+    "filename",
+    "folder",
+    "gps",
+    "image_b64",
+    "local_path",
+    "metadata",
+    "note",
+    "original_filename",
+    "path",
+    "photo_id",
+    "photo_ids",
+    "photo_paths",
+    "preview_path",
+    "query",
+    "reason",
+    "result",
+    "scene",
+    "scene_description",
+    "source_path",
+    "source_photo_path",
+    "thumbnail_b64",
+    "vendor_photo_path",
+}
+_PREVIEW_REDACTED_LIST_KEYS = {"albums", "faces", "items", "persons", "photo_ids", "photo_paths"}
 
 
 @dataclass(slots=True)
@@ -80,11 +114,25 @@ def _status_marker(status: str) -> str:
     return "[ ]"
 
 
+def _sanitize_preview_payload(payload: Any, *, key: str = "") -> Any:
+    """Remove personal photo data before writing a reusable validation report."""
+    if key in _PREVIEW_REDACTED_VALUE_KEYS:
+        if key in _PREVIEW_REDACTED_LIST_KEYS and isinstance(payload, list):
+            return f"[비식별 항목 {len(payload)}개]"
+        return "[비식별 처리됨]"
+    if isinstance(payload, dict):
+        return {str(item_key): _sanitize_preview_payload(value, key=str(item_key).lower()) for item_key, value in payload.items()}
+    if isinstance(payload, list):
+        return [_sanitize_preview_payload(value) for value in payload]
+    return payload
+
+
 def _json_preview(payload: Any, *, max_length: int = 240) -> str:
+    safe_payload = _sanitize_preview_payload(payload)
     try:
-        text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        text = json.dumps(safe_payload, ensure_ascii=False, sort_keys=True)
     except TypeError:
-        text = str(payload)
+        text = str(safe_payload)
     if len(text) <= max_length:
         return text
     return f"{text[: max_length - 3]}..."
@@ -98,6 +146,7 @@ def pick_library_candidates(items: list[dict[str, Any]]) -> tuple[dict[str, Any]
             if isinstance(item, dict)
             and item.get("photo_id")
             and item.get("local_path_available") is True
+            and item.get("analyze_recommended") is True
         ),
         None,
     )
@@ -139,6 +188,24 @@ def pick_local_source_path(item: dict[str, Any] | None) -> str:
         return ""
     path = Path(candidate)
     return str(path) if path.is_file() else ""
+
+
+def status_running_matches_run(payload: Any, run_id: str) -> bool:
+    """Confirm status(running) exposes the exact active facade run."""
+    running = payload.get("running") if isinstance(payload, dict) else None
+    return (
+        isinstance(running, dict)
+        and running.get("active") is True
+        and str(running.get("current_run_id") or "") == run_id
+    )
+
+
+def status_latest_matches_run(payload: Any, run_id: str, *, status: str = "") -> bool:
+    """Confirm status(latest) was updated by the expected terminal run."""
+    latest = payload.get("latest") if isinstance(payload, dict) else None
+    if not isinstance(latest, dict) or str(latest.get("run_id") or "") != run_id:
+        return False
+    return not status or str(latest.get("status") or "") == status
 
 
 def apple_items_are_photo_only(items: list[dict[str, Any]]) -> bool:
@@ -363,20 +430,24 @@ async def _wait_for_summary_predicate(
     return summary_payload
 
 
-async def _prepare_local_workflow_sample(local_item: dict[str, Any] | None) -> dict[str, Any] | None:
-    source_path = pick_local_source_path(local_item)
-    if not source_path:
-        return None
-
+def _prepare_local_workflow_sample() -> dict[str, Any]:
+    """Create a stable local input without copying a personal library asset."""
     temp_root = tempfile.TemporaryDirectory(prefix="photos-mcp-live-")
     root = Path(temp_root.name)
     input_dir = root / "input"
     output_dir = root / "organized"
     input_dir.mkdir(parents=True, exist_ok=True)
-
-    source = Path(source_path)
-    sample_path = input_dir / source.name
-    await asyncio.to_thread(shutil.copy2, source, sample_path)
+    sample_path = input_dir / "photos-mcp-validation-sample.png"
+    bundled_sample = Path(__file__).resolve().parents[2] / "resources" / "PhotosMcp-preview.png"
+    if bundled_sample.is_file():
+        shutil.copy2(bundled_sample, sample_path)
+    else:
+        # Keep the validator self-contained when it is distributed without docs assets.
+        sample_path.write_bytes(
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlP/5kAAAAASUVORK5CYII="
+            )
+        )
 
     return {
         "temp_root": temp_root,
@@ -414,6 +485,9 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
             CheckResult("status-checks", "checks view returns preflight entries"),
             CheckResult("status-running", "running view returns running/latest shape"),
             CheckResult("status-latest", "latest view returns latest shape"),
+            CheckResult("status-wait-active", "running view exposes the active synthetic wait run"),
+            CheckResult("status-wait-latest", "latest view exposes the cancelled synthetic wait run"),
+            CheckResult("status-vendor-active", "running view exposes the active background workflow run"),
         ],
     )
     library_section = ReportSection(
@@ -621,9 +695,15 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                 )
                 set_check(library_section.checks[5], PASS if guidance_ok else FAIL, _json_preview(items[:2]))
 
-                local_photo_id = config.local_photo_id or ((local_item or {}).get("photo_id") or "")
+                ready_local_item = next(
+                    (item for item in ready_items if isinstance(item, dict) and item.get("photo_id")),
+                    None,
+                )
+                # `list` can report a local path before the asset is truly decodable.
+                # Use the ready_only probe as the sole automatic immediate-analysis candidate.
+                local_photo_id = config.local_photo_id or ((ready_local_item or {}).get("photo_id") or "")
                 non_local_photo_id = config.non_local_photo_id or ((non_local_item or {}).get("photo_id") or "")
-                workflow_sample = await _prepare_local_workflow_sample(local_item)
+                workflow_sample = _prepare_local_workflow_sample()
 
                 if local_photo_id:
                     progress(f"photos_select: analyzing local candidate photo_id={local_photo_id}")
@@ -639,7 +719,8 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                     )
                     set_check(run_section.checks[0], PASS if analyze_success_ok else FAIL, _json_preview(analyze_success_payload))
                 else:
-                    set_check(run_section.checks[0], SKIP, note="no local photo candidate was discovered")
+                    # An iCloud-only library is a valid runtime condition, not an untested feature.
+                    set_check(run_section.checks[0], PARTIAL, note="no local photo candidate was discovered")
 
                 wait_summary_payload: dict[str, Any] | None = None
                 wait_result_payload: dict[str, Any] | None = None
@@ -657,7 +738,21 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                         and blocked_payload.get("status") == "blocked"
                         and bool(blocked_payload.get("error_code"))
                     )
-                    set_check(run_section.checks[1], PASS if blocked_ok else FAIL, _json_preview(blocked_payload))
+                    downloaded_during_probe = (
+                        isinstance(blocked_payload, dict)
+                        and blocked_payload.get("status") == "completed"
+                        and blocked_payload.get("result_available") is True
+                    )
+                    set_check(
+                        run_section.checks[1],
+                        PASS if blocked_ok else PARTIAL if downloaded_during_probe else FAIL,
+                        _json_preview(blocked_payload),
+                        note=(
+                            "the selected iCloud asset became local during the probe and was analyzed"
+                            if downloaded_during_probe
+                            else ""
+                        ),
+                    )
 
                     progress("photos_select: starting synthetic wait_for_local timeout probe")
                     timeout_run_payload = await _call_tool(
@@ -681,6 +776,17 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                         and timeout_run_payload.get("wait_status") == "waiting_for_local_download"
                     )
                     set_check(run_section.checks[2], PASS if wait_start_ok else FAIL, _json_preview(timeout_run_payload))
+
+                    wait_running_status = await _call_tool(
+                        session,
+                        "photos_query",
+                        {"action": "status", "options": {"view": "running"}},
+                    )
+                    set_check(
+                        status_section.checks[4],
+                        PASS if status_running_matches_run(wait_running_status, timeout_run_id) else FAIL,
+                        _json_preview(wait_running_status),
+                    )
 
                     wait_pending_result = await _call_tool(
                         session,
@@ -723,10 +829,11 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                         "photos_query",
                         {"action": "result_detail", "options": {"run_id": timeout_run_id}},
                     )
+                    timeout_error_codes = {"local_download_timeout", "local_download_probe_timeout"}
                     timeout_ok = timeout_summary.get("status") in {"failed", "completed"}
                     set_check(
                         run_section.checks[4],
-                        PARTIAL if timeout_ok and timeout_summary.get("status") == "completed" else PASS if timeout_ok and timeout_summary.get("error_code") == "local_download_timeout" else FAIL,
+                        PARTIAL if timeout_ok and timeout_summary.get("status") == "completed" else PASS if timeout_ok and timeout_summary.get("error_code") in timeout_error_codes else FAIL,
                         _json_preview(timeout_summary),
                         note="completed is possible if the asset downloads while polling",
                     )
@@ -779,6 +886,16 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                     )
                     set_check(run_section.checks[3], PASS if cancel_ok else FAIL, _json_preview(wait_cancel_summary_payload))
                     set_check(result_section.checks[2], PASS if cancel_ok else FAIL, _json_preview(cancel_payload))
+                    wait_latest_status = await _call_tool(
+                        session,
+                        "photos_query",
+                        {"action": "status", "options": {"view": "latest"}},
+                    )
+                    set_check(
+                        status_section.checks[5],
+                        PASS if status_latest_matches_run(wait_latest_status, cancel_run_id, status="cancelled") else FAIL,
+                        _json_preview(wait_latest_status),
+                    )
                     set_check(result_section.checks[3], SKIP, note="vendor-run result validation requires --include-workflows")
                 else:
                     set_check(run_section.checks[1], SKIP, note="no non-local photo candidate was discovered")
@@ -789,6 +906,8 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                     set_check(result_section.checks[1], SKIP, note="no synthetic wait run was started")
                     set_check(result_section.checks[2], SKIP, note="no synthetic wait run was started")
                     set_check(result_section.checks[3], SKIP, note="vendor-run result validation requires --include-workflows")
+                    set_check(status_section.checks[4], SKIP, note="no synthetic wait run was started")
+                    set_check(status_section.checks[5], SKIP, note="no synthetic wait run was started")
 
                 if config.include_workflows:
                     if workflow_sample is None:
@@ -796,7 +915,9 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                         set_check(result_section.checks[3], PARTIAL, note="vendor-run validation skipped because no local sample file was available")
                     else:
                         try:
-                            workflow_poll_rounds = max(config.wait_poll_rounds, 20)
+                            # The first remote VLM request may need to wake Linux, open
+                            # the SSH tunnel, and load the model before inference starts.
+                            workflow_poll_rounds = max(config.wait_poll_rounds, 120)
                             workflow_poll_interval_seconds = max(config.wait_poll_interval_seconds, 1.0)
                             progress(f"photos_select workflows: starting classify source_path={workflow_sample['input_dir']}")
                             classify_payload = await _call_tool(
@@ -813,6 +934,16 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                                 },
                             )
                             classify_run_id = str(classify_payload.get("run_id") or classify_payload.get("job_id") or "")
+                            workflow_running_status = await _call_tool(
+                                session,
+                                "photos_query",
+                                {"action": "status", "options": {"view": "running"}},
+                            )
+                            set_check(
+                                status_section.checks[6],
+                                PASS if status_running_matches_run(workflow_running_status, classify_run_id) else FAIL,
+                                _json_preview(workflow_running_status),
+                            )
                             classify_summary = await _wait_for_terminal_summary(
                                 session,
                                 run_id=classify_run_id,
@@ -863,18 +994,12 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                                     },
                                 },
                             )
-                            progress("photos_write workflows: running import no-op")
-                            import_payload = await _call_tool_with_test_approval(
-                                session,
-                                "photos_write",
-                                {
-                                    "action": "import_to_album",
-                                    "options": {
-                                        "photo_paths": [],
-                                        "target_album_name": "photos-mcp live validation noop",
-                                    },
-                                },
-                            )
+                            # Import needs a non-empty path list and would mutate the live
+                            # Photos library, so it is intentionally not auto-executed here.
+                            import_payload = {
+                                "status": "skipped",
+                                "reason": "requires_nonempty_paths_and_writes_to_live_photos_library",
+                            }
 
                             classify_started_ok = is_workflow_classify_start_payload(classify_payload)
                             classify_observable_ok = (
@@ -903,11 +1028,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                                 and curate_payload.get("action") == "select_best"
                                 and bool(curate_payload.get("job_id"))
                             )
-                            import_ok = (
-                                isinstance(import_payload, dict)
-                                and import_payload.get("status") == "completed"
-                                and int(import_payload.get("imported") or 0) == 0
-                            )
+                            import_ok = import_payload.get("status") == "skipped"
                             workflow_ok = classify_started_ok and classify_observable_ok and organize_ok and curate_ok and import_ok
                             workflow_status = PASS if workflow_ok and classify_summary.get("status") == "completed" else PARTIAL if workflow_ok else FAIL
                             set_check(
@@ -922,7 +1043,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                                         "import": import_payload,
                                     }
                                 ),
-                                note="import validation uses an empty input list to avoid mutating the live Photos library" if classify_summary.get("status") == "completed" else "local classify results became queryable, but summary status remained non-terminal during the validation window",
+                                note="import_to_album requires non-empty paths and is skipped to avoid changing the live Photos library" if classify_summary.get("status") == "completed" else "local classify results became queryable, but summary status remained non-terminal during the validation window",
                             )
                             set_check(
                                 result_section.checks[3],
@@ -940,6 +1061,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                             workflow_sample["temp_root"].cleanup()
                 else:
                     set_check(run_section.checks[5], SKIP, note="re-run with --include-workflows to exercise classify/curate/organize/import")
+                    set_check(status_section.checks[6], SKIP, note="re-run with --include-workflows to validate active background status")
 
                 if wait_result_payload and wait_result_payload.get("status") == "failed":
                     result_section.checks[1].note = "pending result became terminal after timeout validation"

@@ -125,9 +125,9 @@ _register(ActionSpec(
 _register(ActionSpec(
     tool="photos_select",
     action="select_best",
-    allowed=COMMON_SCOPE | _set("selection_profile", "exclude_screenshots") | WAIT_OPTIONS,
+    allowed=COMMON_SCOPE | _set("selection_profile", "exclude_screenshots", "background") | WAIT_OPTIONS,
     forbidden=WRITE_FORBIDDEN,
-    defaults={"source": "apple", "source_path": "", "album": "", "person": "", "date_from": "", "date_to": "", "limit": 50, "selection_profile": "general", "exclude_screenshots": True, "wait_for_local": False, "wait_timeout_seconds": 120.0, "wait_poll_interval_seconds": 3.0},
+    defaults={"source": "apple", "source_path": "", "album": "", "person": "", "date_from": "", "date_to": "", "limit": 50, "selection_profile": "general", "exclude_screenshots": True, "background": False, "wait_for_local": False, "wait_timeout_seconds": 120.0, "wait_poll_interval_seconds": 3.0},
 ))
 _register(ActionSpec(
     tool="photos_select",

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from photos_mcp.facade import library_service
 from photos_mcp.config import load_config
 from photos_mcp.server import build_server
 from photos_mcp.state import PhotosMcpStateStore, preflight_check_snapshot_from_payload
@@ -41,6 +42,37 @@ async def test_mock_mcp_client_lists_tools_and_calls_photos_status() -> None:
     assert status_payload["transport"]["status"] == "ok"
     assert status_payload["running"]["active"] is False
     assert status_payload["latest"]["status"] == "idle"
+    assert "request_kind" not in status_payload
+    assert "terminal" not in status_payload
+
+
+@pytest.mark.asyncio
+async def test_mock_mcp_client_status_checks_stays_read_only_payload() -> None:
+    state_store = PhotosMcpStateStore(
+        endpoint="http://127.0.0.1:18791/mcp",
+        health_endpoint="http://127.0.0.1:18791/health",
+    )
+    state_store.set_daemon_status("ready")
+    state_store.replace_preflight_checks(
+        [
+            preflight_check_snapshot_from_payload(
+                {
+                    "key": "photos_read",
+                    "status": "ok",
+                    "summary": "Readable.",
+                    "detail": "read-only database opened",
+                    "hint": "",
+                }
+            )
+        ]
+    )
+    client = MockMcpClient(build_server(config=load_config(), state_store=state_store))
+
+    payload = await client.call_tool("photos_query", {"action": "status", "options": {"view": "checks"}})
+
+    assert [check["key"] for check in payload["capabilities"]["checks"]] == ["photos_read"]
+    assert "request_kind" not in payload
+    assert "terminal" not in payload
 
 
 def test_photos_workflow_description_guides_single_album_requests_to_curate_to_album() -> None:
@@ -223,6 +255,28 @@ async def test_mock_mcp_client_photos_library_sets_local_path_availability_false
 
 
 @pytest.mark.asyncio
+async def test_mock_mcp_client_photos_library_returns_retryable_timeout(monkeypatch) -> None:
+    async def blocked_list_tool(*_args, **_kwargs) -> list[dict]:
+        await asyncio.Event().wait()
+        return []
+
+    fake_module = SimpleNamespace(list_photos=blocked_list_tool)
+    monkeypatch.setattr(
+        "photos_mcp.facade.common.load_vendor_server",
+        lambda name: fake_module if name == "photo-source" else None,
+    )
+    monkeypatch.setattr(library_service, "DEFAULT_LIBRARY_LIST_TIMEOUT_SECONDS", 0.01)
+
+    mcp = build_server(config=load_config(), state_store=None)
+    payload = await MockMcpClient(mcp).call_tool("photos_query", {"action": "list"})
+
+    assert payload["status"] == "warning"
+    assert payload["error_code"] == "library_list_timeout"
+    assert payload["can_retry"] is True
+    assert payload["items"] == []
+
+
+@pytest.mark.asyncio
 async def test_mock_mcp_client_photos_library_ready_only_filters_to_analyze_ready_items(monkeypatch) -> None:
     async def fake_list_tool(*_args, **_kwargs) -> list[dict]:
         return [
@@ -311,6 +365,53 @@ async def test_mock_mcp_client_photos_library_prefetch_reports_download_counts(m
     assert payload["failed"][0]["fetch_strategy"] == "download_missing"
     assert payload["failed"][0]["strategies_tried"] == ["download_missing", "download_missing_photokit"]
     assert "returned no files" in payload["failed"][0]["reason_detail"]
+
+
+@pytest.mark.asyncio
+async def test_inspect_and_prefetch_persist_asset_readiness_for_analyze(monkeypatch) -> None:
+    async def fake_get_metadata(*_args, **_kwargs) -> dict:
+        return {"photo_id": "photo-cloud", "filename": "cloud.heic"}
+
+    async def fake_get_thumbnail(*_args, **_kwargs) -> str:
+        return "thumbnail-bytes"
+
+    async def fake_prefetch(*_args, **_kwargs) -> dict:
+        return {
+            "attempted_count": 1,
+            "already_local_count": 0,
+            "downloaded_count": 1,
+            "failed_count": 0,
+            "downloaded": [{"photo_id": "photo-downloaded", "path": "/tmp/downloaded.heic"}],
+        }
+
+    fake_module = SimpleNamespace(
+        get_metadata=fake_get_metadata,
+        get_thumbnail=fake_get_thumbnail,
+        prefetch_photos=fake_prefetch,
+    )
+    monkeypatch.setattr(
+        "photos_mcp.facade.common.load_vendor_server",
+        lambda name: fake_module if name == "photo-source" else None,
+    )
+    state_store = PhotosMcpStateStore(
+        endpoint="http://127.0.0.1:18791/mcp",
+        health_endpoint="http://127.0.0.1:18791/health",
+    )
+    client = MockMcpClient(build_server(config=load_config(), state_store=state_store))
+
+    inspected = await client.call_tool(
+        "photos_query",
+        {"action": "inspect", "options": {"source": "apple", "photo_id": "photo-cloud", "include_thumbnail": True}},
+    )
+    prefetched = await client.call_tool(
+        "photos_query",
+        {"action": "prefetch", "options": {"source": "apple", "photo_id": "photo-downloaded"}},
+    )
+
+    assert inspected["item"]["readiness"] == "ready"
+    assert state_store.get_photo_asset("apple", "photo-cloud")["readiness"] == "ready"
+    assert prefetched["downloaded_count"] == 1
+    assert state_store.get_photo_asset("apple", "photo-downloaded")["local_path_available"] is True
 
 
 @pytest.mark.asyncio
@@ -446,7 +547,7 @@ async def test_mock_mcp_client_photos_run_blocks_video_analyze(monkeypatch) -> N
 
 @pytest.mark.asyncio
 async def test_mock_mcp_client_photos_run_waits_for_local_download_and_completes(monkeypatch) -> None:
-    call_state = {"thumbnail_calls": 0}
+    call_state = {"thumbnail_calls": 0, "probe_calls": 0}
 
     async def fake_call_vendor(server_name: str, function_name: str, *args, **kwargs):
         if server_name == "photo-source" and function_name == "get_thumbnail":
@@ -469,12 +570,14 @@ async def test_mock_mcp_client_photos_run_waits_for_local_download_and_completes
             return []
         raise AssertionError(f"unexpected vendor call: {server_name}.{function_name}")
 
-    async def fake_selected_probe(_source: str, photo_id: str, _path_or_bucket: str) -> dict:
+    async def fake_selected_probe(_source: str, photo_id: str, _path_or_bucket: str, _state_store=None, **_kwargs) -> dict:
+        call_state["probe_calls"] += 1
+        local_available = call_state["probe_calls"] >= 3
         return {
             "photo_id": photo_id,
             "source": "apple",
-            "local_path_available": call_state["thumbnail_calls"] >= 2,
-            "local_path": "/tmp/sample.heic" if call_state["thumbnail_calls"] >= 2 else "",
+            "local_path_available": local_available,
+            "local_path": "/tmp/sample.heic" if local_available else "",
         }
 
     monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
@@ -615,7 +718,9 @@ async def test_mock_mcp_client_photos_run_wait_for_local_can_cancel(monkeypatch)
             }
         raise AssertionError(f"unexpected vendor call: {server_name}.{function_name}")
 
-    async def fake_selected_probe(_source: str, photo_id: str, _path_or_bucket: str) -> dict:
+    async def fake_selected_probe(_source: str, photo_id: str, _path_or_bucket: str, _state_store=None, **_kwargs) -> dict:
+        if _kwargs:
+            started_wait.set()
         return {
             "photo_id": photo_id,
             "source": "apple",
@@ -690,7 +795,7 @@ async def test_mock_mcp_client_photos_run_wait_for_local_returns_immediately_for
             }
         raise AssertionError(f"unexpected vendor call: {server_name}.{function_name}")
 
-    async def fake_selected_probe(_source: str, photo_id: str, _path_or_bucket: str) -> dict:
+    async def fake_selected_probe(_source: str, photo_id: str, _path_or_bucket: str, _state_store=None, **_kwargs) -> dict:
         return {
             "photo_id": photo_id,
             "source": "apple",
@@ -731,4 +836,4 @@ async def test_mock_mcp_client_photos_run_wait_for_local_returns_immediately_for
 
     await asyncio.sleep(0.05)
 
-    assert call_state["thumbnail_calls"] >= 1
+    assert call_state["thumbnail_calls"] == 0

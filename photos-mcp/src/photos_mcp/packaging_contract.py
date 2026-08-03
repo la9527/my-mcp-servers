@@ -4,6 +4,8 @@ APP_PACKAGES = ["photos_mcp", "apple_terminal_helper"]
 PY2APP_PACKAGES = [
     "apple_terminal_helper",
     "anyio",
+    "bitarray",
+    "bitstring",
     "imagehash",
     "mcp",
     "numpy",
@@ -18,7 +20,10 @@ PY2APP_PACKAGES = [
 ]
 PY2APP_INCLUDES = [
     "AppKit",
+    "CoreML",
     "Foundation",
+    "Quartz",
+    "Vision",
     "objc",
     "anyio._backends._asyncio",
     "mcp.server.fastmcp",
@@ -36,6 +41,7 @@ SITE_PACKAGES_RESOURCE_NAMES = {
     "CoreFoundation",
     "CoreMedia",
     "CoreServices",
+    "FSEvents",
     "Foundation",
     "Metal",
     "Photos",
@@ -43,6 +49,7 @@ SITE_PACKAGES_RESOURCE_NAMES = {
     "Quartz",
     "ScriptingBridge",
     "Vision",
+    "CoreML",
     "annotated_types",
     "anyio",
     "applescript",

@@ -81,6 +81,7 @@ class JobQueue:
     def __init__(self, max_concurrent: int = 1) -> None:
         self._jobs: dict[str, Job] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._scheduled: dict[str, asyncio.TimerHandle] = {}
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._handler = None
 
@@ -95,24 +96,50 @@ class JobQueue:
         self,
         source: str,
         source_path: str,
+        job_id: str = "",
     ) -> Job:
         """Create a new pending job."""
         job = Job(
-            id=str(uuid.uuid4())[:8],
+            id=job_id or str(uuid.uuid4())[:8],
             source=source,
             source_path=source_path,
         )
         self._jobs[job.id] = job
         return job
 
+    def register_job(self, job: Job) -> Job:
+        """Attach a restored durable job to the in-memory queue."""
+        self._jobs[job.id] = job
+        return job
+
     async def submit(self, job_id: str) -> None:
         """Submit a job for async execution."""
+        self._validate_pending_job(job_id)
+        self._start_task(job_id)
+
+    def schedule(self, job_id: str, *, delay_seconds: float = 0.01) -> None:
+        """Schedule after the caller can receive its accepted response."""
+        self._validate_pending_job(job_id)
+        loop = asyncio.get_running_loop()
+        self._scheduled[job_id] = loop.call_later(
+            max(0.001, float(delay_seconds)),
+            self._start_task,
+            job_id,
+        )
+
+    def _validate_pending_job(self, job_id: str) -> Job:
         job = self._jobs.get(job_id)
         if not job:
             raise KeyError(f"Job {job_id} not found")
         if job.status != JobStatus.PENDING:
             raise ValueError(f"Job {job_id} is not pending (status={job.status})")
+        return job
 
+    def _start_task(self, job_id: str) -> None:
+        self._scheduled.pop(job_id, None)
+        job = self._jobs.get(job_id)
+        if job is None or job.status != JobStatus.PENDING:
+            return
         task = asyncio.create_task(self._run(job))
         self._tasks[job_id] = task
 
@@ -153,6 +180,9 @@ class JobQueue:
         if not job:
             return False
         if job.status == JobStatus.PENDING:
+            scheduled = self._scheduled.pop(job_id, None)
+            if scheduled is not None:
+                scheduled.cancel()
             job.status = JobStatus.CANCELLED
             return True
         if job.status == JobStatus.RUNNING:
@@ -178,6 +208,9 @@ class JobQueue:
             return False
 
         self._tasks.pop(job_id, None)
+        scheduled = self._scheduled.pop(job_id, None)
+        if scheduled is not None:
+            scheduled.cancel()
         self._jobs.pop(job_id, None)
         return True
 
@@ -196,6 +229,9 @@ class JobQueue:
             if task and not task.done():
                 continue
             self._tasks.pop(job_id, None)
+            scheduled = self._scheduled.pop(job_id, None)
+            if scheduled is not None:
+                scheduled.cancel()
             self._jobs.pop(job_id, None)
             removed.append(job_id)
         return removed

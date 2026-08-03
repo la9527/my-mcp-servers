@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from _script_bootstrap import prepare_photo_source_runtime
+from apple_terminal_helper import write_terminal_response
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,10 +59,7 @@ def main() -> int:
     if photo is None:
         raise RuntimeError(f"Apple photo not found: {photo_id}")
     if not _is_supported_photo_asset(photo):
-        Path(args.response).write_text(
-            json.dumps({"path": ""}, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        write_terminal_response(Path(args.response), request, {"path": ""})
         return 0
 
     path = getattr(photo, "path", None)
@@ -92,10 +90,7 @@ def main() -> int:
 
         result = {"path": exported_path}
 
-    Path(args.response).write_text(
-        json.dumps(result, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    write_terminal_response(Path(args.response), request, result)
     return 0
 
 

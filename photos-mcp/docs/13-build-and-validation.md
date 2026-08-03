@@ -153,8 +153,17 @@ site-packages 탐색 순서:
 7. embedded `liblzma.5.dylib` 문제 있으면 clean copy 로 교체
 8. depth-first ad-hoc signing 재적용
 9. `codesign --verify --deep --strict`
-10. built bundle `--health` 실행
-11. 기본 install path 인 `~/Applications/PhotosMcp.app` 에 복사 후 다시 verify + `--health`
+
+ad-hoc 설치본은 기본 CDHash requirement 대신 `com.nanobot.photos-mcp` 번들 식별자를 사용하는 명시적 designated requirement를 마지막 서명 단계에 추가한다. 이를 통해 소스가 바뀐 재빌드에서도 macOS TCC가 동일한 PhotosMcp 앱으로 판별할 수 있는 일관된 식별 요구사항을 유지한다. 필요하면 `PHOTOS_MCP_DESIGNATED_REQUIREMENT`로 덮어쓸 수 있다.
+
+21,000장 이상 보관함의 최초 metadata DB 로드는 10초를 넘을 수 있으므로 사진 보관함 읽기 검사는 별도 30초 timeout을 사용한다. `PHOTOS_MCP_LIBRARY_PREFLIGHT_TIMEOUT_SECONDS`로 환경에 맞게 조정할 수 있으며, 선택 검사 timeout과는 분리한다. 실제 `photos_query(action="list"|"ready_only")`도 별도 30초 제한을 사용하며, 초기 색인 로딩이 더 길어지면 연결을 붙잡지 않고 `status="warning"`, `error_code="library_list_timeout"`, `can_retry=true`를 반환한다. 이 제한은 `PHOTOS_MCP_LIBRARY_LIST_TIMEOUT_SECONDS`로 조정한다.
+
+`photos-mcp-live-validate --include-workflows`의 local workflow는 사용자 사진을 복사하지 않고 프로젝트의 공개 미리보기 PNG를 임시 폴더에 복사해 실행한다. 배포본에 해당 asset이 없을 때만 자체 생성 PNG로 대체한다. Linux 원격 VLM을 쓰는 첫 요청은 PC 기동, SSH 터널, 모델 로딩을 포함할 수 있으므로 workflow 완료 대기는 최소 120초로 둔다. 이는 분석 요청의 서비스 타임아웃이 아니라 검증 도구의 관측 창이다.
+
+이 live workflow는 분류, 결과 조회, local directory organize, review 작업까지만 실행한다. `import_to_album`은 비어 있지 않은 경로 목록이 필요하고 실제 Photos 보관함을 변경하므로 자동 실행하지 않는다. import write-back은 명시적인 운영 승인 아래 별도 검증한다.
+10. `PYTHONDONTWRITEBYTECODE=1`로 built bundle `--health` 실행 후 다시 서명 검증
+11. 기본 install path인 `~/Applications/PhotosMcp.app`에 복사 후 같은 방식으로 verify + `--health` + final verify
+12. `/Applications/PhotosMcp.app` 심볼릭 링크를 설치본으로 연결해 Finder와 `open -a PhotosMcp` 실행 경로를 제공
 
 ### 4.3 중요한 env
 
@@ -253,6 +262,7 @@ workflow validation 까지 포함한 validation:
 - validator 는 markdown report 는 stdout 으로 유지하고, 현재 실행 중인 단계와 polling 상태는 stderr 로 timestamp prefix 와 함께 출력한다.
 - 따라서 `--report-path` 를 써도 터미널에서는 `runtime / transport`, `photos_status`, `photos_library`, `photos_run` 진행 상황과 long-running polling 상태를 바로 볼 수 있다.
 - progress 출력이 필요 없으면 `--quiet-progress` 를 추가한다.
+- validator report의 evidence는 사진 ID, 파일명·경로, GPS, 앨범·인물 이름, thumbnail/base64, 장면 서술을 비식별 처리한다. 결과 상태·건수·오류 코드는 유지하므로 공유 가능한 운영 진단에 사용할 수 있다.
 
 주의:
 
@@ -307,6 +317,7 @@ validator 는 기본적으로 progress 를 stderr 에도 보여준다. 터미널
 ## 8. 지금 문서화된 중요한 제약
 
 - build 성공과 import smoke 성공은 다르다.
+- `--vendor-runtime-smoke`는 번들에 포함된 `photo-source`, `FSEvents`, `osxphotos` import 체인을 실제로 확인한다. PyObjC 래퍼와 네이티브 확장 모듈이 서로 다른 번들 위치에 배치되어 생기는 오류를 build 단계에서 차단한다.
 - import smoke 성공과 live Apple Photos permission success 도 다르다.
 - source test 가 green 이어도 bundle-only import 문제가 남을 수 있다.
 - bundle 이 살아 있어도 `photos_automation` 또는 `photos_thumbnail` warning 은 macOS permission/TCC, iCloud download, sample asset export 문제일 수 있다.

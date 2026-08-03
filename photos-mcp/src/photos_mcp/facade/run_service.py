@@ -6,14 +6,15 @@ import json
 import logging
 from typing import Any
 
-import photos_mcp.facade.common as facade_common
 from photos_mcp.facade.common import call_vendor, new_run_id, parse_json_list, resolve_run_id, wrap_run_payload
 from photos_mcp.logging_setup import ToolLogContext, log_context
+from photos_mcp.photo_source_port import PhotoSourcePort, VendorPhotoSourcePort
 from photos_mcp.state import PhotosMcpStateStore
 
 
 DEFAULT_ANALYZE_WAIT_TIMEOUT_SECONDS = 120.0
 DEFAULT_ANALYZE_WAIT_POLL_INTERVAL_SECONDS = 3.0
+DEFAULT_ANALYZE_THUMBNAIL_PROBE_TIMEOUT_SECONDS = 30.0
 LOCAL_DOWNLOAD_WAIT_HINT = (
     "Open the asset in Photos and wait for the original to download locally, then rerun "
     'photos_query(action="list") and confirm local_path_available=true before photos_select(action="analyze_photo").'
@@ -21,6 +22,11 @@ LOCAL_DOWNLOAD_WAIT_HINT = (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _source_port() -> VendorPhotoSourcePort:
+    """Keep photo-source calls replaceable with the facade's vendor caller."""
+    return VendorPhotoSourcePort(caller=call_vendor)
 
 
 def _tool_context(tool_name: str, step_index: int, total_steps: int) -> ToolLogContext:
@@ -74,27 +80,23 @@ def _build_analyze_error(
     return payload
 
 
-def _latest_photo_fetch_detail(source: str, photo_id: str) -> dict[str, Any] | None:
-    if source != "apple":
-        return None
-
-    try:
-        module = facade_common.load_vendor_server("photo-source")
-        if not hasattr(module, "_get_apple_source"):
-            return None
-        apple_source = module._get_apple_source()
-        fetch_details = getattr(apple_source, "_last_fetch_details", None)
-        if not isinstance(fetch_details, dict):
-            return None
-        detail = fetch_details.get(photo_id)
-        if not isinstance(detail, dict):
-            return None
-        return dict(detail)
-    except Exception:
-        return None
+def _latest_photo_fetch_detail(
+    source: str,
+    photo_id: str,
+    source_port: PhotoSourcePort | None = None,
+) -> dict[str, Any] | None:
+    return (source_port or _source_port()).latest_fetch_detail(source, photo_id)
 
 
-async def _selected_photo_probe(source: str, photo_id: str, path_or_bucket: str) -> dict[str, Any]:
+async def _selected_photo_probe(
+    source: str,
+    photo_id: str,
+    path_or_bucket: str,
+    state_store: PhotosMcpStateStore | None = None,
+    source_port: PhotoSourcePort | None = None,
+    *,
+    refresh: bool = False,
+) -> dict[str, Any]:
     probe: dict[str, Any] = {
         "photo_id": photo_id,
         "source": source,
@@ -104,52 +106,15 @@ async def _selected_photo_probe(source: str, photo_id: str, path_or_bucket: str)
     if source != "apple":
         return probe
 
-    try:
-        module = facade_common.load_vendor_server("photo-source")
-        if not hasattr(module, "_get_apple_source"):
-            raise AttributeError("photo-source module has no _get_apple_source")
-        apple_source = module._get_apple_source()
-        if not hasattr(apple_source, "_find_photo") or not hasattr(apple_source, "_resolve_photo_path"):
-            raise AttributeError("apple source lacks internal photo probe helpers")
-
-        photo = apple_source._find_photo(photo_id)
-        if photo is not None:
-            local_path = apple_source._resolve_photo_path(photo, download_missing=False) or ""
-            probe["local_path_available"] = bool(local_path)
-            probe["local_path"] = local_path
-            raw_photo_path = getattr(photo, "path", None)
-            if isinstance(raw_photo_path, str) and raw_photo_path:
-                probe["vendor_photo_path"] = raw_photo_path
-    except Exception:
-        pass
-
-    if probe.get("local_path_available") is not None:
+    remembered = state_store.get_photo_asset(source, photo_id) if state_store is not None and not refresh else None
+    if remembered is not None and remembered.get("readiness") in {"ready", "cloud_only"}:
+        probe["local_path_available"] = bool(remembered.get("local_path_available"))
         return probe
-
-    try:
-        items = await call_vendor(
-            "photo-source",
-            "list_photos",
-            source,
-            path_or_bucket=path_or_bucket,
-            limit=100,
-        )
-    except Exception:
-        return probe
-
-    if isinstance(items, list):
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            candidate_photo_id = str(item.get("photo_id") or item.get("id") or "")
-            if candidate_photo_id != photo_id:
-                continue
-            candidate_path = str(item.get("path") or "")
-            probe["local_path_available"] = bool(candidate_path)
-            probe["local_path"] = candidate_path
-            return probe
-
-    return probe
+    return await (source_port or _source_port()).probe_local_availability(
+        source,
+        photo_id,
+        path_or_bucket=path_or_bucket,
+    )
 
 
 def _preflight_check(state_store: PhotosMcpStateStore | None, key: str) -> dict[str, Any] | None:
@@ -325,13 +290,46 @@ async def _run_waiting_analyze(
     try:
         while True:
             poll_attempts += 1
-            image_b64, error_payload = await _resolve_analyze_thumbnail(
-                state_store=state_store,
-                source=source,
-                photo_id=photo_id,
-                path_or_bucket=path_or_bucket,
-                max_size=max_size,
+            remaining_seconds = max(wait_timeout_seconds - (asyncio.get_running_loop().time() - started_monotonic), 0.1)
+            probe_timeout_seconds = min(
+                DEFAULT_ANALYZE_THUMBNAIL_PROBE_TIMEOUT_SECONDS,
+                remaining_seconds,
             )
+            try:
+                image_b64, error_payload = await asyncio.wait_for(
+                    _resolve_analyze_thumbnail(
+                        state_store=state_store,
+                        source=source,
+                        photo_id=photo_id,
+                        path_or_bucket=path_or_bucket,
+                        max_size=max_size,
+                    ),
+                    timeout=probe_timeout_seconds,
+                )
+            except TimeoutError:
+                wait_elapsed_seconds = asyncio.get_running_loop().time() - started_monotonic
+                state_store.upsert_synthetic_run(
+                    _build_wait_terminal_payload(
+                        run_id=run_id,
+                        source=source,
+                        photo_id=photo_id,
+                        started_at=started_at,
+                        finished_at=_utcnow_iso(),
+                        wait_timeout_seconds=wait_timeout_seconds,
+                        wait_poll_interval_seconds=wait_poll_interval_seconds,
+                        poll_attempts=poll_attempts,
+                        wait_elapsed_seconds=wait_elapsed_seconds,
+                        status="failed",
+                        error_code="local_download_probe_timeout",
+                        error="Timed out while checking local photo availability",
+                        detail="The Photos thumbnail check did not return before its per-attempt limit.",
+                        hint=LOCAL_DOWNLOAD_WAIT_HINT,
+                        reason="local_download_probe_timeout",
+                        next_suggested_action="photos_query",
+                        can_retry=True,
+                    )
+                )
+                return
             wait_elapsed_seconds = asyncio.get_running_loop().time() - started_monotonic
 
             if image_b64:
@@ -377,7 +375,7 @@ async def _run_waiting_analyze(
                 )
                 return
 
-            photo_probe = await _selected_photo_probe(source, photo_id, path_or_bucket)
+            photo_probe = await _selected_photo_probe(source, photo_id, path_or_bucket, state_store)
             state_store.upsert_synthetic_run(
                 _build_waiting_analyze_payload(
                     run_id=run_id,
@@ -454,21 +452,20 @@ async def _resolve_analyze_thumbnail(
     photo_id: str,
     path_or_bucket: str,
     max_size: int,
+    source_port: PhotoSourcePort | None = None,
 ) -> tuple[str | None, dict[str, object] | None]:
-    image_b64 = await call_vendor(
-        "photo-source",
-        "get_thumbnail",
-        source,
-        photo_id,
-        path_or_bucket=path_or_bucket,
-        max_size=max_size,
-    )
-    if image_b64:
-        return str(image_b64), None
+    port = source_port or _source_port()
+    if source != "apple":
+        image_b64 = await port.get_thumbnail(
+            source,
+            photo_id,
+            path_or_bucket=path_or_bucket,
+            max_size=max_size,
+        )
+        if image_b64:
+            return str(image_b64), None
 
-    metadata = await call_vendor(
-        "photo-source",
-        "get_metadata",
+    metadata = await port.get_metadata(
         source,
         photo_id,
         path_or_bucket=path_or_bucket,
@@ -503,8 +500,18 @@ async def _resolve_analyze_thumbnail(
             can_retry=False,
         )
 
-    photo_probe = await _selected_photo_probe(source, photo_id, path_or_bucket)
-    fetch_detail = _latest_photo_fetch_detail(source, photo_id)
+    # A no-wait Apple request must never trigger the download-capable thumbnail
+    # adapter for an iCloud-only asset. Refresh the probe so persisted readiness
+    # cannot hide a newly downloaded or newly unavailable original.
+    photo_probe = await _selected_photo_probe(
+        source,
+        photo_id,
+        path_or_bucket,
+        state_store,
+        source_port=port,
+        refresh=True,
+    )
+    fetch_detail = _latest_photo_fetch_detail(source, photo_id, source_port=port)
     thumbnail_check = _preflight_check(state_store, "photos_thumbnail") or {}
     filename = str(metadata.get("filename") or "")
     date_taken = str(metadata.get("date_taken") or "")
@@ -552,6 +559,19 @@ async def _resolve_analyze_thumbnail(
             fetch_detail=fetch_detail,
         )
 
+    image_b64 = await port.get_thumbnail(
+        source,
+        photo_id,
+        path_or_bucket=path_or_bucket,
+        max_size=max_size,
+    )
+    if image_b64:
+        return str(image_b64), None
+
+    # The local asset can still fail a thumbnail export if iCloud finishes the
+    # path handoff before the bytes are readable. Keep that retryable failure
+    # distinct from the earlier no-wait cloud-only block.
+    fetch_detail = _latest_photo_fetch_detail(source, photo_id, source_port=port)
     return None, _build_analyze_error(
         error_code="thumbnail_unavailable",
         error="Unable to load thumbnail for analyze",
@@ -582,6 +602,7 @@ async def photos_run(
     date_to: str = "",
     limit: int = 50,
     selection_profile: str = "general",
+    quality_top_percent: int = 30,
     prompt: str = "",
     include_faces: bool = False,
     output_dir: str = "",
@@ -590,6 +611,7 @@ async def photos_run(
     target_album_name: str = "",
     writeback_mode: str = "review",
     exclude_screenshots: bool = False,
+    background: bool = False,
     album_prefix: str = "AI 분류",
     folder: str = "",
     min_score: float = 0.0,
@@ -599,12 +621,13 @@ async def photos_run(
     wait_timeout_seconds: float = DEFAULT_ANALYZE_WAIT_TIMEOUT_SECONDS,
     wait_poll_interval_seconds: float = DEFAULT_ANALYZE_WAIT_POLL_INTERVAL_SECONDS,
     run_id: str = "",
+    operation_run_id: str = "",
 ) -> dict[str, object]:
     normalized_intent = (intent or "classify").strip().lower()
 
     if normalized_intent == "analyze":
         if wait_for_local and state_store is not None and source == "apple":
-            photo_probe = await _selected_photo_probe(source, photo_id, path_or_bucket)
+            photo_probe = await _selected_photo_probe(source, photo_id, path_or_bucket, state_store)
             if photo_probe.get("local_path_available") is False:
                 analyze_run_id = run_id or new_run_id("analyze")
                 started_at = _utcnow_iso()
@@ -717,12 +740,33 @@ async def photos_run(
             date_to=date_to,
             limit=limit,
             selection_profile=selection_profile,
+            run_id=operation_run_id,
         )
         wrapped = wrap_run_payload(payload, intent="classify")
         wrapped.setdefault("job_id", wrapped["run_id"])
         return wrapped
 
     if normalized_intent == "curate":
+        if background:
+            payload = await call_vendor(
+                "photo-ranker",
+                "start_classify_job",
+                source,
+                effective_source_path,
+                album=album,
+                person=person,
+                date_from=date_from,
+                date_to=date_to,
+                limit=limit,
+                selection_profile=selection_profile,
+                selection_mode="select_best",
+                exclude_screenshots=exclude_screenshots,
+                quality_top_percent=quality_top_percent,
+                run_id=operation_run_id,
+            )
+            wrapped = wrap_run_payload(payload, intent="curate")
+            wrapped.setdefault("job_id", wrapped["run_id"])
+            return wrapped
         payload = await call_vendor(
             "photo-ranker",
             "curate_best_photos",
@@ -737,7 +781,9 @@ async def photos_run(
             date_to=date_to,
             limit=limit,
             selection_profile=selection_profile,
+            quality_top_percent=quality_top_percent,
             exclude_screenshots=exclude_screenshots,
+            run_id=operation_run_id,
         )
         return wrap_run_payload(payload, intent="curate")
 
@@ -805,6 +851,7 @@ async def photos_run(
             date_to=date_to,
             limit=limit,
             selection_profile=selection_profile,
+            run_id=operation_run_id,
         )
         return wrap_run_payload(payload, intent="organize")
 

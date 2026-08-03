@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from threading import Event
 from types import SimpleNamespace
 
+import photos_mcp.preflight as preflight
 from photos_mcp.preflight import (
     CHECK_ERROR,
     CHECK_OK,
@@ -9,8 +11,10 @@ from photos_mcp.preflight import (
     aggregate_check_status,
     check_photos_automation_access,
     check_photos_library_readability,
+    check_photos_library_metadata_access,
     check_photos_permission_access,
     check_photos_thumbnail_access,
+    run_preflight_check,
     run_startup_checks,
 )
 
@@ -42,6 +46,35 @@ def test_check_photos_library_readability_reports_failure(monkeypatch) -> None:
 
     assert result.status == CHECK_ERROR
     assert result.detail == "photos db unavailable"
+
+
+def test_check_photos_library_metadata_access_uses_read_only_database(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    library_path = tmp_path / "Photos Library.photoslibrary"
+    database_path = library_path / "database" / "Photos.sqlite"
+    database_path.parent.mkdir(parents=True)
+    connection = preflight.sqlite3.connect(database_path)
+    connection.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY)")
+    connection.close()
+    monkeypatch.setattr(preflight, "_resolve_photos_library_path", lambda: library_path)
+
+    result = check_photos_library_metadata_access()
+
+    assert result.status == CHECK_OK
+    assert "read-only" in result.detail
+
+
+def test_resolve_photos_library_path_prefers_explicit_override(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    library_path = tmp_path / "External.photoslibrary"
+    library_path.mkdir()
+    monkeypatch.setenv("PHOTOS_MCP_PHOTOS_LIBRARY_PATH", str(library_path))
+
+    assert preflight._resolve_photos_library_path() == library_path.resolve()
 
 
 def test_check_photos_automation_access_downgrades_permission_error(monkeypatch) -> None:
@@ -112,8 +145,13 @@ def test_check_photos_permission_access_requests_photokit_authorization(monkeypa
     assert "authorized" in result.detail.lower()
 
 
-def test_run_startup_checks_includes_photos_permission_first(monkeypatch) -> None:
+def test_run_startup_checks_loads_library_before_photokit_but_displays_permission_first(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
     def fake_run_check_with_timeout(check_fn, *, timeout_secs, timeout_result):
+        calls.append(timeout_result.key)
         return check_fn()
 
     monkeypatch.setattr("photos_mcp.preflight._run_check_with_timeout", fake_run_check_with_timeout)
@@ -134,6 +172,64 @@ def test_run_startup_checks_includes_photos_permission_first(monkeypatch) -> Non
         lambda: SimpleNamespace(key="photos_thumbnail", status=CHECK_OK),
     )
 
+    results = run_startup_checks(include_expensive=True)
+
+    assert calls == [
+        "photos_read",
+        "photos_permission",
+        "photos_automation",
+        "photos_thumbnail",
+    ]
+    assert [result.key for result in results] == [
+        "photos_permission",
+        "photos_read",
+        "photos_automation",
+        "photos_thumbnail",
+    ]
+
+
+def test_run_preflight_check_dispatches_only_requested_check(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_run_check_with_timeout(check_fn, *, timeout_secs, timeout_result):
+        calls.append(timeout_result.key)
+        return check_fn()
+
+    monkeypatch.setattr("photos_mcp.preflight._run_check_with_timeout", fake_run_check_with_timeout)
+    monkeypatch.setattr(
+        "photos_mcp.preflight.check_photos_thumbnail_access",
+        lambda: preflight.PreflightCheckResult(
+            "photos_thumbnail",
+            "Thumbnail",
+            CHECK_OK,
+            "available",
+        ),
+    )
+
+    result = run_preflight_check("photos_thumbnail")
+
+    assert result.status == CHECK_OK
+    assert calls == ["photos_thumbnail"]
+
+
+def test_startup_defers_uninterruptible_automation_and_thumbnail_checks(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "photos_mcp.preflight.check_photos_permission_access",
+        lambda: preflight.PreflightCheckResult("photos_permission", "Permission", CHECK_OK, "ok"),
+    )
+    monkeypatch.setattr(
+        "photos_mcp.preflight.check_photos_library_readability",
+        lambda: preflight.PreflightCheckResult("photos_read", "Read", CHECK_OK, "ok"),
+    )
+    monkeypatch.setattr(
+        "photos_mcp.preflight.check_photos_automation_access",
+        lambda: (_ for _ in ()).throw(AssertionError("automation probe must be deferred")),
+    )
+    monkeypatch.setattr(
+        "photos_mcp.preflight.check_photos_thumbnail_access",
+        lambda: (_ for _ in ()).throw(AssertionError("thumbnail probe must be deferred")),
+    )
+
     results = run_startup_checks()
 
     assert [result.key for result in results] == [
@@ -142,6 +238,47 @@ def test_run_startup_checks_includes_photos_permission_first(monkeypatch) -> Non
         "photos_automation",
         "photos_thumbnail",
     ]
+    assert results[2].status == CHECK_WARNING
+    assert "deferred" in results[2].summary
+    assert "deferred" in results[3].summary
+
+
+def test_timed_out_preflight_worker_is_not_duplicated() -> None:
+    started = Event()
+    release = Event()
+    calls: list[str] = []
+    timeout_result = preflight.PreflightCheckResult(
+        key="test_no_duplicate_worker",
+        title="Test",
+        status=CHECK_WARNING,
+        summary="timed out",
+    )
+
+    def blocking_check():
+        calls.append("started")
+        started.set()
+        release.wait(timeout=1.0)
+        return timeout_result
+
+    first = preflight._run_check_with_timeout(
+        blocking_check,
+        timeout_secs=0.01,
+        timeout_result=timeout_result,
+    )
+    assert started.is_set()
+    second = preflight._run_check_with_timeout(
+        blocking_check,
+        timeout_secs=0.01,
+        timeout_result=timeout_result,
+    )
+
+    assert first is timeout_result
+    assert second is timeout_result
+    assert calls == ["started"]
+    release.set()
+    active_thread = preflight._ACTIVE_CHECK_THREADS.get(timeout_result.key)
+    if active_thread is not None:
+        active_thread.join(timeout=1.0)
 
 
 def test_check_photos_thumbnail_access_reports_success(monkeypatch) -> None:

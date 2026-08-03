@@ -57,7 +57,7 @@ Actions:
 | `guide` | 목적별 사용 흐름, action catalog와 VLM 상태 | `goal` |
 | `status` | transport/capability/job status | `view` |
 | `list` | source photo 목록 | `source`, `album`, `date_from`, `date_to`, `limit`, `include_metadata` |
-| `ready_only` | local path 가 준비된 항목만 조회 | `source`, `album`, `date_from`, `date_to`, `limit` |
+| `ready_only` | 즉시 분석 가능한 항목만 조회. Apple은 local path와 실제 이미지 디코딩을 함께 확인 | `source`, `album`, `date_from`, `date_to`, `limit` |
 | `search` | source photo 검색 | `source`, `query`, `album`, `date_from`, `date_to`, `limit` |
 | `inspect` | 단건 metadata/thumbnail 조회 | `source`, `photo_id`, `include_thumbnail` |
 | `prefetch` | source item prefetch | `source`, `photo_ids`, `limit` |
@@ -89,7 +89,9 @@ photos_query(
 )
 ```
 
-Apple Photos live 응답에서 `path` 가 비어 있으면 `local_path_available=false` 로 내려올 수 있다. 이 경우 `download_hint` 와 `recommended_next_action` 을 읽고, 필요하면 Photos 앱에서 원본 다운로드를 유도한 뒤 `photos_select(action="analyze_photo", options={"wait_for_local": true})` 로 이어간다.
+Apple Photos live 응답에서 `path` 가 비어 있으면 `local_path_available=false` 로 내려올 수 있다. iCloud 원본은 경로가 먼저 보이더라도 HEIC bytes가 아직 완성되지 않을 수 있으므로, 즉시 실행 대상은 반드시 `ready_only`의 결과로 고른다. 이 경우 `download_hint` 와 `recommended_next_action` 을 읽고, 필요하면 Photos 앱에서 원본 다운로드를 유도한 뒤 `photos_select(action="analyze_photo", options={"wait_for_local": true})` 로 이어간다.
+
+`wait_for_local=false`인 Apple analyze는 먼저 metadata와 local readiness probe를 수행한다. probe가 `local_path_available=false`이면 iCloud download-capable thumbnail helper를 호출하지 않고 `selected_photo_not_local` 구조화 응답을 즉시 반환한다. 따라서 no-wait 요청이 원본 다운로드 대기로 길게 멈추지 않는다.
 
 ## 4. `photos_select`
 
@@ -133,7 +135,7 @@ photos_select(
 
 역할: 이미 선택되었거나 명시된 photo id/path 를 외부 destination 에 쓴다.
 
-모든 action은 첫 호출에서 실행되지 않고 `status="awaiting_approval"`, `mutation_plan`, `approval_token`을 반환한다. 사용자가 승인한 뒤 같은 options에 token을 추가한 두 번째 호출만 실행된다. token은 15분 동안 한 번만 유효하고 options가 바뀌면 무효다.
+모든 action은 첫 호출에서 실행되지 않고 `status="awaiting_approval"`, `mutation_plan`, `approval_token`을 반환한다. plan에는 적용할 photo ID와 가능한 경우 비식별 preview 경로가 포함된다. 사용자가 승인한 뒤 같은 options에 token을 추가한 두 번째 호출만 실행된다. token은 15분 동안 한 번만 유효하며 options 또는 확정 사진 대상이 바뀌면 무효다. 실행 결과에는 자동 `idempotency_key`와 `MutationReceipt`가 포함된다.
 
 Actions:
 
@@ -177,13 +179,13 @@ photos_write(
 )
 ```
 
-`organize_by_category` 는 category album 생성을 위한 action 이므로 `target_album_name` 을 받지 않는다. 반대로 단일 앨범 write action 은 `album_prefix` 를 받지 않는다.
+`organize_by_category` 는 category album 생성을 위한 action 이므로 `target_album_name` 을 받지 않는다. Apple run은 `album_prefix`로 category album을 만들고, local run은 `folder`를 출력 디렉터리로 사용해 category 폴더에 복사한다. local run에서 `folder`가 비어 있으면 `local_output_dir_required`로 차단된다. 반대로 단일 앨범 write action 은 `album_prefix` 를 받지 않는다.
 
 ## 6. `photos_workflow`
 
 역할: 하나의 사용자 목표를 end-to-end 로 수행한다. 모델이 여러 단계 조합을 잘못 선택하기 쉬운 요청은 workflow action 을 우선 사용한다.
 
-모든 workflow도 `photos_write`와 같은 2단계 승인 계약을 사용한다. 현재 첫 plan은 source 범위와 destination을 확인하는 scope plan이며, 분석 후 확정된 photo ID의 상세 재승인은 후속 개선 범위다.
+분석이 필요한 workflow는 첫 호출에서 background 분석을 시작하고 `run_id`를 반환한다. 분석이 끝나면 실제 photo ID와 preview 경로를 포함한 최종 `MutationPlan`을 생성하고 `awaiting_mutation_approval`에서 멈춘다. 이때 응답의 `next_action`과 options를 사용해 해당 `photos_write` 계획을 승인해야 실제 변경이 수행된다. `resume`과 import 중심 workflow는 변경 또는 재실행 전에 먼저 승인을 요구한다.
 
 Actions:
 
@@ -193,7 +195,7 @@ Actions:
 | `curate_to_directory` | 잘 나온 사진을 골라 local directory 로 export | `output_dir` |
 | `classify_then_organize_by_category` | classify 후 category album/directory 로 정리 | `album_prefix` 또는 `folder` |
 | `import_then_curate_to_album` | local photos import 중심 workflow | `photo_paths`, `target_album_name` |
-| `resume` | 실패 또는 재시작으로 중단된 background run을 승인 후 새 run으로 재실행 | `run_id` |
+| `resume` | 실패 또는 재시작으로 중단된 background run을 승인 후 같은 ID와 checkpoint로 재개 | `run_id` |
 
 `curate_to_album` 예:
 

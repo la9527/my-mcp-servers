@@ -1,14 +1,39 @@
 from __future__ import annotations
 
+import asyncio
+import os
 from typing import Any
 
-from photos_mcp.facade.common import call_vendor
+from photos_mcp.photo_assets import PhotoAsset
+from photos_mcp.photo_source_port import PhotoSourcePort, VendorPhotoSourcePort
+from photos_mcp.state import PhotosMcpStateStore
 
 
 APPLE_DOWNLOAD_HINT = (
     "Open the asset in Photos and wait for the original to download locally, then rerun "
     'photos_query(action="list") and confirm local_path_available=true before photos_select(action="analyze_photo").'
 )
+DEFAULT_LIBRARY_LIST_TIMEOUT_SECONDS = float(
+    os.getenv("PHOTOS_MCP_LIBRARY_LIST_TIMEOUT_SECONDS", "30")
+)
+
+
+def _list_timeout_response(*, action: str, source: str) -> dict[str, Any]:
+    return {
+        "action": action,
+        "source": source,
+        "status": "warning",
+        "error_code": "library_list_timeout",
+        "error": "사진 보관함 목록을 제한 시간 안에 읽지 못했습니다.",
+        "detail": "Apple Photos의 초기 인덱스 로딩 또는 보관함 접근이 아직 완료되지 않았습니다.",
+        "hint": "Photos 앱이 보관함을 열 수 있는지 확인한 뒤 잠시 후 같은 요청을 다시 실행하세요.",
+        "can_retry": True,
+        "count": 0,
+        "items": [],
+        "analyze_ready_count": 0,
+        "download_required_count": 0,
+        "next_suggested_action": "photos_query",
+    }
 
 
 def _normalize_library_items(items: Any, *, source: str) -> list[dict[str, Any]]:
@@ -22,10 +47,10 @@ def _normalize_library_items(items: Any, *, source: str) -> list[dict[str, Any]]
         normalized_item = dict(item)
         if normalized_item.get("id") and not normalized_item.get("photo_id"):
             normalized_item["photo_id"] = normalized_item["id"]
-        if "local_path_available" not in normalized_item:
-            normalized_item["local_path_available"] = bool(str(normalized_item.get("path") or "").strip())
-        local_path_available = bool(normalized_item.get("local_path_available"))
-        normalized_item["analyze_recommended"] = local_path_available
+        asset = PhotoAsset.from_payload(normalized_item, source=source)
+        normalized_item.update(asset.as_payload())
+        local_path_available = asset.local_path_available
+        normalized_item["analyze_recommended"] = asset.readiness == "ready"
         normalized_item["recommended_next_action"] = (
             "photos_select" if local_path_available else "download_in_photos_then_run"
         )
@@ -94,8 +119,43 @@ def _filter_items_for_action(
     return items
 
 
+async def _verify_apple_ready_items(
+    items: list[dict[str, Any]],
+    *,
+    path_or_bucket: str,
+    port: PhotoSourcePort,
+) -> list[dict[str, Any]]:
+    """Return only Apple assets whose existing local path can decode now."""
+    verified: list[dict[str, Any]] = []
+    for item in items:
+        photo_id = str(item.get("photo_id") or "")
+        if not photo_id:
+            continue
+        probe = await port.probe_local_availability(
+            "apple",
+            photo_id,
+            path_or_bucket=path_or_bucket,
+        )
+        if probe.get("local_path_available") is not True:
+            continue
+        verified_item = dict(item)
+        verified_item["local_path_available"] = True
+        verified_item["path"] = str(probe.get("local_path") or verified_item.get("path") or "")
+        verified.extend(_normalize_library_items([verified_item], source="apple"))
+    return verified
+
+
+def _remember_assets(
+    state_store: PhotosMcpStateStore | None,
+    items: list[dict[str, Any]],
+) -> None:
+    if state_store is not None:
+        state_store.remember_photo_assets(items)
+
+
 async def photos_library(
     *,
+    state_store: PhotosMcpStateStore | None = None,
     action: str = "list",
     source: str = "apple",
     photo_id: str = "",
@@ -109,13 +169,13 @@ async def photos_library(
     include_thumbnail: bool = False,
     include_metadata: bool = False,
     max_size: int = 512,
+    source_port: PhotoSourcePort | None = None,
 ) -> dict[str, Any]:
     normalized_action = (action or "list").strip().lower()
+    port = source_port or VendorPhotoSourcePort()
 
     if normalized_action == "prefetch":
-        payload = await call_vendor(
-            "photo-source",
-            "prefetch_photos",
+        payload = await port.prefetch_photos(
             source,
             path_or_bucket=path_or_bucket,
             photo_ids=[photo_id] if photo_id else None,
@@ -125,20 +185,27 @@ async def photos_library(
             person=person,
             limit=limit,
         )
-        return _prefetch_response(source=source, payload=payload if isinstance(payload, dict) else {})
+        normalized_payload = payload if isinstance(payload, dict) else {}
+        ready_items = [
+            {"source": source, "photo_id": item.get("photo_id"), "path": item.get("path")}
+            for item in [*normalized_payload.get("already_local", []), *normalized_payload.get("downloaded", [])]
+            if isinstance(item, dict) and item.get("photo_id")
+        ]
+        normalized_items = _normalize_library_items(ready_items, source=source)
+        _remember_assets(state_store, normalized_items)
+        return _prefetch_response(source=source, payload=normalized_payload)
 
     if normalized_action == "search":
         items = _normalize_library_items(
-            await call_vendor(
-            "photo-source",
-            "search_photos",
-            query,
+            await port.search_photos(
+                query,
+                source=source,
+                path_or_bucket=path_or_bucket,
+                limit=limit,
+            ),
             source=source,
-            path_or_bucket=path_or_bucket,
-            limit=limit,
-            )
-            , source=source
         )
+        _remember_assets(state_store, items)
         return _library_response(action="search", source=source, query=query, items=items)
 
     if normalized_action == "inspect":
@@ -150,43 +217,59 @@ async def photos_library(
             "source": source,
         }
         if include_metadata or not include_thumbnail:
-            item["metadata"] = await call_vendor(
-                "photo-source",
-                "get_metadata",
+            item["metadata"] = await port.get_metadata(
                 source,
                 photo_id,
                 path_or_bucket=path_or_bucket,
             )
         if include_thumbnail:
-            item["thumbnail_b64"] = await call_vendor(
-                "photo-source",
-                "get_thumbnail",
+            item["thumbnail_b64"] = await port.get_thumbnail(
                 source,
                 photo_id,
                 path_or_bucket=path_or_bucket,
                 max_size=max_size,
             )
+            if source == "apple" and item["thumbnail_b64"]:
+                # A successfully fetched thumbnail is enough for an immediate analysis call.
+                item["local_path_available"] = True
+        remembered = state_store.get_photo_asset(source, photo_id) if state_store is not None else None
+        if remembered is not None:
+            item.setdefault("path", remembered.get("path") or "")
+            item.setdefault("local_path_available", remembered.get("local_path_available"))
+        normalized_item = _normalize_library_items([item], source=source)[0]
+        _remember_assets(state_store, [normalized_item])
         return {
             "action": "inspect",
             "source": source,
-            "item": item,
+            "item": normalized_item,
             "next_suggested_action": "photos_select",
         }
 
     response_action = "ready_only" if normalized_action == "ready_only" else "list"
-    items = _normalize_library_items(
-        await call_vendor(
-        "photo-source",
-        "list_photos",
-        source,
-        path_or_bucket=path_or_bucket,
-        date_from=date_from,
-        date_to=date_to,
-        album=album,
-        person=person,
-        limit=limit,
+    try:
+        raw_items = await asyncio.wait_for(
+            port.list_photos(
+                source,
+                path_or_bucket=path_or_bucket,
+                date_from=date_from,
+                date_to=date_to,
+                album=album,
+                person=person,
+                limit=limit,
+            ),
+            timeout=DEFAULT_LIBRARY_LIST_TIMEOUT_SECONDS,
         )
-        , source=source
-    )
-    filtered_items = _filter_items_for_action(items, action=response_action)
+    except TimeoutError:
+        return _list_timeout_response(action=response_action, source=source)
+
+    items = _normalize_library_items(raw_items, source=source)
+    if response_action == "ready_only" and source == "apple":
+        filtered_items = await _verify_apple_ready_items(
+            items,
+            path_or_bucket=path_or_bucket,
+            port=port,
+        )
+    else:
+        filtered_items = _filter_items_for_action(items, action=response_action)
+    _remember_assets(state_store, items)
     return _library_response(action=response_action, source=source, items=filtered_items)

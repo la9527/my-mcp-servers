@@ -77,12 +77,61 @@ def test_apple_photo_source_list_photos_filters_videos_before_limit() -> None:
     assert all(photo.media_type == "photo" for photo in photos)
 
 
+def test_apple_photo_source_thumbnail_decode_failure_stays_retryable(monkeypatch) -> None:
+    prepare_vendor_runtime("photo-source")
+    module = importlib.import_module("photos_mcp_vendor_photo_source.sources.apple_photos")
+    source = module.ApplePhotosSource()
+    photo = _apple_photo(
+        photo_id="cloud-photo",
+        filename="cloud.heic",
+        isphoto=True,
+        ismovie=False,
+        uti="public.heic",
+    )
+    source._db = SimpleNamespace(photos=lambda: [photo])
+    source._last_fetch_details["cloud-photo"] = {"fetch_strategy": "download_missing"}
+    monkeypatch.setattr(source, "_resolve_photo_path", lambda _photo, download_missing: "/tmp/cloud.heic")
+    monkeypatch.setattr(module, "open_image_path", lambda _path: (_ for _ in ()).throw(OSError("incomplete HEIC")))
+
+    assert source.get_thumbnail("cloud-photo") is None
+    assert source._last_fetch_details["cloud-photo"] == {
+        "fetch_strategy": "download_missing",
+        "photo_id": "cloud-photo",
+        "reason_code": "thumbnail_decode_failed",
+        "reason_detail": "incomplete HEIC",
+        "path": "/tmp/cloud.heic",
+    }
+
+
+def test_apple_photo_source_readiness_probe_rejects_incomplete_local_heic(monkeypatch) -> None:
+    prepare_vendor_runtime("photo-source")
+    module = importlib.import_module("photos_mcp_vendor_photo_source.sources.apple_photos")
+    source = module.ApplePhotosSource()
+    photo = _apple_photo(
+        photo_id="cloud-photo",
+        filename="cloud.heic",
+        isphoto=True,
+        ismovie=False,
+        uti="public.heic",
+    )
+    source._db = SimpleNamespace(photos=lambda: [photo])
+    monkeypatch.setattr(source, "_resolve_photo_path", lambda _photo, download_missing: "/tmp/cloud.heic")
+    monkeypatch.setattr(module, "open_image_path", lambda _path: (_ for _ in ()).throw(OSError("incomplete HEIC")))
+
+    assert source.probe_local_availability("cloud-photo") == {
+        "photo_id": "cloud-photo",
+        "local_path_available": False,
+        "local_path": "",
+    }
+    assert source._last_fetch_details["cloud-photo"]["reason_code"] == "thumbnail_decode_failed"
+
+
 def test_photo_ranker_load_apple_filters_videos_and_reuses_db(monkeypatch) -> None:
     prepare_vendor_runtime("photo-ranker")
     module = importlib.import_module("photos_mcp_vendor_photo_ranker.sources")
     module._APPLE_DB = None
 
-    calls = {"photos_db": 0}
+    calls = {"photos_db": 0, "options": []}
     photos = [
         _apple_photo(
             photo_id="video-1",
@@ -111,8 +160,9 @@ def test_photo_ranker_load_apple_filters_videos_and_reuses_db(monkeypatch) -> No
     ]
 
     class FakePhotosDB:
-        def __init__(self):
+        def __init__(self, **kwargs):
             calls["photos_db"] += 1
+            calls["options"].append(kwargs)
 
         def photos(self):
             return list(photos)
@@ -128,3 +178,4 @@ def test_photo_ranker_load_apple_filters_videos_and_reuses_db(monkeypatch) -> No
     assert [item["photo_id"] for item in first] == ["photo-1"]
     assert [item["photo_id"] for item in second] == ["photo-1", "photo-2"]
     assert calls["photos_db"] == 1
+    assert calls["options"][0]["_skip_searchinfo"] is True

@@ -126,7 +126,7 @@
 
 ## 5. job source of truth
 
-job 상태의 source of truth 는 `photos-mcp` 자체 state store 가 아니다. 실제 source of truth 는 vendored `photo-ranker` 의 SQLite DB 와 in-memory queue 다.
+job 상태의 source of truth는 vendor `jobs` 테이블과 facade `workflow_runs`가 함께 들어 있는 단일 `photo-ranker/jobs.db`다. background workflow와 vendor pipeline은 같은 `run_id`를 사용하고 `PhotosMcpStateStore`는 이 저장소를 메뉴와 health용 snapshot으로 투영한다. in-memory queue는 현재 프로세스의 task 실행만 담당하며 영속 상태의 기준이 아니다.
 
 `photos-mcp` 가 추가로 하는 일은 아래다.
 
@@ -137,8 +137,8 @@ job 상태의 source of truth 는 `photos-mcp` 자체 state store 가 아니다.
 
 따라서 job 문제가 생기면 아래 두 층을 구분해야 한다.
 
-1. `photo-ranker` DB/queue 자체 문제
-2. `photos-mcp` projection/state 반영 문제
+1. `jobs.db`의 workflow와 pipeline 상태 문제
+2. 현재 프로세스 queue 또는 `photos-mcp` projection 반영 문제
 
 ## 6. review 흐름
 
@@ -208,7 +208,13 @@ face review 가 필요하면 아래가 추가된다.
 
 이 값은 어떤 점수 필드를 더 강조할지, 어떤 사진을 우선 선택할지에 영향을 준다. 따라서 결과 비교를 할 때는 source 나 limit 뿐 아니라 profile 도 함께 봐야 한다.
 
-## 10. 언제 `photo-ranker` 문서를 먼저 봐야 하는가
+## 10. 유사 장면 대표 선택
+
+분류 결과는 촬영 시각, Apple 연사 관계, 인물 집합과 macOS Vision FeaturePrint를 이용해 유사 촬영 장면으로 묶는다. 각 장면에서는 비용이 큰 이미지 분석 후보를 최대 4장으로 줄이고, 품질 하한과 시각적 다양성을 통과한 사진만 최대 2장까지 추천한다.
+
+결과 항목에는 `scene_cluster_id`, `scene_cluster_size`, `cluster_rank`, `recommended_in_cluster`, `recommendation_slot`, `selection_reason_codes`가 포함된다. 같은 장면의 나머지 사진은 삭제하거나 숨기지 않고 `같은 장면 대안`으로 유지한다. 이 단계는 읽기 전용이며 Apple 사진과 앨범을 변경하지 않는다.
+
+## 11. 언제 `photo-ranker` 문서를 먼저 봐야 하는가
 
 아래 상황이면 이 문서를 먼저 보는 것이 맞다.
 

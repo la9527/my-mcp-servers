@@ -13,6 +13,11 @@ htmlcov/
 .framework-python-cache/
 .framework-python-runtime/
 
+# Runtime-downloaded benchmark images and any private annotation files stay local.
+.runtime/
+resources/vlm-benchmark/cache/
+tmp/
+
 build/
 build-*/
 dist/

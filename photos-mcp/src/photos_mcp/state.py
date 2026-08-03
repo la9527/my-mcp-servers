@@ -4,15 +4,19 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 import json
 import logging
+import os
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from photos_mcp.run_repository import RunRepository
+
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
-ACTIVE_JOB_STATUSES = {"pending", "running"}
+ACTIVE_JOB_STATUSES = {"pending", "running", "waiting_source", "waiting_model", "writing"}
 RECOVERY_JOB_STATUSES = {"awaiting_resume_approval"}
 DAEMON_STATUSES = {"stopped", "starting", "ready", "busy", "degraded", "stopping"}
 CHECK_STATUSES = {"pending", "ok", "warning", "error"}
+DEFAULT_PHOTO_ASSET_READINESS_TTL_SECONDS = 300.0
 
 
 logger = logging.getLogger(__name__)
@@ -20,6 +24,26 @@ logger = logging.getLogger(__name__)
 
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _photo_asset_ttl_seconds() -> float:
+    value = os.getenv("PHOTOS_MCP_ASSET_READINESS_TTL_SECONDS", "")
+    try:
+        return max(0.0, float(value)) if value else DEFAULT_PHOTO_ASSET_READINESS_TTL_SECONDS
+    except ValueError:
+        return DEFAULT_PHOTO_ASSET_READINESS_TTL_SECONDS
+
+
+def _asset_is_fresh(observed_at: str, *, ttl_seconds: float) -> bool:
+    if not observed_at:
+        return False
+    try:
+        observed = datetime.fromisoformat(observed_at)
+    except ValueError:
+        return False
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - observed.astimezone(UTC)).total_seconds() <= ttl_seconds
 
 
 def job_status_value(status: Any) -> str:
@@ -39,6 +63,24 @@ def is_running_job_status(status: Any) -> bool:
     return job_status_value(status) == "running"
 
 
+def _job_time_sort_value(value: Any) -> float:
+    """Normalize photo-ranker epochs and facade ISO timestamps for sorting."""
+    raw = str(value or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
+
+
 @dataclass(slots=True)
 class JobSnapshot:
     job_id: str
@@ -52,17 +94,20 @@ class JobSnapshot:
     progress_label: str = ""
     started_at: str = ""
     finished_at: str = ""
+    result_count: int | None = None
     result_available: bool = False
     summary_available: bool = False
     reason: str = ""
+    waiting_reason: str = ""
+    runtime_provider: str = ""
 
     @property
     def is_terminal(self) -> bool:
         return is_terminal_job_status(self.status)
 
     @property
-    def sort_key(self) -> str:
-        return self.finished_at or self.started_at or self.job_id
+    def sort_key(self) -> float:
+        return _job_time_sort_value(self.finished_at or self.started_at)
 
 
 @dataclass(slots=True)
@@ -76,6 +121,7 @@ class PhotosMcpSnapshot:
     preflight_checks: list[dict[str, Any]] = field(default_factory=list)
     active_jobs: list[dict[str, Any]] = field(default_factory=list)
     recent_jobs: list[dict[str, Any]] = field(default_factory=list)
+    pending_mutation_plans: list[dict[str, Any]] = field(default_factory=list)
     background_job_running: bool = False
 
 
@@ -96,6 +142,9 @@ class PhotosMcpStateStore:
         endpoint: str,
         health_endpoint: str,
         persistence_path: Path | None = None,
+        repository_path: Path | None = None,
+        run_repository: RunRepository | None = None,
+        photo_asset_readiness_ttl_seconds: float | None = None,
     ) -> None:
         self._endpoint = endpoint
         self._health_endpoint = health_endpoint
@@ -104,11 +153,63 @@ class PhotosMcpStateStore:
         self._synthetic_runs: dict[str, dict[str, Any]] = {}
         self._synthetic_tasks: dict[str, Any] = {}
         self._preflight_checks: dict[str, PreflightCheckSnapshot] = {}
+        self._photo_assets: dict[tuple[str, str], dict[str, Any]] = {}
+        self._photo_asset_readiness_ttl_seconds = (
+            _photo_asset_ttl_seconds()
+            if photo_asset_readiness_ttl_seconds is None
+            else max(0.0, photo_asset_readiness_ttl_seconds)
+        )
         self._last_preflight_at = ""
         self._last_updated_at = _utcnow_iso()
         self._lock = RLock()
         self._persistence_path = persistence_path
+        resolved_repository_path = repository_path
+        if resolved_repository_path is None and persistence_path is not None:
+            resolved_repository_path = persistence_path.with_name("coordinator.db")
+        self._run_repository = run_repository or RunRepository(resolved_repository_path)
         self._load_synthetic_runs()
+
+    @property
+    def run_repository(self) -> RunRepository:
+        return self._run_repository
+
+    def remember_photo_assets(self, items: list[dict[str, Any]]) -> None:
+        """Keep browse readiness in the owning app state, never globally."""
+        observed_at = _utcnow_iso()
+        persisted_items: list[dict[str, Any]] = []
+        with self._lock:
+            for item in items:
+                source = str(item.get("source") or "")
+                asset_id = str(item.get("asset_id") or item.get("photo_id") or "")
+                if source and asset_id:
+                    remembered = {**item, "readiness_checked_at": observed_at}
+                    self._photo_assets[(source, asset_id)] = remembered
+                    persisted_items.append(remembered)
+            self._run_repository.upsert_photo_assets(persisted_items)
+
+    def get_photo_asset(self, source: str, asset_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            asset = self._photo_assets.get((source, asset_id))
+            if asset is not None:
+                if _asset_is_fresh(
+                    str(asset.get("readiness_checked_at") or ""),
+                    ttl_seconds=self._photo_asset_readiness_ttl_seconds,
+                ):
+                    return dict(asset)
+                self._photo_assets.pop((source, asset_id), None)
+            persisted = self._run_repository.get_photo_asset_with_updated_at(source, asset_id)
+            if persisted is None:
+                return None
+            payload, updated_at = persisted
+            observed_at = str(payload.get("readiness_checked_at") or updated_at)
+            if not _asset_is_fresh(
+                observed_at,
+                ttl_seconds=self._photo_asset_readiness_ttl_seconds,
+            ):
+                return None
+            payload.setdefault("readiness_checked_at", observed_at)
+            self._photo_assets[(source, asset_id)] = dict(payload)
+            return payload
 
     def set_daemon_status(self, status: str) -> None:
         if status not in DAEMON_STATUSES:
@@ -145,13 +246,13 @@ class PhotosMcpStateStore:
             normalized.setdefault("run_id", run_id)
             normalized.setdefault("job_id", run_id)
             self._synthetic_runs[run_id] = normalized
+            self._run_repository.upsert_run(normalized)
             if task is not None:
                 self._synthetic_tasks[run_id] = task
             elif is_terminal_job_status(normalized.get("status") or ""):
                 self._synthetic_tasks.pop(run_id, None)
             self._last_updated_at = _utcnow_iso()
             self._sync_busy_state_locked()
-            self._persist_synthetic_runs_locked()
 
     def get_synthetic_run(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -189,30 +290,26 @@ class PhotosMcpStateStore:
                 cancelled_payload.setdefault("can_retry", True)
                 cancelled_payload["finished_at"] = _utcnow_iso()
                 self._synthetic_runs[run_id] = cancelled_payload
+                self._run_repository.upsert_run(cancelled_payload, event_type="cancelled")
 
             if task is not None:
                 task.cancel()
                 self._synthetic_tasks.pop(run_id, None)
             self._last_updated_at = _utcnow_iso()
             self._sync_busy_state_locked()
-            self._persist_synthetic_runs_locked()
             return True
 
     def clear_synthetic_history(self, statuses: tuple[str, ...] | None = None) -> list[str]:
         target_statuses = set(statuses or ("completed", "failed", "cancelled"))
         deleted_run_ids: list[str] = []
         with self._lock:
-            for run_id, payload in list(self._synthetic_runs.items()):
-                status = job_status_value(payload.get("status") or "")
-                if status not in target_statuses:
-                    continue
+            deleted_run_ids = self._run_repository.delete_runs(target_statuses)
+            for run_id in deleted_run_ids:
                 self._synthetic_runs.pop(run_id, None)
                 self._synthetic_tasks.pop(run_id, None)
-                deleted_run_ids.append(run_id)
             if deleted_run_ids:
                 self._last_updated_at = _utcnow_iso()
                 self._sync_busy_state_locked()
-                self._persist_synthetic_runs_locked()
         return deleted_run_ids
 
     def get_recovery_plan(self, run_id: str) -> dict[str, Any]:
@@ -256,7 +353,7 @@ class PhotosMcpStateStore:
                 "run_status": status,
                 "approval_required": True,
                 "recovery_plan": {
-                    "mode": "restart_as_new_run",
+                    "mode": "checkpoint_resume_same_run",
                     "request": dict(request),
                     "previous_error": str(payload.get("error") or payload.get("reason") or ""),
                 },
@@ -264,23 +361,33 @@ class PhotosMcpStateStore:
                 "next_action": "resume",
             }
 
-    def mark_synthetic_run_resumed(self, run_id: str, resumed_as_run_id: str) -> None:
+    def mark_synthetic_run_resumed(self, run_id: str, resumed_as_run_id: str | None = None) -> None:
         with self._lock:
             payload = self._synthetic_runs.get(run_id)
             if payload is None:
                 return
             updated = dict(payload)
             updated["resume_approved_at"] = _utcnow_iso()
-            updated["resumed_as_run_id"] = resumed_as_run_id
-            if job_status_value(updated.get("status")) in RECOVERY_JOB_STATUSES:
-                updated["status"] = "cancelled"
-                updated["terminal"] = True
-                updated["finished_at"] = _utcnow_iso()
-                updated["reason"] = "resumed_as_new_run"
+            updated["resumed_as_run_id"] = resumed_as_run_id or run_id
+            updated["status"] = "pending"
+            updated["terminal"] = False
+            updated["result_available"] = False
+            updated["reason"] = "resume_approved"
+            updated.pop("finished_at", None)
             self._synthetic_runs[run_id] = updated
+            self._run_repository.upsert_run(updated, event_type="resume_approved")
             self._last_updated_at = _utcnow_iso()
             self._sync_busy_state_locked()
-            self._persist_synthetic_runs_locked()
+
+    def list_pending_mutation_plans(self) -> list[dict[str, Any]]:
+        return self._run_repository.list_mutation_plans({"pending"})
+
+    def decide_mutation_plan(self, token: str, decision: str) -> bool:
+        decided = self._run_repository.decide_mutation_plan(token, decision)
+        if decided:
+            with self._lock:
+                self._last_updated_at = _utcnow_iso()
+        return decided
 
     def replace_preflight_checks(self, checks: list[PreflightCheckSnapshot]) -> None:
         with self._lock:
@@ -295,7 +402,11 @@ class PhotosMcpStateStore:
                 for payload in self._synthetic_runs.values()
                 if payload.get("job_id") and payload.get("status")
             ]
-            all_jobs = [*self._jobs.values(), *synthetic_jobs]
+            # A facade run and its vendor pipeline use the same id. The facade
+            # snapshot is canonical and replaces the lower-level poll result.
+            all_jobs_by_id = {job.job_id: job for job in self._jobs.values()}
+            all_jobs_by_id.update({job.job_id: job for job in synthetic_jobs})
+            all_jobs = list(all_jobs_by_id.values())
             active_jobs = sorted(
                 (job for job in all_jobs if is_active_job_status(job.status)),
                 key=lambda item: item.sort_key,
@@ -316,14 +427,15 @@ class PhotosMcpStateStore:
                 preflight_checks=[asdict(check) for check in self._preflight_checks.values()],
                 active_jobs=[asdict(job) for job in active_jobs],
                 recent_jobs=[asdict(job) for job in recent_jobs],
-                background_job_running=any(is_running_job_status(job.status) for job in active_jobs),
+                pending_mutation_plans=self.list_pending_mutation_plans(),
+                background_job_running=bool(active_jobs),
             )
 
     def _sync_busy_state_locked(self) -> None:
         if self._daemon_status in {"starting", "stopping", "degraded", "stopped"}:
             return
-        if any(is_running_job_status(job.status) for job in self._jobs.values()) or any(
-            is_running_job_status(payload.get("status") or "")
+        if any(is_active_job_status(job.status) for job in self._jobs.values()) or any(
+            is_active_job_status(payload.get("status") or "")
             for payload in self._synthetic_runs.values()
         ):
             self._daemon_status = "busy"
@@ -341,58 +453,36 @@ class PhotosMcpStateStore:
         return "ok"
 
     def _load_synthetic_runs(self) -> None:
-        if self._persistence_path is None:
-            return
-        if not self._persistence_path.exists():
-            self._persist_synthetic_runs_locked()
-            return
-        try:
-            raw = json.loads(self._persistence_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("Could not load synthetic run state from %s: %s", self._persistence_path, exc)
-            return
-        if not isinstance(raw, dict):
-            return
+        # Import the legacy JSON once. New writes go only to SQLite.
+        if self._persistence_path is not None:
+            if not self._persistence_path.exists():
+                self._persistence_path.parent.mkdir(parents=True, exist_ok=True)
+                self._persistence_path.write_text("{}\n", encoding="utf-8")
+                self._persistence_path.chmod(0o600)
+            try:
+                raw = json.loads(self._persistence_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("Could not migrate synthetic run state from %s: %s", self._persistence_path, exc)
+                raw = {}
+            if isinstance(raw, dict):
+                for run_id, value in raw.items():
+                    if not isinstance(value, dict) or self._run_repository.get_run(str(run_id)) is not None:
+                        continue
+                    payload = dict(value)
+                    payload.setdefault("run_id", str(run_id))
+                    payload.setdefault("job_id", str(run_id))
+                    self._run_repository.upsert_run(payload, event_type="legacy_json_migrated")
 
-        recovered_at = _utcnow_iso()
-        for run_id, value in raw.items():
-            if not isinstance(value, dict):
-                continue
-            payload = dict(value)
-            payload.setdefault("run_id", str(run_id))
-            payload.setdefault("job_id", str(run_id))
-            if job_status_value(payload.get("status")) in ACTIVE_JOB_STATUSES:
-                payload.update(
-                    {
-                        "status": "awaiting_resume_approval",
-                        "terminal": False,
-                        "summary_available": True,
-                        "result_available": False,
-                        "interrupted_at": recovered_at,
-                        "reason": "app_restarted",
-                        "approval_required": True,
-                        "can_resume": isinstance(payload.get("resume_request"), dict),
-                        "next_suggested_action": "photos_query",
-                        "hint": "Inspect resume_plan and explicitly approve photos_workflow(action='resume').",
-                    }
-                )
-            self._synthetic_runs[str(run_id)] = payload
-        self._persist_synthetic_runs_locked()
+        self._run_repository.recover_interrupted_runs()
+        self._synthetic_runs = {
+            str(payload.get("run_id") or payload.get("job_id")): payload
+            for payload in self._run_repository.list_runs()
+            if payload.get("run_id") or payload.get("job_id")
+        }
 
     def _persist_synthetic_runs_locked(self) -> None:
-        if self._persistence_path is None:
-            return
-        try:
-            self._persistence_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary_path = self._persistence_path.with_suffix(f"{self._persistence_path.suffix}.tmp")
-            temporary_path.write_text(
-                json.dumps(self._synthetic_runs, ensure_ascii=False, indent=2, default=str),
-                encoding="utf-8",
-            )
-            temporary_path.chmod(0o600)
-            temporary_path.replace(self._persistence_path)
-        except OSError as exc:
-            logger.warning("Could not persist synthetic run state to %s: %s", self._persistence_path, exc)
+        # Kept as a compatibility hook for older callers. SQLite is canonical.
+        return
 
 
 def job_snapshot_from_payload(payload: dict[str, Any]) -> JobSnapshot:
@@ -407,7 +497,31 @@ def job_snapshot_from_payload(payload: dict[str, Any]) -> JobSnapshot:
     source = payload.get("source") or payload.get("source_path") or ""
     finished_at = payload.get("finished_at") or ""
     status = job_status_value(payload.get("status") or "unknown")
-    result_available = bool(payload.get("result_available", status == "completed"))
+    result_count: int | None = None
+    for count_value in (
+        payload.get("result_count"),
+        payload.get("ranked_count"),
+        payload.get("photo_count"),
+    ):
+        if isinstance(count_value, (int, float)):
+            result_count = max(0, int(count_value))
+            break
+    if result_count is None and isinstance(payload.get("items"), list):
+        result_count = len(payload["items"])
+    if result_count is None and isinstance(payload.get("result"), dict):
+        result_count = 1
+    result_summary_payload = payload.get("result_summary")
+    if result_count is None and isinstance(result_summary_payload, dict):
+        for key in ("ranked_count", "photo_count"):
+            count_value = result_summary_payload.get(key)
+            if isinstance(count_value, (int, float)):
+                result_count = max(0, int(count_value))
+                break
+    result_available = (
+        result_count > 0
+        if result_count is not None
+        else bool(payload.get("result_available", status == "completed"))
+    )
     summary_available = bool(payload.get("summary_available", is_terminal_job_status(status)))
     reason = str(payload.get("reason") or payload.get("error_message") or "")
     progress_current = None
@@ -415,6 +529,8 @@ def job_snapshot_from_payload(payload: dict[str, Any]) -> JobSnapshot:
     progress_stage = ""
     progress_percent = None
     progress_label = ""
+    waiting_reason = ""
+    runtime_provider = ""
     if isinstance(progress, dict):
         current_value = progress.get("current", progress.get("completed"))
         total_value = progress.get("total")
@@ -440,6 +556,20 @@ def job_snapshot_from_payload(payload: dict[str, Any]) -> JobSnapshot:
                 progress_parts.append(f"{progress_percent:.1f}%")
             progress_label = " · ".join(progress_parts)
 
+    wait_status = str(payload.get("wait_status") or "")
+    if wait_status == "waiting_for_local_download" or progress_stage == "waiting_for_local_download":
+        waiting_reason = "원본 사진을 이 기기에 다운로드하는 중입니다"
+    elif progress_stage == "waiting_model":
+        waiting_reason = "이미지 분석 모델 서버를 준비하고 있습니다"
+    elif progress_stage == "waiting_source":
+        waiting_reason = "사진 원본과 미리보기를 준비하고 있습니다"
+
+    result_summary = payload.get("result_summary")
+    if isinstance(result_summary, dict):
+        runtime = result_summary.get("vlm_runtime")
+        if isinstance(runtime, dict):
+            runtime_provider = str(runtime.get("provider") or "")
+
     return JobSnapshot(
         job_id=str(payload.get("job_id") or payload.get("id") or ""),
         request_kind=str(request_kind),
@@ -452,9 +582,12 @@ def job_snapshot_from_payload(payload: dict[str, Any]) -> JobSnapshot:
         progress_label=progress_label,
         started_at=str(payload.get("started_at") or payload.get("created_at") or ""),
         finished_at=str(finished_at),
+        result_count=result_count,
         result_available=result_available,
         summary_available=summary_available,
         reason=reason,
+        waiting_reason=waiting_reason,
+        runtime_provider=runtime_provider,
     )
 
 

@@ -52,6 +52,7 @@ JSON만 출력:
 
 # Max dimension for input images (resize to save VLM inference time)
 _MAX_IMAGE_DIM = 512
+SCENE_PROMPT_VERSION = "photo-ranker-scene-v1"
 
 
 @dataclass(frozen=True)
@@ -287,6 +288,20 @@ class VLMEngine:
     @property
     def should_auto_unload(self) -> bool:
         return self._should_auto_unload
+
+    def runtime_metadata(self) -> dict[str, object]:
+        """Return reproducibility metadata without endpoint credentials or image data."""
+        settings = resolve_vision_runtime_settings(self._model_path)
+        return {
+            "provider": settings.provider,
+            "policy": settings.policy,
+            "backend": self._backend,
+            "model": self._model_path,
+            "target": self._target,
+            "prompt_version": SCENE_PROMPT_VERSION,
+            "input_max_dimension": _MAX_IMAGE_DIM,
+            "auto_unload": self._should_auto_unload,
+        }
 
     def _ensure_loaded(self) -> None:
         if self.is_loaded:

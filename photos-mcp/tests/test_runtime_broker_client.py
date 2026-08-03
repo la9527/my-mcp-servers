@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 
 import pytest
 
@@ -10,28 +11,35 @@ def _load_runtime_broker_module():
     return importlib.reload(module)
 
 
-def test_default_runtime_broker_client_falls_back_to_noop_when_nanobot_import_needs_missing_dependency(
-    monkeypatch,
-) -> None:
+def test_default_runtime_broker_client_never_imports_nanobot_for_local_endpoint(monkeypatch) -> None:
     runtime_broker = _load_runtime_broker_module()
 
     monkeypatch.setenv("PHOTO_RANKER_VLM_BACKEND", "openai_compat")
     monkeypatch.setenv("PHOTO_RANKER_VLM_API_BASE", "http://127.0.0.1:1252/v1")
     monkeypatch.setenv("PHOTO_RANKER_VLM_TARGET", "qwen3-vl-4b")
 
-    class RaisingRuntimeBrokerClient:
-        def __init__(self, *args, **kwargs) -> None:
-            raise ModuleNotFoundError("No module named 'tiktoken'")
-
-    monkeypatch.setattr(
-        runtime_broker,
-        "RuntimeBrokerClient",
-        RaisingRuntimeBrokerClient,
-    )
-
     client = runtime_broker.default_runtime_broker_client()
 
     assert isinstance(client, runtime_broker.NoopRuntimeBrokerClient)
+
+
+def test_explicit_prepare_command_is_used_without_nanobot(monkeypatch) -> None:
+    runtime_broker = _load_runtime_broker_module()
+
+    monkeypatch.setenv("PHOTO_RANKER_VLM_BACKEND", "openai_compat")
+    monkeypatch.setenv("PHOTO_RANKER_VLM_API_BASE", "http://127.0.0.1:1252/v1")
+    monkeypatch.setenv("PHOTOS_MCP_VLM_PREPARE_COMMAND", "/usr/bin/true")
+
+    client = runtime_broker.default_runtime_broker_client()
+
+    assert isinstance(client, runtime_broker.CommandRuntimeBrokerClient)
+    assert client.command == "/usr/bin/true"
+
+
+def test_runtime_broker_source_has_no_nanobot_python_import() -> None:
+    source_path = Path(__file__).resolve().parents[1] / "src" / "photos_mcp" / "runtime_broker_client.py"
+
+    assert "from nanobot" not in source_path.read_text(encoding="utf-8")
 
 
 def test_default_runtime_broker_client_keeps_noop_for_non_local_or_non_openai_backend(
@@ -60,6 +68,7 @@ def test_default_runtime_broker_client_uses_linux_prepare_command(monkeypatch) -
         "PHOTO_RANKER_VLM_MODEL",
         "PHOTO_RANKER_VLM_TARGET",
         "LOCAL_LLM_BASE_URL",
+        "PHOTOS_MCP_VLM_PREPARE_COMMAND",
     ):
         monkeypatch.delenv(name, raising=False)
 

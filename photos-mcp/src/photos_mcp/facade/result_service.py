@@ -114,6 +114,25 @@ async def photos_result(
 
     if normalized_action == "artifacts":
         if output_dir:
+            summary = await call_vendor("photo-ranker", "get_job_summary", resolved_run_id)
+            source = str(summary.get("source") or "") if isinstance(summary, dict) else ""
+            if source not in {"apple", "local"}:
+                return {
+                    "status": "blocked",
+                    "error_code": "unsupported_source_for_export",
+                    "error": (
+                        "Export is available only for Apple Photos or local-directory runs. "
+                        f"Received source={source or 'unknown'!r}."
+                    ),
+                    "run_id": resolved_run_id,
+                    "action": "artifacts",
+                    "source": source or "unknown",
+                    "supported_sources": ["apple", "local"],
+                    "usage_hint": (
+                        "GCS results remain available for review. Copy the source files to a local "
+                        "directory before requesting export."
+                    ),
+                }
             log_context(
                 logger,
                 logging.INFO,

@@ -42,11 +42,26 @@ def _get_apple_source():
     return _apple_source
 
 
+def _parse_gcs_location(path_or_bucket: str) -> tuple[str, str]:
+    """Normalize the documented gs://bucket/prefix location form."""
+    location = path_or_bucket.strip()
+    if location.startswith("gs://"):
+        location = location[5:]
+    bucket, separator, prefix = location.partition("/")
+    if not bucket:
+        raise ValueError("GCS path_or_bucket must include a bucket name")
+    return bucket, prefix if separator else ""
+
+
 def _get_gcs_source(bucket: str, prefix: str = ""):
     from .sources.gcs import GCSSource
 
     global _gcs_source
-    if _gcs_source is None or _gcs_source._bucket_name != bucket:
+    if (
+        _gcs_source is None
+        or _gcs_source._bucket_name != bucket
+        or _gcs_source._prefix != prefix
+    ):
         _gcs_source = GCSSource(bucket, prefix)
     return _gcs_source
 
@@ -99,6 +114,16 @@ def list_photos(
 
     photos = src.list_photos(**kwargs)
     return [p.to_dict() for p in photos]
+
+
+@mcp.tool()
+def list_albums(source: str = "apple", limit: int = 200) -> list[dict]:
+    """사진 소스의 앨범 목록을 읽기 전용으로 반환합니다."""
+    if source == "apple":
+        return _get_apple_source().list_albums(limit=limit)
+    if source == "google":
+        return _get_google_photos_source().list_albums(limit=limit)
+    return []
 
 
 @mcp.tool()
@@ -288,7 +313,8 @@ def _resolve_source(source: str, path_or_bucket: str):
     elif source == "gcs":
         if not path_or_bucket:
             raise ValueError("path_or_bucket is required for gcs source")
-        return _get_gcs_source(path_or_bucket)
+        bucket, prefix = _parse_gcs_location(path_or_bucket)
+        return _get_gcs_source(bucket, prefix)
     elif source == "google":
         return _get_google_photos_source()
     else:

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import asyncio
 
 import pytest
 
+from photos_mcp.facade import run_service
 from photos_mcp.facade.run_service import photos_run
+from photos_mcp.state import PhotosMcpStateStore
 
 
 @pytest.mark.asyncio
@@ -102,3 +105,39 @@ async def test_curate_structured_vendor_error_becomes_terminal_failure(monkeypat
     assert payload["hint"] == "Run photos_library(action=\"prefetch\") before retrying curate."
     assert payload["fetch_strategy"] == "download_missing"
     assert payload["fetch_strategies_tried"] == ["download_missing", "download_missing_photokit"]
+
+
+@pytest.mark.asyncio
+async def test_waiting_analyze_stops_when_thumbnail_probe_never_returns(monkeypatch, tmp_path) -> None:
+    async def unavailable_probe(*_args, **_kwargs):
+        return {"local_path_available": False}
+
+    async def blocked_thumbnail(*_args, **_kwargs):
+        await asyncio.sleep(60)
+        return None, None
+
+    monkeypatch.setattr(run_service, "_selected_photo_probe", unavailable_probe)
+    monkeypatch.setattr(run_service, "_resolve_analyze_thumbnail", blocked_thumbnail)
+    monkeypatch.setattr(run_service, "DEFAULT_ANALYZE_THUMBNAIL_PROBE_TIMEOUT_SECONDS", 0.01)
+    store = PhotosMcpStateStore(
+        endpoint="http://local/mcp",
+        health_endpoint="http://local/health",
+        repository_path=tmp_path / "coordinator.db",
+    )
+
+    payload = await photos_run(
+        state_store=store,
+        intent="analyze",
+        source="apple",
+        photo_id="photo-1",
+        wait_for_local=True,
+        wait_timeout_seconds=5,
+        wait_poll_interval_seconds=1,
+    )
+    await asyncio.sleep(0.05)
+    finished = store.get_synthetic_run(str(payload["run_id"]))
+
+    assert finished is not None
+    assert finished["status"] == "failed"
+    assert finished["error_code"] == "local_download_probe_timeout"
+    assert finished["can_retry"] is True

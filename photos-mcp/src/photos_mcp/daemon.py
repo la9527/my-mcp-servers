@@ -10,7 +10,7 @@ import time
 import uvicorn
 
 from photos_mcp.config import PhotosMcpConfig
-from photos_mcp.job_state import PhotoRankerJobStore
+from photos_mcp.job_state import PhotoRankerJobStore, synthetic_review_result
 from photos_mcp.server import build_http_app, build_server
 from photos_mcp.state import PhotosMcpStateStore
 from photos_mcp.vendor_loader import load_vendor_server
@@ -166,6 +166,26 @@ class PhotosMcpDaemonController:
             with suppress(Exception):
                 self._state_store.set_daemon_status("degraded")
             return []
+
+    def get_job_review_result(self, job_id: str, *, top_n: int = 24) -> dict[str, object]:
+        try:
+            synthetic_run = self._state_store.get_synthetic_run(job_id)
+            if synthetic_run is not None:
+                source = str(synthetic_run.get("source") or "")
+                photo_id = str(synthetic_run.get("photo_id") or "")
+                asset = self._state_store.get_photo_asset(source, photo_id) if source and photo_id else None
+                preview_path = str((asset or {}).get("preview_path") or "")
+                return synthetic_review_result(synthetic_run, preview_path=preview_path)
+            job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
+            return job_store.get_review_result(job_id, top_n=top_n)
+        except Exception as exc:
+            logger.exception("failed to load review result for job %s", job_id)
+            return {
+                "job_id": job_id,
+                "status": "failed",
+                "items": [],
+                "error": str(exc),
+            }
 
     def _serve(self) -> None:
         assert self._server is not None

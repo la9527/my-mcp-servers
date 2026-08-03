@@ -7,13 +7,27 @@ import logging
 import os
 import sqlite3
 import time
+from functools import wraps
 from pathlib import Path
+from threading import RLock
 
 from photos_mcp.runtime_paths import photo_ranker_runtime_root
 
 from .jobs import Job, JobProgress, JobStatus
 
 logger = logging.getLogger(__name__)
+
+
+def _synchronized(method):
+    """Serialize access to the shared SQLite connection."""
+
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
 
 def default_db_path() -> Path:
     return photo_ranker_runtime_root() / "jobs.db"
@@ -29,12 +43,15 @@ class JobDB:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self._path = Path(db_path) if db_path else default_db_path()
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = RLock()
         self._conn: sqlite3.Connection | None = None
         self._init_db()
 
+    @_synchronized
     def _init_db(self) -> None:
-        self._conn = sqlite3.connect(str(self._path))
+        self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA journal_mode=WAL")
 
         self._conn.executescript(
@@ -67,6 +84,13 @@ class JobDB:
                 known_persons_json TEXT DEFAULT '[]',
                 meaningful_score INTEGER DEFAULT 5,
                 capture_date TEXT DEFAULT '',
+                technical_score REAL DEFAULT 0,
+                scene_cluster_id TEXT DEFAULT '',
+                scene_cluster_size INTEGER DEFAULT 1,
+                cluster_rank INTEGER DEFAULT 1,
+                recommended_in_cluster INTEGER DEFAULT 0,
+                recommendation_slot INTEGER DEFAULT 0,
+                selection_reason_json TEXT DEFAULT '[]',
                 PRIMARY KEY (job_id, photo_id),
                 FOREIGN KEY (job_id) REFERENCES jobs(id)
             );
@@ -140,9 +164,17 @@ class JobDB:
         )
         self._ensure_column("jobs", "request_json", "TEXT DEFAULT '{}' ")
         self._ensure_column("face_embeddings", "bbox_json", "TEXT DEFAULT '[]'")
+        self._ensure_column("photo_results", "technical_score", "REAL DEFAULT 0")
+        self._ensure_column("photo_results", "scene_cluster_id", "TEXT DEFAULT ''")
+        self._ensure_column("photo_results", "scene_cluster_size", "INTEGER DEFAULT 1")
+        self._ensure_column("photo_results", "cluster_rank", "INTEGER DEFAULT 1")
+        self._ensure_column("photo_results", "recommended_in_cluster", "INTEGER DEFAULT 0")
+        self._ensure_column("photo_results", "recommendation_slot", "INTEGER DEFAULT 0")
+        self._ensure_column("photo_results", "selection_reason_json", "TEXT DEFAULT '[]'")
         self._repair_stale_jobs()
         self._conn.commit()
 
+    @_synchronized
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
         rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
         columns = {row[1] for row in rows}
@@ -151,6 +183,7 @@ class JobDB:
                 f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
             )
 
+    @_synchronized
     def _repair_stale_jobs(self) -> None:
         """Repair impossible persisted job states left by older sync workflow code."""
         repaired = self._conn.execute(
@@ -218,6 +251,7 @@ class JobDB:
                 stale_threshold,
             )
 
+    @_synchronized
     def save_job(self, job: Job) -> None:
         """Insert or replace a job record."""
         self._conn.execute(
@@ -244,6 +278,7 @@ class JobDB:
         )
         self._conn.commit()
 
+    @_synchronized
     def load_job(self, job_id: str) -> Job | None:
         """Load a job from DB."""
         row = self._conn.execute(
@@ -253,6 +288,7 @@ class JobDB:
             return None
         return self._row_to_job(row)
 
+    @_synchronized
     def list_jobs(self, status: str | None = None) -> list[Job]:
         """List jobs, optionally filtered by status."""
         if status:
@@ -266,11 +302,13 @@ class JobDB:
             ).fetchall()
         return [self._row_to_job(r) for r in rows]
 
+    @_synchronized
     def delete_job(self, job_id: str) -> bool:
         """Delete one job and all related artifacts."""
         deleted = self._delete_jobs([job_id])
         return deleted > 0
 
+    @_synchronized
     def clear_job_history(self, statuses: tuple[str, ...] | None = None) -> list[str]:
         """Delete terminal jobs and their related artifacts.
 
@@ -292,6 +330,7 @@ class JobDB:
         self._delete_jobs(job_ids)
         return job_ids
 
+    @_synchronized
     def _delete_jobs(self, job_ids: list[str]) -> int:
         if not job_ids:
             return 0
@@ -314,6 +353,7 @@ class JobDB:
         self._conn.commit()
         return cursor.rowcount
 
+    @_synchronized
     def save_photo_results(
         self, job_id: str, results: list[dict]
     ) -> None:
@@ -325,8 +365,11 @@ class JobDB:
                     (job_id, photo_id, total_score, quality_score,
                      family_score, event_score, uniqueness_score,
                      scene_description, event_type, faces_detected,
-                     known_persons_json, meaningful_score, capture_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     known_persons_json, meaningful_score, capture_date,
+                     technical_score, scene_cluster_id, scene_cluster_size,
+                     cluster_rank, recommended_in_cluster, recommendation_slot,
+                     selection_reason_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -342,10 +385,18 @@ class JobDB:
                     json.dumps(r.get("known_persons", [])),
                     r.get("meaningful_score", 5),
                     r.get("capture_date", ""),
+                    r.get("technical_score", 0),
+                    r.get("scene_cluster_id", ""),
+                    r.get("scene_cluster_size", 1),
+                    r.get("cluster_rank", 1),
+                    int(bool(r.get("recommended_in_cluster", False))),
+                    r.get("recommendation_slot", 0),
+                    json.dumps(r.get("selection_reason_codes", [])),
                 ),
             )
         self._conn.commit()
 
+    @_synchronized
     def load_photo_results(self, job_id: str) -> list[dict]:
         """Load ranked results for a job."""
         rows = self._conn.execute(
@@ -368,10 +419,26 @@ class JobDB:
                 "known_persons": json.loads(r["known_persons_json"]),
                 "meaningful_score": r["meaningful_score"] if "meaningful_score" in r.keys() else 5,
                 "capture_date": r["capture_date"] if "capture_date" in r.keys() else "",
+                "technical_score": r["technical_score"] if "technical_score" in r.keys() else 0.0,
+                "scene_cluster_id": r["scene_cluster_id"] if "scene_cluster_id" in r.keys() else "",
+                "scene_cluster_size": r["scene_cluster_size"] if "scene_cluster_size" in r.keys() else 1,
+                "cluster_rank": r["cluster_rank"] if "cluster_rank" in r.keys() else 1,
+                "recommended_in_cluster": bool(r["recommended_in_cluster"]) if "recommended_in_cluster" in r.keys() else False,
+                "recommendation_slot": r["recommendation_slot"] if "recommendation_slot" in r.keys() else 0,
+                "selection_reason_codes": json.loads(r["selection_reason_json"] or "[]") if "selection_reason_json" in r.keys() else [],
             }
             for r in rows
         ]
 
+    @_synchronized
+    def count_photo_results(self, job_id: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS count FROM photo_results WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        return int(row["count"] if row is not None else 0)
+
+    @_synchronized
     def save_job_asset(
         self,
         job_id: str,
@@ -393,6 +460,7 @@ class JobDB:
         )
         self._conn.commit()
 
+    @_synchronized
     def update_photo_review(
         self,
         job_id: str,
@@ -444,6 +512,7 @@ class JobDB:
         current["note"] = next_note
         return current
 
+    @_synchronized
     def list_job_assets(self, job_id: str) -> dict[str, dict]:
         """Load preview/source/review metadata for a job."""
         rows = self._conn.execute(
@@ -463,6 +532,7 @@ class JobDB:
             for row in rows
         }
 
+    @_synchronized
     def close(self) -> None:
         if self._conn:
             self._conn.close()
@@ -470,6 +540,7 @@ class JobDB:
 
     # ── Stage Checkpoints ──
 
+    @_synchronized
     def save_checkpoint(
         self, job_id: str, stage: str, photo_id: str, candidate_dict: dict,
     ) -> None:
@@ -486,6 +557,7 @@ class JobDB:
         )
         self._conn.commit()
 
+    @_synchronized
     def load_checkpoints(
         self, job_id: str, stage: str,
     ) -> dict[str, dict]:
@@ -501,6 +573,7 @@ class JobDB:
         ).fetchall()
         return {r["photo_id"]: json.loads(r["candidate_json"]) for r in rows}
 
+    @_synchronized
     def clear_checkpoints(self, job_id: str) -> None:
         """Remove all checkpoints for a completed/cancelled job."""
         self._conn.execute(
@@ -510,6 +583,7 @@ class JobDB:
 
     # ── Known Faces ──
 
+    @_synchronized
     def save_known_face(self, name: str, embedding: list[float]) -> int:
         """Register a known person's face embedding. Returns face_idx."""
         import struct
@@ -532,6 +606,7 @@ class JobDB:
         self._conn.commit()
         return face_idx
 
+    @_synchronized
     def load_known_faces(self) -> dict[str, list[list[float]]]:
         """Load all known faces as {name: [embedding, ...]}."""
         import struct
@@ -551,6 +626,7 @@ class JobDB:
             result[name].append(embedding)
         return result
 
+    @_synchronized
     def delete_known_face(self, name: str) -> int:
         """Delete all embeddings for a known person. Returns deleted count."""
         cursor = self._conn.execute(
@@ -559,6 +635,7 @@ class JobDB:
         self._conn.commit()
         return cursor.rowcount
 
+    @_synchronized
     def list_known_faces(self) -> list[dict]:
         """List registered known faces with count per person."""
         rows = self._conn.execute(
@@ -568,6 +645,7 @@ class JobDB:
 
     # ── Face Embedding Cache ──
 
+    @_synchronized
     def save_face_embedding(
         self,
         photo_id: str,
@@ -598,6 +676,7 @@ class JobDB:
         )
         self._conn.commit()
 
+    @_synchronized
     def load_face_embeddings(self, photo_id: str) -> list[dict]:
         """Load cached face embeddings for a photo."""
         import struct
@@ -622,6 +701,7 @@ class JobDB:
             })
         return results
 
+    @_synchronized
     def save_face_review(
         self,
         job_id: str,
@@ -656,6 +736,7 @@ class JobDB:
         )
         self._conn.commit()
 
+    @_synchronized
     def list_face_reviews(self, job_id: str, photo_id: str) -> list[dict]:
         """Return per-face review metadata for one classified photo."""
         rows = self._conn.execute(
@@ -674,6 +755,7 @@ class JobDB:
             for row in rows
         ]
 
+    @_synchronized
     def label_face_review(
         self,
         job_id: str,

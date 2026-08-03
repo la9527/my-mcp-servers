@@ -67,6 +67,10 @@
 - `src/photos_mcp/vendor/photo-source/server.py`
 - `src/photos_mcp/vendor/photo-source/sources/apple_photos.py`
 
+`photos_query(action="list")`가 `error_code="library_list_timeout"`으로 끝나면 transport 또는 MCP tool 등록 오류가 아니라 Apple Photos 보관함의 초기 색인 로딩이 제한 시간보다 길어진 경우다. 앱은 계속 사용 가능하며 `can_retry=true`이므로 Photos 앱에서 현재 보관함을 열 수 있는지 확인한 뒤 다시 호출한다. 기본값은 30초이고, 대형 보관함 환경은 `PHOTOS_MCP_LIBRARY_LIST_TIMEOUT_SECONDS`로 조정한다.
+
+초기화는 process-wide로 한 번만 수행한다. 첫 요청이 timeout 되었더라도 그 초기화 작업은 계속 진행되고, 이어지는 요청은 같은 초기화 결과를 공유한다. 따라서 재시도를 짧은 간격으로 여러 번 반복해 Photos SQLite 복사 작업을 중복 실행할 필요가 없다.
+
 ### Apple Photos automation / write 문제
 
 - `src/photos_mcp/preflight.py`

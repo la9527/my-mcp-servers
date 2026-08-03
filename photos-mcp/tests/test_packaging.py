@@ -5,11 +5,16 @@ import tomllib
 from pathlib import Path
 
 from photos_mcp import packaging
-from photos_mcp.packaging_contract import PY2APP_INCLUDES, PY2APP_PACKAGES
+from photos_mcp.packaging_contract import (
+    PY2APP_INCLUDES,
+    PY2APP_PACKAGES,
+    SITE_PACKAGES_RESOURCE_NAMES,
+)
 from photos_mcp.packaging import (
     build_app_packages,
     build_py2app_setup_kwargs,
     build_site_packages_resources,
+    build_ui_resources,
     cleanup_stale_stage_roots,
     normalize_app_bundle_name,
     stage_resource_tree,
@@ -28,9 +33,12 @@ def test_build_py2app_setup_kwargs_uses_photos_mcp_bundle_defaults() -> None:
     assert "photos_mcp.facade" in kwargs["packages"]
     assert "mcp" not in kwargs["packages"]
     assert "mcp" in kwargs["options"]["py2app"]["packages"]
+    assert "bitarray" in kwargs["options"]["py2app"]["packages"]
+    assert "bitstring" in kwargs["options"]["py2app"]["packages"]
     assert "uvicorn" in kwargs["options"]["py2app"]["packages"]
     assert "anyio._backends._asyncio" in kwargs["options"]["py2app"]["includes"]
     assert "uvicorn.protocols.http.h11_impl" in kwargs["options"]["py2app"]["includes"]
+    assert "FSEvents" in SITE_PACKAGES_RESOURCE_NAMES
 
 
 def test_build_app_packages_discovers_nested_photos_packages() -> None:
@@ -39,6 +47,10 @@ def test_build_app_packages_discovers_nested_photos_packages() -> None:
     assert "photos_mcp" in packages
     assert "photos_mcp.facade" in packages
     assert "apple_terminal_helper" in packages
+
+
+def test_ui_uses_native_symbols_without_packaged_raster_icons() -> None:
+    assert build_ui_resources() == []
 
 
 def test_info_plist_keeps_photos_mcp_visible_as_regular_app() -> None:
@@ -82,9 +94,26 @@ def test_bundle_import_smoke_script_exists() -> None:
     assert smoke_script.exists()
 
 
+def test_framework_build_keeps_bundle_signed_after_health_check() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    build_script = repo_root / "scripts" / "build_framework_standalone.sh"
+
+    script_text = build_script.read_text(encoding="utf-8")
+
+    assert 'PYTHONDONTWRITEBYTECODE=1 "$APP_BUNDLE/Contents/MacOS/PhotosMcp" --health' in script_text
+    assert 'PYTHONDONTWRITEBYTECODE=1 "$INSTALL_BUNDLE_PATH/Contents/MacOS/PhotosMcp" --health' in script_text
+    assert 'PYTHONDONTWRITEBYTECODE=1 "$APP_BUNDLE/Contents/MacOS/PhotosMcp" --vendor-runtime-smoke' in script_text
+    assert 'PYTHONDONTWRITEBYTECODE=1 "$INSTALL_BUNDLE_PATH/Contents/MacOS/PhotosMcp" --vendor-runtime-smoke' in script_text
+    assert script_text.count('codesign --verify --deep --strict "$APP_BUNDLE"') >= 2
+    assert script_text.count('codesign --verify --deep --strict "$INSTALL_BUNDLE_PATH"') >= 2
+
+
 def test_packaging_contract_is_runtime_safe() -> None:
     assert "mcp" in PY2APP_PACKAGES
     assert "uvicorn.protocols.http.h11_impl" in PY2APP_INCLUDES
+    assert "Quartz" in PY2APP_INCLUDES
+    assert "Vision" in PY2APP_INCLUDES
+    assert "CoreML" in PY2APP_INCLUDES
 
 
 def test_build_site_packages_resources_uses_explicit_allowlist(tmp_path: Path, monkeypatch) -> None:

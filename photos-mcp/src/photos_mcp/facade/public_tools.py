@@ -1,36 +1,21 @@
+"""Thin public MCP action routers and workflow coordination helpers."""
+
 from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-import json
 from typing import Any, Awaitable, Callable
 
-from photos_mcp.facade.action_options import ActionValidationError, validate_action_options
 from photos_mcp.facade.common import call_vendor, new_run_id
-from photos_mcp.facade.library_service import photos_library
+from photos_mcp.facade.query_handler import handle_query
 from photos_mcp.facade.result_service import photos_result
 from photos_mcp.facade.run_service import photos_run
-from photos_mcp.facade.status_service import photos_status
-from photos_mcp.facade.usage_service import photos_guide
+from photos_mcp.facade.select_handler import handle_select
+from photos_mcp.facade.workflow_handler import handle_workflow
+from photos_mcp.facade.write_handler import handle_write
+from photos_mcp.mutation_approval import require_mutation_approval
+from photos_mcp.mutation_plan_service import resolve_mutation_plan
 from photos_mcp.state import PhotosMcpStateStore
-
-
-def _validation_payload(exc: ActionValidationError) -> dict[str, Any]:
-    return dict(exc.payload)
-
-
-def _as_list(value: Any) -> list[Any]:
-    if isinstance(value, list):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return [value] if value.strip() else []
-        if isinstance(parsed, list):
-            return parsed
-        return []
-    return []
 
 
 def _utcnow_iso() -> str:
@@ -49,6 +34,34 @@ def _complete_payload(payload: Any, *, action: str, target_album_name: str = "")
         normalized.setdefault("touched_album_names", [target_album_name])
         normalized.setdefault("classification_album_created", False)
     return normalized
+
+
+def _unsupported_write_source_payload(
+    *,
+    action: str,
+    source: str,
+    run_id: str = "",
+    supported_sources: tuple[str, ...] = ("apple",),
+) -> dict[str, Any]:
+    """Refuse writes when a ranked source cannot be mapped to the target safely."""
+    payload: dict[str, Any] = {
+        "status": "blocked",
+        "error_code": "unsupported_source_for_write",
+        "error": (
+            f"Action {action} does not support source={source!r}. "
+            f"Supported source(s): {', '.join(supported_sources)}."
+        ),
+        "action": action,
+        "source": source,
+        "supported_sources": list(supported_sources),
+        "usage_hint": (
+            "Use GCS results for analysis and review only. Export or copy the source files "
+            "to a local directory before requesting a local export."
+        ),
+    }
+    if run_id:
+        payload["run_id"] = run_id
+    return payload
 
 
 def _accepted_payload(
@@ -83,7 +96,11 @@ def _accepted_payload(
         payload["resume_request"] = {
             "tool": tool_name,
             "action": action,
-            "options": {key: value for key, value in request_options.items() if key != "approval_token"},
+            "options": {
+                key: value
+                for key, value in request_options.items()
+                if key != "approval_token"
+            },
         }
         payload["resume_policy"] = "user_approval_required"
     return payload
@@ -102,6 +119,11 @@ def _terminalize_background_payload(
     request_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized = _complete_payload(payload, action=action, target_album_name=target_album_name)
+    if normalized.get("error") or normalized.get("error_code"):
+        normalized["status"] = "failed"
+        normalized["terminal"] = True
+        normalized["summary_available"] = True
+        normalized["result_available"] = False
     vendor_run_id = str(normalized.get("run_id") or "")
     vendor_job_id = str(normalized.get("job_id") or normalized.get("id") or "")
     if vendor_run_id and vendor_run_id != run_id:
@@ -120,12 +142,60 @@ def _terminalize_background_payload(
         normalized["resume_request"] = {
             "tool": tool_name,
             "action": action,
-            "options": {key: value for key, value in request_options.items() if key != "approval_token"},
+            "options": {
+                key: value
+                for key, value in request_options.items()
+                if key != "approval_token"
+            },
         }
         normalized["resume_policy"] = "user_approval_required"
+    if str(normalized.get("status") or "").startswith("awaiting_"):
+        normalized["terminal"] = False
+        normalized["summary_available"] = True
+        normalized["result_available"] = False
     if normalized.get("terminal") and not normalized.get("finished_at"):
         normalized["finished_at"] = _utcnow_iso()
     return normalized
+
+
+async def _build_post_analysis_write_plan(
+    *,
+    state_store: PhotosMcpStateStore,
+    analysis_payload: dict[str, Any],
+    action: str,
+    options: dict[str, Any],
+) -> dict[str, Any]:
+    plan = await resolve_mutation_plan("photos_write", action, options)
+    approval_payload, _ = require_mutation_approval(
+        "photos_write",
+        action,
+        options,
+        repository=state_store.run_repository,
+        mutation_plan=plan,
+    )
+    payload = dict(approval_payload or {})
+    payload.update(
+        {
+            "status": "awaiting_mutation_approval",
+            "analysis_completed": True,
+            "analysis_result": analysis_payload,
+            "run_id": str(
+                analysis_payload.get("run_id")
+                or analysis_payload.get("job_id")
+                or options.get("run_id")
+                or ""
+            ),
+            "job_id": str(
+                analysis_payload.get("job_id")
+                or analysis_payload.get("run_id")
+                or options.get("run_id")
+                or ""
+            ),
+            "next_suggested_action": "photos_write",
+            "next_action": action,
+        }
+    )
+    return payload
 
 
 def _failed_background_payload(
@@ -170,11 +240,13 @@ def _start_background_action(
     action: str,
     intent: str,
     source: str,
-    operation: Callable[[], Awaitable[Any]],
+    operation: Callable[[str], Awaitable[Any]],
     target_album_name: str = "",
     request_options: dict[str, Any] | None = None,
+    run_id: str = "",
 ) -> dict[str, Any]:
-    run_id = new_run_id(intent)
+    is_in_place_resume = bool(run_id)
+    run_id = run_id or new_run_id(intent)
     submitted_at = _utcnow_iso()
     accepted = _accepted_payload(
         run_id=run_id,
@@ -186,10 +258,14 @@ def _start_background_action(
         target_album_name=target_album_name,
         request_options=request_options,
     )
+    if is_in_place_resume:
+        accepted["resumed_as_run_id"] = run_id
+        accepted["resumed_from_run_id"] = run_id
+        accepted["resume_mode"] = "checkpoint_resume_same_run"
 
-    async def _runner() -> None:
+    async def runner() -> None:
         try:
-            payload = await operation()
+            payload = await operation(run_id)
         except Exception as exc:
             state_store.upsert_synthetic_run(
                 _failed_background_payload(
@@ -205,7 +281,6 @@ def _start_background_action(
                 )
             )
             return
-
         state_store.upsert_synthetic_run(
             _terminalize_background_payload(
                 payload,
@@ -220,7 +295,7 @@ def _start_background_action(
             )
         )
 
-    task = asyncio.create_task(_runner())
+    task = asyncio.create_task(runner())
     state_store.upsert_synthetic_run(accepted, task=task)
     return accepted
 
@@ -232,55 +307,11 @@ async def photos_query(
     action: str = "status",
     options: Any = None,
 ) -> dict[str, Any]:
-    try:
-        validated = validate_action_options("photos_query", action, options)
-    except ActionValidationError as exc:
-        return _validation_payload(exc)
-
-    selected_action = validated.action
-    opts = validated.options
-    if selected_action == "status":
-        return photos_status(health_payload=health_payload, view=str(opts["view"]))
-    if selected_action == "guide":
-        return photos_guide(goal=str(opts["goal"]))
-    if selected_action == "resume_plan":
-        if state_store is None:
-            return {"status": "blocked", "error_code": "state_store_unavailable"}
-        return state_store.get_recovery_plan(str(opts["run_id"]))
-
-    if selected_action in {"list", "ready_only", "search", "inspect", "prefetch"}:
-        return await photos_library(
-            action=selected_action,
-            source=str(opts.get("source") or "apple"),
-            photo_id=str(opts.get("photo_id") or ""),
-            query=str(opts.get("query") or ""),
-            path_or_bucket=str(opts.get("path_or_bucket") or ""),
-            album=str(opts.get("album") or ""),
-            person=str(opts.get("person") or ""),
-            date_from=str(opts.get("date_from") or ""),
-            date_to=str(opts.get("date_to") or ""),
-            limit=int(opts.get("limit") or 20),
-            include_thumbnail=bool(opts.get("include_thumbnail")),
-            include_metadata=bool(opts.get("include_metadata")),
-            max_size=int(opts.get("max_size") or 512),
-        )
-
-    result_action = {
-        "result_summary": "summary",
-        "result_detail": "result",
-        "selected": "selected",
-        "artifacts": "artifacts",
-        "cancel": "cancel",
-    }[selected_action]
-    return await photos_result(
+    return await handle_query(
         state_store=state_store,
-        action=result_action,
-        run_id=str(opts.get("run_id") or "latest"),
-        top_n=int(opts.get("top_n") or 20),
-        output_dir=str(opts.get("output_dir") or ""),
-        min_score=float(opts.get("min_score") or 0.0),
-        group_by_date=bool(opts.get("group_by_date")),
-        mode=str(opts.get("mode") or "copy"),
+        health_payload=health_payload,
+        action=action,
+        options=options,
     )
 
 
@@ -290,67 +321,7 @@ async def photos_select(
     action: str = "select_best",
     options: Any = None,
 ) -> dict[str, Any]:
-    try:
-        validated = validate_action_options("photos_select", action, options)
-    except ActionValidationError as exc:
-        return _validation_payload(exc)
-
-    selected_action = validated.action
-    opts = validated.options
-    if selected_action == "analyze_photo":
-        payload = await photos_run(
-            state_store=state_store,
-            intent="analyze",
-            source=str(opts.get("source") or "apple"),
-            photo_id=str(opts.get("photo_id") or ""),
-            path_or_bucket=str(opts.get("path_or_bucket") or ""),
-            prompt=str(opts.get("prompt") or ""),
-            include_faces=bool(opts.get("include_faces")),
-            max_size=int(opts.get("max_size") or 512),
-            wait_for_local=bool(opts.get("wait_for_local")),
-            wait_timeout_seconds=float(opts.get("wait_timeout_seconds") or 120.0),
-            wait_poll_interval_seconds=float(opts.get("wait_poll_interval_seconds") or 3.0),
-            run_id=str(opts.get("run_id") or ""),
-        )
-        payload["action"] = selected_action
-        return payload
-
-    if selected_action == "classify_range":
-        payload = await photos_run(
-            state_store=state_store,
-            intent="classify",
-            source=str(opts.get("source") or "apple"),
-            source_path=str(opts.get("source_path") or ""),
-            album=str(opts.get("album") or ""),
-            person=str(opts.get("person") or ""),
-            date_from=str(opts.get("date_from") or ""),
-            date_to=str(opts.get("date_to") or ""),
-            limit=int(opts.get("limit") or 50),
-            selection_profile=str(opts.get("selection_profile") or "general"),
-        )
-        payload["action"] = selected_action
-        return payload
-
-    payload = await photos_run(
-        state_store=state_store,
-        intent="curate",
-        source=str(opts.get("source") or "apple"),
-        source_path=str(opts.get("source_path") or ""),
-        album=str(opts.get("album") or ""),
-        person=str(opts.get("person") or ""),
-        date_from=str(opts.get("date_from") or ""),
-        date_to=str(opts.get("date_to") or ""),
-        limit=int(opts.get("limit") or 50),
-        selection_profile=str(opts.get("selection_profile") or "general"),
-        exclude_screenshots=bool(opts.get("exclude_screenshots")),
-        writeback_mode="review",
-    )
-    payload["action"] = selected_action
-    payload.pop("target_album_name", None)
-    payload.pop("album_result", None)
-    payload.pop("touched_album_names", None)
-    payload.pop("classification_album_created", None)
-    return payload
+    return await handle_select(state_store=state_store, action=action, options=options)
 
 
 async def photos_write(
@@ -358,127 +329,16 @@ async def photos_write(
     state_store: PhotosMcpStateStore | None = None,
     action: str = "add_selected_to_album",
     options: Any = None,
+    _resume_run_id: str = "",
 ) -> dict[str, Any]:
-    try:
-        validated = validate_action_options("photos_write", action, options)
-    except ActionValidationError as exc:
-        return _validation_payload(exc)
-
-    selected_action = validated.action
-    opts = dict(validated.options)
-    opts.pop("approval_token", None)
-    if selected_action == "add_selected_to_album":
-        run_id = str(opts["run_id"])
-        target_album_name = str(opts["target_album_name"])
-        selected_items = await call_vendor("photo-ranker", "get_review_items", run_id, top_n=100000, selected_only=True)
-        photo_ids = [str(item.get("photo_id")) for item in selected_items if isinstance(item, dict) and item.get("photo_id")]
-        payload = await call_vendor(
-            "photo-ranker",
-            "add_to_album",
-            json.dumps(photo_ids, ensure_ascii=False),
-            target_album_name,
-            folder=str(opts.get("folder") or ""),
-        )
-        normalized = _complete_payload(payload, action=selected_action, target_album_name=target_album_name)
-        normalized["run_id"] = run_id
-        normalized["selected_count"] = len(photo_ids)
-        return normalized
-
-    if selected_action == "add_photo_ids_to_album":
-        target_album_name = str(opts["target_album_name"])
-        photo_ids = [str(item) for item in _as_list(opts.get("photo_ids")) if str(item)]
-        payload = await call_vendor(
-            "photo-ranker",
-            "add_to_album",
-            json.dumps(photo_ids, ensure_ascii=False),
-            target_album_name,
-            folder=str(opts.get("folder") or ""),
-        )
-        normalized = _complete_payload(payload, action=selected_action, target_album_name=target_album_name)
-        normalized["photo_ids"] = photo_ids
-        return normalized
-
-    if selected_action == "export_selected":
-        payload = await photos_result(
-            state_store=state_store,
-            action="artifacts",
-            run_id=str(opts["run_id"]),
-            top_n=int(opts.get("top_n") or 50),
-            output_dir=str(opts["output_dir"]),
-            min_score=float(opts.get("min_score") or 0.0),
-            group_by_date=bool(opts.get("group_by_date")),
-            mode=str(opts.get("mode") or "copy"),
-        )
-        payload["action"] = selected_action
-        return payload
-
-    if selected_action == "organize_by_category":
-        if state_store is not None:
-            return _start_background_action(
-                state_store=state_store,
-                tool_name="photos_write",
-                action=selected_action,
-                intent="organize",
-                source="",
-                request_options=opts,
-                operation=lambda: photos_run(
-                    state_store=None,
-                    intent="organize",
-                    run_id=str(opts["run_id"]),
-                    album_prefix=str(opts.get("album_prefix") or "AI 분류"),
-                    folder=str(opts.get("folder") or ""),
-                    min_score=float(opts.get("min_score") or 0.0),
-                    group_by_date=bool(opts.get("group_by_date")),
-                ),
-            )
-        payload = await photos_run(
-            state_store=state_store,
-            intent="organize",
-            run_id=str(opts["run_id"]),
-            album_prefix=str(opts.get("album_prefix") or "AI 분류"),
-            folder=str(opts.get("folder") or ""),
-            min_score=float(opts.get("min_score") or 0.0),
-            group_by_date=bool(opts.get("group_by_date")),
-        )
-        payload["action"] = selected_action
-        return payload
-
-    if selected_action == "import_to_album":
-        target_album_name = str(opts["target_album_name"])
-        if state_store is not None:
-            return _start_background_action(
-                state_store=state_store,
-                tool_name="photos_write",
-                action=selected_action,
-                intent="import",
-                source="",
-                target_album_name=target_album_name,
-                request_options=opts,
-                operation=lambda: photos_run(
-                    state_store=None,
-                    intent="import",
-                    photo_paths_json=json.dumps(_as_list(opts.get("photo_paths")), ensure_ascii=False),
-                    target_album_name=target_album_name,
-                    folder=str(opts.get("folder") or ""),
-                ),
-            )
-        payload = await photos_run(
-            state_store=state_store,
-            intent="import",
-            photo_paths_json=json.dumps(_as_list(opts.get("photo_paths")), ensure_ascii=False),
-            target_album_name=target_album_name,
-            folder=str(opts.get("folder") or ""),
-        )
-        return _complete_payload(payload, action=selected_action, target_album_name=target_album_name)
-
-    payload = await photos_run(
+    return await handle_write(
         state_store=state_store,
-        intent="cleanup_album",
-        target_album_name=str(opts["target_album_name"]),
-        folder=str(opts.get("folder") or ""),
+        action=action,
+        options=options,
+        call_vendor_fn=call_vendor,
+        photos_result_fn=photos_result,
+        photos_run_fn=photos_run,
     )
-    payload["action"] = selected_action
-    return payload
 
 
 async def photos_workflow(
@@ -486,171 +346,17 @@ async def photos_workflow(
     state_store: PhotosMcpStateStore | None = None,
     action: str = "curate_to_album",
     options: Any = None,
+    _resume_run_id: str = "",
 ) -> dict[str, Any]:
-    try:
-        validated = validate_action_options("photos_workflow", action, options)
-    except ActionValidationError as exc:
-        return _validation_payload(exc)
-
-    selected_action = validated.action
-    opts = dict(validated.options)
-    opts.pop("approval_token", None)
-    if selected_action == "resume":
-        if state_store is None:
-            return {"status": "blocked", "error_code": "state_store_unavailable"}
-        previous_run_id = str(opts["run_id"])
-        recovery = state_store.get_recovery_plan(previous_run_id)
-        if recovery.get("status") != "ready_for_approval":
-            return recovery
-        request = recovery["recovery_plan"]["request"]
-        request_tool = str(request["tool"])
-        request_action = str(request["action"])
-        request_options = dict(request.get("options") or {})
-        if request_tool == "photos_write":
-            resumed = await photos_write(
-                state_store=state_store,
-                action=request_action,
-                options=request_options,
-            )
-        elif request_tool == "photos_workflow" and request_action != "resume":
-            resumed = await photos_workflow(
-                state_store=state_store,
-                action=request_action,
-                options=request_options,
-            )
-        else:
-            return {
-                "status": "blocked",
-                "error_code": "unsupported_recovery_request",
-                "run_id": previous_run_id,
-                "request_tool": request_tool,
-                "request_action": request_action,
-            }
-        resumed_run_id = str(resumed.get("run_id") or resumed.get("job_id") or "")
-        if resumed_run_id:
-            state_store.mark_synthetic_run_resumed(previous_run_id, resumed_run_id)
-        resumed["resumed_from_run_id"] = previous_run_id
-        resumed["resume_mode"] = "restart_as_new_run"
-        return resumed
-    if selected_action == "curate_to_album":
-        target_album_name = str(opts["target_album_name"])
-        if state_store is not None:
-            return _start_background_action(
-                state_store=state_store,
-                tool_name="photos_workflow",
-                action=selected_action,
-                intent="curate",
-                source=str(opts.get("source") or "apple"),
-                target_album_name=target_album_name,
-                request_options=opts,
-                operation=lambda: photos_run(
-                    state_store=None,
-                    intent="curate",
-                    source=str(opts.get("source") or "apple"),
-                    source_path=str(opts.get("source_path") or ""),
-                    album=str(opts.get("album") or ""),
-                    person=str(opts.get("person") or ""),
-                    date_from=str(opts.get("date_from") or ""),
-                    date_to=str(opts.get("date_to") or ""),
-                    limit=int(opts.get("limit") or 50),
-                    selection_profile=str(opts.get("selection_profile") or "general"),
-                    exclude_screenshots=bool(opts.get("exclude_screenshots")),
-                    target_album_name=target_album_name,
-                    folder=str(opts.get("folder") or ""),
-                    writeback_mode="album",
-                ),
-            )
-        payload = await photos_run(
-            state_store=state_store,
-            intent="curate",
-            source=str(opts.get("source") or "apple"),
-            source_path=str(opts.get("source_path") or ""),
-            album=str(opts.get("album") or ""),
-            person=str(opts.get("person") or ""),
-            date_from=str(opts.get("date_from") or ""),
-            date_to=str(opts.get("date_to") or ""),
-            limit=int(opts.get("limit") or 50),
-            selection_profile=str(opts.get("selection_profile") or "general"),
-            exclude_screenshots=bool(opts.get("exclude_screenshots")),
-            target_album_name=target_album_name,
-            folder=str(opts.get("folder") or ""),
-            writeback_mode="album",
-        )
-        return _complete_payload(payload, action=selected_action, target_album_name=target_album_name)
-
-    if selected_action == "curate_to_directory":
-        selected = await photos_select(state_store=state_store, action="select_best", options=opts)
-        if selected.get("status") == "blocked" or not selected.get("run_id"):
-            selected["action"] = selected_action
-            return selected
-        exported = await photos_write(
-            state_store=state_store,
-            action="export_selected",
-            options={
-                "run_id": selected["run_id"],
-                "output_dir": opts["output_dir"],
-                "min_score": opts.get("min_score", 0.0),
-                "group_by_date": opts.get("group_by_date", False),
-                "mode": opts.get("mode", "copy"),
-            },
-        )
-        exported["action"] = selected_action
-        return exported
-
-    if selected_action == "classify_then_organize_by_category":
-        if state_store is not None:
-            return _start_background_action(
-                state_store=state_store,
-                tool_name="photos_workflow",
-                action=selected_action,
-                intent="organize",
-                source=str(opts.get("source") or "apple"),
-                request_options=opts,
-                operation=lambda: photos_run(
-                    state_store=None,
-                    intent="organize",
-                    source=str(opts.get("source") or "apple"),
-                    source_path=str(opts.get("source_path") or ""),
-                    album=str(opts.get("album") or ""),
-                    person=str(opts.get("person") or ""),
-                    date_from=str(opts.get("date_from") or ""),
-                    date_to=str(opts.get("date_to") or ""),
-                    limit=int(opts.get("limit") or 50),
-                    selection_profile=str(opts.get("selection_profile") or "general"),
-                    album_prefix=str(opts.get("album_prefix") or "AI 분류"),
-                    folder=str(opts.get("folder") or ""),
-                    min_score=float(opts.get("min_score") or 0.0),
-                    group_by_date=bool(opts.get("group_by_date")),
-                ),
-            )
-        payload = await photos_run(
-            state_store=state_store,
-            intent="organize",
-            source=str(opts.get("source") or "apple"),
-            source_path=str(opts.get("source_path") or ""),
-            album=str(opts.get("album") or ""),
-            person=str(opts.get("person") or ""),
-            date_from=str(opts.get("date_from") or ""),
-            date_to=str(opts.get("date_to") or ""),
-            limit=int(opts.get("limit") or 50),
-            selection_profile=str(opts.get("selection_profile") or "general"),
-            album_prefix=str(opts.get("album_prefix") or "AI 분류"),
-            folder=str(opts.get("folder") or ""),
-            min_score=float(opts.get("min_score") or 0.0),
-            group_by_date=bool(opts.get("group_by_date")),
-        )
-        payload["action"] = selected_action
-        return payload
-
-    target_album_name = str(opts["target_album_name"])
-    imported = await photos_write(
+    return await handle_workflow(
         state_store=state_store,
-        action="import_to_album",
-        options={
-            "photo_paths": opts.get("photo_paths", []),
-            "target_album_name": target_album_name,
-            "folder": opts.get("folder", ""),
-        },
+        action=action,
+        options=options,
+        resume_run_id=_resume_run_id,
+        photos_run_fn=photos_run,
+        photos_write_fn=photos_write,
+        unsupported_source_payload_fn=_unsupported_write_source_payload,
+        complete_payload_fn=_complete_payload,
+        start_background_action_fn=_start_background_action,
+        build_post_analysis_write_plan_fn=_build_post_analysis_write_plan,
     )
-    imported["action"] = selected_action
-    return imported

@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "source_label": "local-50-preview-set",
+  "privacy": {
+    "contains_photo_ids": false,
+    "contains_paths": false,
+    "contains_individual_scores": false,
+    "contains_embeddings": false
+  },
+  "runtime": {
+    "macos_product_version": "26.5.2",
+    "feature_print_revision": 2,
+    "face_capture_revision": 3,
+    "aesthetics_revision": 1,
+    "feature_print_element_count": 768,
+    "feature_print_element_type": 1,
+    "rss_before_mb": 58.08,
+    "rss_after_mb": 165.23
+  },
+  "selection_baseline": {
+    "input_photos": 50,
+    "scene_clusters": 13,
+    "largest_scene": 15,
+    "detail_candidate_capacity_from_clusters": 32,
+    "recorded_detail_candidate_count": 32,
+    "recommended_count": 14,
+    "max_recommended_in_one_scene": 2,
+    "recall_at_4_observable_after_run": false,
+    "recall_at_4_limitation": "Current result artifacts do not persist the per-photo detailed-candidate flag or candidate rank. The aggregate count can be checked, but Recall@4 needs that instrumentation plus human labels."
+  },
+  "feature_print": {
+    "images_processed": 50,
+    "official_distance": {
+      "count": 1225,
+      "min": 0.124874,
+      "mean": 0.660998,
+      "median": 0.716503,
+      "p95": 0.974185,
+      "max": 1.266701
+    },
+    "raw_cosine_distance": {
+      "count": 1225,
+      "min": 0.007796,
+      "mean": 0.24539,
+      "median": 0.256484,
+      "p95": 0.474323,
+      "max": 0.802148
+    },
+    "pearson_correlation": 0.971615,
+    "spearman_rank_correlation": 0.999997,
+    "official_threshold_against_current_cluster_proxy": {
+      "threshold": 0.391545,
+      "precision": 0.652542,
+      "recall": 0.890173,
+      "f1": 0.753056
+    },
+    "raw_cosine_threshold_against_current_cluster_proxy": {
+      "threshold": 0.076619,
+      "precision": 0.652542,
+      "recall": 0.890173,
+      "f1": 0.753056
+    },
+    "proxy_limitation": "The current cluster IDs are not human ground truth and include time/person signals. These values only map distance distributions; they do not prove scene-clustering quality.",
+    "request_seconds": {
+      "count": 50,
+      "min": 0.004088,
+      "mean": 0.006924,
+      "median": 0.005532,
+      "p95": 0.008045,
+      "max": 0.064193
+    }
+  },
+  "face_capture_quality": {
+    "images_processed": 50,
+    "images_with_faces": 47,
+    "face_observations": 95,
+    "scores": {
+      "count": 95,
+      "min": 0.073669,
+      "mean": 0.2045,
+      "median": 0.204224,
+      "p95": 0.290283,
+      "max": 0.319824
+    },
+    "request_seconds": {
+      "count": 50,
+      "min": 0.0049,
+      "mean": 0.008011,
+      "median": 0.007106,
+      "p95": 0.008212,
+      "max": 0.059875
+    }
+  },
+  "aesthetics": {
+    "images_processed": 50,
+    "observations": 50,
+    "overall_scores": {
+      "count": 50,
+      "min": 0.383301,
+      "mean": 0.496235,
+      "median": 0.494019,
+      "p95": 0.59082,
+      "max": 0.597168
+    },
+    "utility_true_count": 0,
+    "utility_true_ratio": 0.0,
+    "request_seconds": {
+      "count": 50,
+      "min": 0.004066,
+      "mean": 0.00616,
+      "median": 0.005927,
+      "p95": 0.008093,
+      "max": 0.0082
+    }
+  }
+}

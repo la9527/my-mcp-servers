@@ -53,11 +53,51 @@ Qwen3-VL은 평균 지연시간이 약 27.6% 짧고 생성 처리량은 약 34.9
 
 `scripts/benchmark_openai_compat_vlm.py`는 사진 원본을 복사하지 않고 지정한 이미지 경로를 OpenAI 호환 endpoint에 전송해 집계 JSON을 만든다.
 
+`--labels-file`을 함께 주면 사람이 미리 작성한 외부 JSON 라벨과 비교해 `grounded_fact_score`, `event_coverage`, `attribute_accuracy`, `description_usefulness`, `hallucination_rate`를 함께 집계한다. 라벨에는 이미지 파일명과 확인한 사실만 넣는다. 이 파일은 개인 사진의 설명을 포함할 수 있으므로 원본과 마찬가지로 Git에 추가하지 않는다.
+
+### 고정 공개 평가 세트
+
+개인 사진만으로 기본 모델을 비교하지 않도록, 저장소에는 원본 없이 20장의 공개 COCO 2017 검증 이미지 URL, SHA-256, 이벤트·인원 라벨을 고정한 [manifest](../resources/vlm-benchmark/coco2017-public-v1.json)를 포함한다. 준비 도구는 원본을 사용자 cache에만 저장하고, checksum이 일치할 때만 `images.txt`와 `labels.json`을 생성한다. 따라서 입력·라벨·순서를 재현하면서 사진 보관함 내용은 Git이나 보고서에 남기지 않는다.
+
+```bash
+python3 scripts/prepare_vlm_benchmark_dataset.py \
+  --output-dir ~/.cache/photos-mcp/vlm-benchmark/coco2017-public-v1
+```
+
+생성된 경로로 각 모델을 동일하게 시험한다.
+
+```bash
+DATASET=~/.cache/photos-mcp/vlm-benchmark/coco2017-public-v1
+
+python3 scripts/benchmark_openai_compat_vlm.py \
+  --api-base http://127.0.0.1:18083/v1 \
+  --model /path/to/model-a.gguf \
+  --images-file "$DATASET/images.txt" \
+  --labels-file "$DATASET/labels.json" \
+  --output /tmp/model-a-public.json
+```
+
+COCO 이미지 CDN의 HTTPS 인증서가 유효하지 않은 환경에서는 manifest의 HTTP download URL을 사용할 수 있다. 이 예외는 각 파일의 고정 SHA-256을 대조해 통과한 이미지 바이트만 저장한다는 전제에서만 허용한다. checksum 불일치, 전송 실패, 누락 이미지는 benchmark 실행 전에 실패로 처리한다.
+
+```json
+{
+  "beach-walk.jpg": {
+    "event_type": "outdoor",
+    "people_count": 2,
+    "required_terms": ["해변"],
+    "forbidden_terms": ["자동차"]
+  }
+}
+```
+
+`required_terms`는 장면 설명 또는 품질 메모에 반드시 나타나야 하는 핵심 단서이고, `forbidden_terms`는 보이면 안 되는 근거 없는 단어다. 이 자동 평가는 입력한 라벨 범위만 측정하므로, 사람의 원본 대조 검토를 대체하지 않는다.
+
 ```bash
 python3 scripts/benchmark_openai_compat_vlm.py \
   --api-base http://127.0.0.1:18083/v1 \
   --model /path/to/model.gguf \
   --images-file /path/to/image-list.txt \
+  --labels-file /private/photos-vlm-labels.json \
   --output /tmp/photos-mcp-vlm-benchmark.json
 ```
 
@@ -80,6 +120,18 @@ python3 scripts/review_vlm_descriptions.py \
   --review-file /tmp/private-vlm-review.json
 ```
 
+두 모델 이상의 결과는 원본 이미지 없이 집계 JSON만 비교해 운영 기본 모델 추천 보고서를 만들 수 있다. 비교기는 이미지 목록과 프롬프트가 완전히 같고, 모든 요청과 JSON 계약이 통과했으며, 지정한 최소 라벨 수를 만족할 때에만 추천을 낸다. 기본 최소 라벨 수는 공개 고정 세트와 같은 20장이다.
+
+```bash
+python3 scripts/compare_vlm_benchmarks.py \
+  --result qwen36=/tmp/qwen36.json \
+  --result qwen3vl=/tmp/qwen3vl.json \
+  --output-json /tmp/photos-mcp-vlm-comparison.json \
+  --output-markdown /tmp/photos-mcp-vlm-comparison.md
+```
+
+보고서의 `quality_score`는 사실성, 이벤트·속성 정확도, 설명 유용성, 환각률을 같은 비중 정책으로 정규화한 비교값이다. 이 점수는 사람 검토를 대체하지 않으며, 입력 세트가 다르거나 라벨이 부족하면 `insufficient_evidence`로 추천을 보류한다.
+
 ## 운영 적용 결과
 
 2026-08-01에 다음 항목을 기본 동작으로 반영했다.
@@ -90,4 +142,23 @@ python3 scripts/review_vlm_descriptions.py \
 4. 실제 `resources/PhotosMcp-preview.png` 입력으로 기본 경로의 장면 설명과 JSON 계약을 검증했다.
 5. `PHOTOS_MCP_VLM_POLICY=local_only`이면 원격 경로 대신 Mac MLX VLM을 선택한다.
 
-균형 잡힌 정답 라벨 세트 확대와 비식별 개인 thumbnail 평가는 계속 진행할 품질 개선 항목이다.
+공개 고정 세트는 20장으로 시작하며, 새 버전은 기존 manifest를 변경하지 않고 `coco2017-public-v2.json`처럼 새 ID로 추가한다. 비식별 개인 thumbnail 평가는 공개 세트 결과를 대체하지 않는 별도 보조 평가로만 유지한다.
+
+## 최신 공개 세트 실행 기록
+
+검증일: 2026-08-02
+
+실제 on-demand 경로로 `~/bin/ensure-linux-llama-cpp`를 실행해 Linux 워크스테이션을 깨우고, loopback SSH 터널 `http://127.0.0.1:12801/v1`을 연 뒤 평가했다. 서버가 광고한 모델 정보는 `Qwen3.6-35B-A3B-Q4_K_M.gguf`, `34,660,610,688` parameters, Q4_K_M, context `200,192`, `multimodal` capability였다.
+
+| 항목 | 결과 |
+| --- | ---: |
+| 공개 COCO 이미지 | 20장, SHA-256 검증 통과 |
+| 요청 성공 / JSON 계약 | 20 / 20, 20 / 20 |
+| 평균 / P95 지연 | 4.237초 / 4.759초 |
+| 평균 생성 처리량 | 58.279 tok/s |
+| 라벨 기반 사실성 점수 | 0.775 |
+| 이벤트 일치율 | 0.800 |
+| 인원 수 일치율 | 0.7778 |
+| 설명 유용성 / 금지어 기반 환각률 | 1.000 / 0.000 |
+
+이 결과는 이 문서의 고정 프롬프트와 공개 라벨이 측정하는 범위의 지표다. 사람의 원본 대조 검토 또는 다른 유형의 사진 품질을 보장하지 않으며, 기본 모델을 교체할 때는 같은 20장, 같은 프롬프트, 같은 서버 옵션으로 새 결과를 만들어 비교한다.

@@ -108,6 +108,13 @@ class RankedPhoto:
     has_gps: bool = False
     meaningful_score: int = 5
     capture_date: str = ""
+    technical_score: float = 0.0
+    scene_cluster_id: str = ""
+    scene_cluster_size: int = 1
+    cluster_rank: int = 1
+    recommended_in_cluster: bool = False
+    recommendation_slot: int = 0
+    selection_reason_codes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {
@@ -126,4 +133,15 @@ class RankedPhoto:
         }
         if self.capture_date:
             d["capture_date"] = self.capture_date
+        d.update(
+            {
+                "technical_score": round(self.technical_score, 2),
+                "scene_cluster_id": self.scene_cluster_id,
+                "scene_cluster_size": self.scene_cluster_size,
+                "cluster_rank": self.cluster_rank,
+                "recommended_in_cluster": self.recommended_in_cluster,
+                "recommendation_slot": self.recommendation_slot,
+                "selection_reason_codes": list(self.selection_reason_codes),
+            }
+        )
         return d

@@ -71,6 +71,16 @@ def test_explicit_openai_endpoint_does_not_run_linux_prepare(monkeypatch) -> Non
     assert settings.prepare_command == ""
 
 
+def test_local_openai_compat_provider_has_no_nanobot_identity(monkeypatch) -> None:
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("PHOTO_RANKER_VLM_BACKEND", "openai_compat")
+    monkeypatch.setenv("PHOTO_RANKER_VLM_API_BASE", "http://127.0.0.1:1252/v1")
+
+    settings = vision_runtime.resolve_vision_runtime_settings()
+
+    assert settings.provider == "local_openai_compat"
+
+
 def test_runtime_summary_reports_ready_without_exposing_api_key(monkeypatch) -> None:
     _clear_runtime_env(monkeypatch)
     monkeypatch.setenv("PHOTO_RANKER_VLM_API_KEY", "secret")

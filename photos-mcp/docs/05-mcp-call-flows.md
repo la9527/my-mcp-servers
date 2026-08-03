@@ -115,7 +115,7 @@
 
 - `photos_workflow(action="curate_to_album")`
 
-첫 호출은 scope와 target album을 담은 plan만 반환한다. 사용자가 이를 승인한 뒤 같은 options에 `approval_token`을 추가한 두 번째 호출부터 background workflow가 시작된다.
+첫 호출은 쓰기를 하지 않고 background 분석만 시작하며 `run_id`를 반환한다. 분석 완료 후 `result_summary`는 `awaiting_mutation_approval` 상태와 실제 photo ID·preview가 포함된 plan을 반환한다. 사용자가 이 최종 계획을 승인한 뒤 `next_action`에 표시된 `photos_write`를 같은 options와 `approval_token`으로 호출해야 앨범이 변경된다.
 
 예:
 

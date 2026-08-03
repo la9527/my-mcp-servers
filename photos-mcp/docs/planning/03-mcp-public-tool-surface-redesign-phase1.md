@@ -796,4 +796,5 @@ phase 1 이 완료됐다고 보려면 아래가 모두 충족되어야 한다.
 - 2026-05-23: 최종 결과는 `classification_album_created=false` 와 단일 `touched_album_names` 로 확인됐다.
 - 2026-05-23: `validate_llm_samples.py` 재실행으로 `docs/llm-sample-validation-report-latest.md` 를 갱신했고, sample 4개가 모두 통과했다.
 - 2026-05-23: `live_validate.py --include-workflows` 재실행으로 `docs/live-validation-report-latest.md` 를 갱신했고 `include_workflows=true` 기준 최신 runtime evidence 를 기록했다.
-- 2026-05-23: 다만 live report 에서는 local/non-local analyze 계열이 현재 `mlx-vlm is not installed. Install with: uv pip install mlx-vlm` 때문에 여전히 실패로 남아 있다.
+- 2026-05-23: 당시 live report에서는 local/non-local analyze 계열이 `mlx-vlm is not installed`로 실패했다.
+- 2026-08-02: 이 제약은 Linux OpenAI-compatible VLM runtime으로 대체됐다. 설치 앱의 no-wait Apple analyze는 iCloud-only 후보를 `selected_photo_not_local`로 즉시 차단하고, public local workflow는 remote VLM으로 완료된다. 최신 근거는 `docs/live-validation-report-latest.md`와 `docs/19-linux-vlm-benchmark-2026-08-01.md`다.

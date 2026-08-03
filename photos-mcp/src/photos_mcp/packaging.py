@@ -189,6 +189,11 @@ def build_site_packages_resources() -> list[tuple[str, list[str]]]:
     return [(f"lib/python{sys.version_info.major}.{sys.version_info.minor}", site_package_entries)]
 
 
+def build_ui_resources() -> list[tuple[str, list[str]]]:
+    # Navigation and status glyphs use SF Symbols and require no raster resources.
+    return []
+
+
 def build_app_packages() -> list[str]:
     includes: list[str] = []
     for package_name in APP_PACKAGES:
@@ -198,7 +203,7 @@ def build_app_packages() -> list[str]:
 
 
 def build_py2app_setup_kwargs() -> dict:
-    resources = build_vendor_resources() + build_site_packages_resources()
+    resources = build_vendor_resources() + build_site_packages_resources() + build_ui_resources()
 
     return {
         "name": "PhotosMcp",

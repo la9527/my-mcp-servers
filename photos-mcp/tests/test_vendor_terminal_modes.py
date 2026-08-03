@@ -23,6 +23,7 @@ def test_photo_source_apple_terminal_mode_checks_platform(monkeypatch) -> None:
     monkeypatch.setenv("PHOTO_SOURCE_APPLE_FETCH_MODE", "terminal")
 
     module = load_vendor_server("photo-source")
+    module._apple_source = None
     source = module._get_apple_source()
 
     assert source._should_use_terminal_helper() is True
@@ -44,6 +45,28 @@ def test_photo_ranker_terminal_helper_disables_bytecode(monkeypatch) -> None:
 
     assert captured["env_overrides"]["PHOTO_RANKER_APPLE_EVENTS_MODE"] == "direct"
     assert captured["env_overrides"]["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_photo_ranker_album_writer_uses_longer_default_terminal_timeout(monkeypatch) -> None:
+    monkeypatch.delenv("PHOTO_RANKER_ALBUM_TERMINAL_TIMEOUT_SECS", raising=False)
+    monkeypatch.delenv("PHOTO_RANKER_TERMINAL_TIMEOUT_SECS", raising=False)
+    load_vendor_server("photo-ranker")
+    album_writer_module = importlib.import_module("photos_mcp_vendor_photo_ranker.album_writer")
+
+    writer = album_writer_module.AlbumWriter()
+
+    assert writer._terminal_timeout_secs == 240.0
+
+
+def test_photo_ranker_album_writer_prefers_album_timeout_override(monkeypatch) -> None:
+    monkeypatch.setenv("PHOTO_RANKER_ALBUM_TERMINAL_TIMEOUT_SECS", "300")
+    monkeypatch.setenv("PHOTO_RANKER_TERMINAL_TIMEOUT_SECS", "90")
+    load_vendor_server("photo-ranker")
+    album_writer_module = importlib.import_module("photos_mcp_vendor_photo_ranker.album_writer")
+
+    writer = album_writer_module.AlbumWriter()
+
+    assert writer._terminal_timeout_secs == 300.0
 
 
 def test_photo_ranker_fetch_helper_disables_bytecode(monkeypatch) -> None:

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import os
-from threading import Thread
+from pathlib import Path
+import sqlite3
+from threading import Lock, Thread
+import time
 
 from photos_mcp.vendor_loader import load_vendor_server
 
@@ -19,6 +23,22 @@ DEFAULT_PREFLIGHT_TIMEOUT_SECONDS = float(
         os.getenv("NANOBOT_PHOTOS_MCP_PREFLIGHT_TIMEOUT_SECONDS", "30"),
     )
 )
+DEFAULT_CAPABILITY_PREFLIGHT_TIMEOUT_SECONDS = float(
+    os.getenv(
+        "PHOTOS_MCP_CAPABILITY_PREFLIGHT_TIMEOUT_SECONDS",
+        os.getenv("NANOBOT_PHOTOS_MCP_CAPABILITY_PREFLIGHT_TIMEOUT_SECONDS", "10"),
+    )
+)
+DEFAULT_LIBRARY_PREFLIGHT_TIMEOUT_SECONDS = float(
+    os.getenv(
+        "PHOTOS_MCP_LIBRARY_PREFLIGHT_TIMEOUT_SECONDS",
+        os.getenv("NANOBOT_PHOTOS_MCP_LIBRARY_PREFLIGHT_TIMEOUT_SECONDS", "30"),
+    )
+)
+
+logger = logging.getLogger(__name__)
+_ACTIVE_CHECK_THREADS: dict[str, Thread] = {}
+_ACTIVE_CHECK_THREADS_LOCK = Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,36 +55,85 @@ class PreflightCheckResult:
         return self.status == CHECK_OK
 
 
-def run_startup_checks() -> list[PreflightCheckResult]:
-    return [
-        _run_check_with_timeout(
+def prepare_photos_library_runtime() -> None:
+    """Load py2app's osxphotos modules on the AppKit main thread."""
+    started_at = time.monotonic()
+    import osxphotos  # noqa: F401
+
+    logger.info(
+        "Apple Photos runtime modules prepared elapsed=%.2fs",
+        time.monotonic() - started_at,
+    )
+
+
+def run_startup_checks(*, include_expensive: bool = False) -> list[PreflightCheckResult]:
+    # A full osxphotos index can stall during py2app cold start on large libraries.
+    # Startup only proves that the current Photos metadata DB is readable; explicit
+    # checks and real requests still exercise the complete osxphotos path.
+    photos_read = _run_check_with_timeout(
+        check_photos_library_metadata_access,
+        timeout_secs=DEFAULT_LIBRARY_PREFLIGHT_TIMEOUT_SECONDS,
+        timeout_result=_photos_read_timeout_result(),
+    )
+    photos_permission = run_preflight_check("photos_permission")
+    checks = [
+        photos_permission,
+        photos_read,
+    ]
+    if include_expensive:
+        checks.extend(
+            [
+                run_preflight_check("photos_automation"),
+                run_preflight_check("photos_thumbnail"),
+            ]
+        )
+    else:
+        checks.extend(
+            [
+                PreflightCheckResult(
+                    key="photos_automation",
+                    title="Photos Automation",
+                    status=CHECK_WARNING,
+                    summary="Apple Photos automation check is deferred until explicitly requested.",
+                    detail="Startup skipped the AppleScript probe to avoid an uninterruptible wait.",
+                    hint="Use Run Checks in the menu before the first album write if validation is needed.",
+                ),
+                PreflightCheckResult(
+                    key="photos_thumbnail",
+                    title="Photos Thumbnail Access",
+                    status=CHECK_WARNING,
+                    summary="Apple Photos thumbnail check is deferred until explicitly requested.",
+                    detail="Startup skipped thumbnail export to avoid an uninterruptible AppleScript wait.",
+                    hint="The first analysis request validates thumbnail access on demand.",
+                ),
+            ]
+        )
+    return checks
+
+
+def run_preflight_check(key: str) -> PreflightCheckResult:
+    """Run one named preflight check with the same timeout policy as startup."""
+    checks = {
+        "photos_permission": (
             check_photos_permission_access,
-            timeout_secs=DEFAULT_PREFLIGHT_TIMEOUT_SECONDS,
-            timeout_result=PreflightCheckResult(
+            DEFAULT_PREFLIGHT_TIMEOUT_SECONDS,
+            PreflightCheckResult(
                 key="photos_permission",
                 title="Photos Permission",
                 status=CHECK_WARNING,
                 summary="Apple Photos permission check timed out.",
-                hint=(
-                    "A macOS Photos permission prompt may still be waiting for PhotosMcp.app."
-                ),
+                hint="A macOS Photos permission prompt may still be waiting for PhotosMcp.app.",
             ),
         ),
-        _run_check_with_timeout(
+        "photos_read": (
             check_photos_library_readability,
-            timeout_secs=DEFAULT_PREFLIGHT_TIMEOUT_SECONDS,
-            timeout_result=PreflightCheckResult(
-                key="photos_read",
-                title="Photos Library Read",
-                status=CHECK_ERROR,
-                summary="Apple Photos library read check timed out.",
-                hint="PhotosMcp could not confirm library readability before startup continued.",
-            ),
+            DEFAULT_LIBRARY_PREFLIGHT_TIMEOUT_SECONDS,
+            _photos_read_timeout_result(),
         ),
-        _run_check_with_timeout(
+        "photos_automation": (
             check_photos_automation_access,
-            timeout_secs=DEFAULT_PREFLIGHT_TIMEOUT_SECONDS,
-            timeout_result=PreflightCheckResult(
+            DEFAULT_CAPABILITY_PREFLIGHT_TIMEOUT_SECONDS,
+            PreflightCheckResult(
                 key="photos_automation",
                 title="Photos Automation",
                 status=CHECK_WARNING,
@@ -75,10 +144,10 @@ def run_startup_checks() -> list[PreflightCheckResult]:
                 ),
             ),
         ),
-        _run_check_with_timeout(
+        "photos_thumbnail": (
             check_photos_thumbnail_access,
-            timeout_secs=DEFAULT_PREFLIGHT_TIMEOUT_SECONDS,
-            timeout_result=PreflightCheckResult(
+            DEFAULT_CAPABILITY_PREFLIGHT_TIMEOUT_SECONDS,
+            PreflightCheckResult(
                 key="photos_thumbnail",
                 title="Photos Thumbnail Access",
                 status=CHECK_WARNING,
@@ -89,7 +158,86 @@ def run_startup_checks() -> list[PreflightCheckResult]:
                 ),
             ),
         ),
-    ]
+    }
+    try:
+        check_fn, timeout_secs, timeout_result = checks[key]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported preflight check: {key}") from exc
+    return _run_check_with_timeout(
+        check_fn,
+        timeout_secs=timeout_secs,
+        timeout_result=timeout_result,
+    )
+
+
+def _photos_read_timeout_result() -> PreflightCheckResult:
+    return PreflightCheckResult(
+        key="photos_read",
+        title="Photos Library Read",
+        status=CHECK_ERROR,
+        summary="Apple Photos library read check timed out.",
+        hint="PhotosMcp could not confirm library readability before startup continued.",
+    )
+
+
+def check_photos_library_metadata_access() -> PreflightCheckResult:
+    """Quick startup probe that does not build the full osxphotos index."""
+    try:
+        library_path = _resolve_photos_library_path()
+        database_path = library_path / "database" / "Photos.sqlite"
+        if not database_path.is_file():
+            raise FileNotFoundError("The Photos metadata database could not be found.")
+
+        connection = sqlite3.connect(
+            f"{database_path.as_uri()}?mode=ro",
+            uri=True,
+            timeout=2.0,
+        )
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            connection.execute("PRAGMA schema_version").fetchone()
+        finally:
+            connection.close()
+    except Exception as exc:
+        return PreflightCheckResult(
+            key="photos_read",
+            title="Photos Library Read",
+            status=CHECK_ERROR,
+            summary="Apple Photos library metadata could not be read.",
+            detail=str(exc),
+            hint="Confirm that this account can open its current Apple Photos library.",
+        )
+
+    return PreflightCheckResult(
+        key="photos_read",
+        title="Photos Library Read",
+        status=CHECK_OK,
+        summary="Apple Photos library is readable.",
+        detail="The current Photos metadata database opened in read-only mode.",
+    )
+
+
+def _resolve_photos_library_path() -> Path:
+    configured_path = os.getenv(
+        "PHOTOS_MCP_PHOTOS_LIBRARY_PATH",
+        os.getenv("NANOBOT_PHOTOS_MCP_PHOTOS_LIBRARY_PATH", ""),
+    ).strip()
+    if configured_path:
+        return Path(configured_path).expanduser().resolve()
+
+    pictures_path = Path.home() / "Pictures"
+    default_path = pictures_path / "Photos Library.photoslibrary"
+    if default_path.exists():
+        return default_path.resolve()
+
+    candidates = sorted(
+        (path for path in pictures_path.glob("*.photoslibrary") if path.is_dir()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if candidates:
+        return candidates[0].resolve()
+    raise FileNotFoundError("The current Apple Photos library could not be located.")
 
 
 def check_photos_permission_access() -> PreflightCheckResult:
@@ -408,17 +556,49 @@ def _run_check_with_timeout(
     timeout_result: PreflightCheckResult,
 ) -> PreflightCheckResult:
     container: dict[str, object] = {}
+    check_key = timeout_result.key
 
     def target() -> None:
-        container["result"] = check_fn()
+        started_at = time.monotonic()
+        try:
+            container["result"] = check_fn()
+        finally:
+            logger.info(
+                "preflight check worker finished key=%s elapsed=%.2fs",
+                check_key,
+                time.monotonic() - started_at,
+            )
+            with _ACTIVE_CHECK_THREADS_LOCK:
+                if _ACTIVE_CHECK_THREADS.get(check_key) is thread:
+                    _ACTIVE_CHECK_THREADS.pop(check_key, None)
 
-    thread = Thread(target=target, name=f"photos-mcp-preflight-{timeout_result.key}", daemon=True)
+    with _ACTIVE_CHECK_THREADS_LOCK:
+        active_thread = _ACTIVE_CHECK_THREADS.get(check_key)
+        if active_thread is not None and active_thread.is_alive():
+            logger.warning("preflight check skipped because previous worker is still active key=%s", check_key)
+            return timeout_result
+        thread = Thread(target=target, name=f"photos-mcp-preflight-{check_key}", daemon=True)
+        _ACTIVE_CHECK_THREADS[check_key] = thread
+
+    started_at = time.monotonic()
+    logger.info("preflight check started key=%s timeout=%.1fs", check_key, timeout_secs)
     thread.start()
     thread.join(timeout=max(timeout_secs, 0.1))
     if thread.is_alive():
+        logger.warning(
+            "preflight check timed out key=%s elapsed=%.2fs worker_continues=true",
+            check_key,
+            time.monotonic() - started_at,
+        )
         return timeout_result
 
     result = container.get("result")
     if isinstance(result, PreflightCheckResult):
+        logger.info(
+            "preflight check completed key=%s status=%s elapsed=%.2fs",
+            check_key,
+            result.status,
+            time.monotonic() - started_at,
+        )
         return result
     return timeout_result

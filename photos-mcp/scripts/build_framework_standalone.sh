@@ -9,6 +9,8 @@ FRAMEWORK_VERSION="${PHOTOS_MCP_FRAMEWORK_VERSION:-3.12}"
 DIST_DIR="${PHOTOS_MCP_DIST_DIR:-$ROOT_DIR/dist-framework-standalone}"
 BUILD_DIR="${PHOTOS_MCP_BUILD_DIR:-$ROOT_DIR/build-framework-standalone}"
 INSTALL_BUNDLE_PATH="${PHOTOS_MCP_INSTALL_BUNDLE_PATH:-$HOME/Applications/PhotosMcp.app}"
+PUBLIC_APPLICATION_LINK="${PHOTOS_MCP_PUBLIC_APPLICATION_LINK:-/Applications/PhotosMcp.app}"
+DESIGNATED_REQUIREMENT="${PHOTOS_MCP_DESIGNATED_REQUIREMENT:-designated => identifier \"com.nanobot.photos-mcp\"}"
 TCL_LIBRARY_DEFAULT="$ROOT_DIR/.framework-python-cache/python-3.12.10-expanded/Python_Framework.pkg/Payload/Versions/3.12/lib/tcl8.6"
 TK_LIBRARY_DEFAULT="$ROOT_DIR/.framework-python-cache/python-3.12.10-expanded/Python_Framework.pkg/Payload/Versions/3.12/lib/tk8.6"
 ICON_PYTHON="${PHOTOS_MCP_ICON_PYTHON:-$ROOT_DIR/.venv/bin/python}"
@@ -121,6 +123,13 @@ codesign_adhoc(os.environ["BUNDLE_PATH"])
 PY
 }
 
+apply_stable_designated_requirement() {
+	local bundle_path="$1"
+
+	# Ad-hoc signing otherwise derives a CDHash-only requirement that changes on every build.
+	codesign --force --sign - --requirements "=$DESIGNATED_REQUIREMENT" "$bundle_path"
+}
+
 FRAMEWORK_RUNTIME_DIR="${FRAMEWORK_RUNTIME_DIR_OVERRIDE:-$(find_framework_runtime_dir || true)}"
 BASE_PYTHON="$FRAMEWORK_RUNTIME_DIR/Python.framework/Versions/$FRAMEWORK_VERSION/bin/python$FRAMEWORK_VERSION"
 FRAMEWORK_LIB_DIR="$FRAMEWORK_RUNTIME_DIR/Python.framework/Versions/$FRAMEWORK_VERSION/lib"
@@ -174,13 +183,37 @@ fi
 
 repair_problematic_framework_dylibs "$APP_BUNDLE"
 depth_first_codesign_bundle "$APP_BUNDLE"
+apply_stable_designated_requirement "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
-"$APP_BUNDLE/Contents/MacOS/PhotosMcp" --health
+PYTHONDONTWRITEBYTECODE=1 "$APP_BUNDLE/Contents/MacOS/PhotosMcp" --health
+PYTHONDONTWRITEBYTECODE=1 "$APP_BUNDLE/Contents/MacOS/PhotosMcp" --runtime-import-smoke
+PYTHONDONTWRITEBYTECODE=1 "$APP_BUNDLE/Contents/MacOS/PhotosMcp" --vendor-runtime-smoke
+codesign --verify --deep --strict "$APP_BUNDLE"
 
 if [[ -n "$INSTALL_BUNDLE_PATH" ]]; then
 	mkdir -p "$(dirname "$INSTALL_BUNDLE_PATH")"
 	rm -rf "$INSTALL_BUNDLE_PATH"
 	ditto "$APP_BUNDLE" "$INSTALL_BUNDLE_PATH"
 	codesign --verify --deep --strict "$INSTALL_BUNDLE_PATH"
-	"$INSTALL_BUNDLE_PATH/Contents/MacOS/PhotosMcp" --health
+	PYTHONDONTWRITEBYTECODE=1 "$INSTALL_BUNDLE_PATH/Contents/MacOS/PhotosMcp" --health
+	PYTHONDONTWRITEBYTECODE=1 "$INSTALL_BUNDLE_PATH/Contents/MacOS/PhotosMcp" --runtime-import-smoke
+	PYTHONDONTWRITEBYTECODE=1 "$INSTALL_BUNDLE_PATH/Contents/MacOS/PhotosMcp" --vendor-runtime-smoke
+	codesign --verify --deep --strict "$INSTALL_BUNDLE_PATH"
+
+	if [[ -n "$PUBLIC_APPLICATION_LINK" ]]; then
+		if [[ -L "$PUBLIC_APPLICATION_LINK" ]]; then
+			rm "$PUBLIC_APPLICATION_LINK"
+		elif [[ -e "$PUBLIC_APPLICATION_LINK" ]]; then
+			echo "public application path exists and is not a symlink; leaving it unchanged: $PUBLIC_APPLICATION_LINK" >&2
+			PUBLIC_APPLICATION_LINK=""
+		fi
+
+		if [[ -n "$PUBLIC_APPLICATION_LINK" ]]; then
+			if [[ -w "$(dirname "$PUBLIC_APPLICATION_LINK")" ]]; then
+				ln -s "$INSTALL_BUNDLE_PATH" "$PUBLIC_APPLICATION_LINK"
+			else
+				echo "cannot create public application symlink without write access: $PUBLIC_APPLICATION_LINK" >&2
+			fi
+		fi
+	fi
 fi

@@ -13,6 +13,8 @@ from pathlib import Path
 from ..models import Photo, PhotoMetadata
 from .image_utils import open_image_path, thumbnail_to_base64
 from apple_terminal_helper import run_in_terminal
+from photos_mcp.apple_photo_asset import preferred_analysis_path
+from photos_mcp.apple_photos_runtime import get_apple_photos_db
 from photos_mcp.runtime_bootstrap import default_terminal_python
 
 logger = logging.getLogger(__name__)
@@ -110,9 +112,7 @@ class ApplePhotosSource:
         if self._db is not None:
             return
         try:
-            import osxphotos
-
-            self._db = osxphotos.PhotosDB()
+            self._db = get_apple_photos_db()
             logger.info(
                 "Apple Photos DB loaded: %d photos", len(self._db.photos())
             )
@@ -143,6 +143,31 @@ class ApplePhotosSource:
         )
 
         return [self._to_photo(p) for p in photos]
+
+    def list_albums(self, limit: int = 200) -> list[dict[str, object]]:
+        """Return user albums without invoking the Photos write/automation adapter."""
+        self._ensure_loaded()
+        albums: list[dict[str, object]] = []
+        for album in list(getattr(self._db, "album_info", []) or []):
+            title = str(getattr(album, "title", "") or "").strip()
+            if not title:
+                continue
+            photos = list(getattr(album, "photos", []) or [])
+            photo_count = sum(1 for photo in photos if _is_supported_photo_asset(photo))
+            albums.append(
+                {
+                    "id": str(getattr(album, "uuid", "") or ""),
+                    "name": title,
+                    "photo_count": photo_count,
+                    "folders": [
+                        str(folder)
+                        for folder in list(getattr(album, "folder_names", []) or [])
+                        if folder
+                    ],
+                }
+            )
+        albums.sort(key=lambda item: (str(item["name"]).casefold(), str(item["id"])))
+        return albums[: max(1, int(limit))]
 
     def prefetch_photos(
         self,
@@ -309,8 +334,59 @@ class ApplePhotosSource:
         if not path:
             return None
 
-        image = open_image_path(path)
-        return thumbnail_to_base64(image, max_size)
+        try:
+            image = open_image_path(path)
+            return thumbnail_to_base64(image, max_size)
+        except Exception as exc:
+            # An iCloud export can yield a path before its HEIC bytes are usable.
+            # Keep that transient source failure inside the adapter so the facade
+            # can return a structured wait/retry response instead of an MCP error.
+            detail = dict(self._last_fetch_details.get(photo_id) or {})
+            detail.setdefault("photo_id", photo_id)
+            detail.setdefault("fetch_strategy", "thumbnail_decode")
+            detail["reason_code"] = "thumbnail_decode_failed"
+            detail["reason_detail"] = str(exc)
+            detail["path"] = path
+            self._last_fetch_details[photo_id] = detail
+            logger.warning("Unable to decode Apple Photos thumbnail for %s: %s", photo_id, exc)
+            return None
+
+    def probe_local_availability(self, photo_id: str) -> dict[str, object]:
+        """Report whether a locally exposed Apple asset can be decoded now.
+
+        iCloud may expose an HEIC path before the original bytes are complete.
+        This probe intentionally never starts a download; it only validates the
+        local path used by ``ready_only`` before advertising an asset as ready.
+        """
+        self._ensure_loaded()
+        photo = self._find_photo(photo_id)
+        if photo is None or not _is_supported_photo_asset(photo):
+            return {"photo_id": photo_id, "local_path_available": False, "local_path": ""}
+
+        path = self._resolve_photo_path(photo, download_missing=False)
+        if not path:
+            return {"photo_id": photo_id, "local_path_available": False, "local_path": ""}
+
+        try:
+            image = open_image_path(path)
+            image.close()
+        except Exception as exc:
+            detail = dict(self._last_fetch_details.get(photo_id) or {})
+            detail.update(
+                {
+                    "photo_id": photo_id,
+                    "fetch_strategy": "local_readiness_probe",
+                    "reason_code": "thumbnail_decode_failed",
+                    "reason_detail": str(exc),
+                    "path": path,
+                }
+            )
+            self._last_fetch_details[photo_id] = detail
+            logger.warning("Apple Photos local readiness probe failed for %s: %s", photo_id, exc)
+            return {"photo_id": photo_id, "local_path_available": False, "local_path": ""}
+
+        self._last_fetch_details.pop(photo_id, None)
+        return {"photo_id": photo_id, "local_path_available": True, "local_path": path}
 
     def search_photos(self, query: str, limit: int = 50) -> list[Photo]:
         """Search photos by keyword matching on filename, albums, persons, keywords."""
@@ -622,17 +698,23 @@ class ApplePhotosSource:
 
     def _resolve_photo_path(self, photo, *, download_missing: bool) -> str | None:
         path = getattr(photo, "path", None)
+        resolved = preferred_analysis_path(photo, path)
+        if resolved:
+            return resolved
         if isinstance(path, str) and path:
+            # Preserve the source adapter's historical local-availability
+            # contract for callers that provide a virtual or test path.
             return path
 
         cached_path = self._pick_cached_export(photo.uuid)
         if cached_path:
-            return cached_path
+            return preferred_analysis_path(photo, cached_path)
 
         if not download_missing:
             return None
 
-        return self._download_missing_photo(photo)
+        downloaded_path = self._download_missing_photo(photo)
+        return preferred_analysis_path(photo, downloaded_path)
 
     def _to_photo(self, p) -> Photo:
         return Photo(

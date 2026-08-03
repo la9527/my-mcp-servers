@@ -7,6 +7,7 @@ import logging
 import math
 import time
 
+from apple_terminal_helper import TerminalHelperError
 from mcp.server.fastmcp import FastMCP
 from photos_mcp.logging_setup import ToolLogContext, log_context
 from photos_mcp.runtime_broker_client import default_runtime_broker_client
@@ -141,7 +142,15 @@ def _format_album_writer_error(operation: str, exc: Exception) -> str:
         "details": message,
         "operation": operation,
     }
-    if "-1743" in message or "Apple 이벤트" in message:
+    if isinstance(exc, TerminalHelperError):
+        payload["error_code"] = f"terminal_helper_{exc.code}"
+        if exc.code == "timeout":
+            payload["hint"] = "Apple Photos 작업이 시간 제한을 넘었습니다. 실제 앨범 상태를 다시 확인하세요."
+        elif exc.code in {"terminal_launch_failed", "unsupported_platform"}:
+            payload["hint"] = "Terminal.app 실행과 macOS 자동화 권한을 확인하세요."
+        elif exc.code in {"response_missing", "invalid_response", "request_mismatch"}:
+            payload["hint"] = "PhotosMcp를 다시 시작한 뒤 같은 변경 계획을 재확인하세요."
+    elif "-1743" in message or "Apple 이벤트" in message:
         payload["code"] = "apple_events_permission_denied"
         payload["hint"] = (
             "Terminal.app 에서 직접 실행하고, macOS 설정 > 개인정보 보호 및 보안 > 자동화에서 "
@@ -400,9 +409,15 @@ def _build_request_options(
     date_from: str = "",
     date_to: str = "",
     limit: int = 100,
+    selection_mode: str = "classify",
+    exclude_screenshots: bool = False,
+    quality_top_percent: int = 30,
 ) -> dict[str, object]:
     return {
         "selection_profile": normalize_selection_profile(selection_profile),
+        "selection_mode": selection_mode,
+        "exclude_screenshots": exclude_screenshots,
+        "quality_top_percent": quality_top_percent,
         "filters": {
             "album": album,
             "person": person,
@@ -458,13 +473,52 @@ def _exclude_screen_capture_results(
     return filtered, excluded_photo_ids
 
 
+def _job_execution_metrics(job) -> dict[str, float | None]:
+    """Expose timing metadata only; source paths and image payloads stay private."""
+    summary = getattr(job, "result_summary", None) or {}
+    created_at = getattr(job, "created_at", None)
+    started_at = getattr(job, "started_at", None)
+    queue_seconds = None
+    if isinstance(created_at, (int, float)) and isinstance(started_at, (int, float)):
+        queue_seconds = round(max(0.0, started_at - created_at), 3)
+
+    def metric(name: str) -> float | None:
+        value = summary.get(name)
+        return round(float(value), 3) if isinstance(value, (int, float)) else None
+
+    return {
+        "queue_seconds": queue_seconds,
+        "source_load_seconds": metric("source_load_s"),
+        "filter_seconds": metric("stage1_s"),
+        "dedup_seconds": metric("dedup_s"),
+        "inference_seconds": metric("stage2_s"),
+        "writeback_seconds": metric("writeback_s"),
+        "total_seconds": metric("total_s"),
+    }
+
+
 async def _run_classify_job(job) -> dict:
     """Handler called by JobQueue to execute classification."""
     from .sources import load_photos
+    from photos_mcp.vision_runtime import resolve_vision_runtime_settings
 
     pipe = _get_pipeline()
     db = _get_job_db()
 
+    db.save_job(job)
+
+    runtime = resolve_vision_runtime_settings()
+    job.result_summary = {
+        **(job.result_summary or {}),
+        "vlm_runtime": {
+            "provider": runtime.provider,
+            "policy": runtime.policy,
+            "backend": runtime.backend,
+            "model": runtime.model,
+            "target": runtime.target,
+            "status": "configured",
+        },
+    }
     db.save_job(job)
 
     # Load known faces from DB into pipeline
@@ -478,6 +532,9 @@ async def _run_classify_job(job) -> dict:
     selection_profile = normalize_selection_profile(
         getattr(job, "request_options", {}).get("selection_profile", "general")
     )
+    job.progress.stage = "waiting_source"
+    db.save_job(job)
+    source_load_started = time.perf_counter()
     photos = load_photos(
         job.source,
         job.source_path,
@@ -488,12 +545,23 @@ async def _run_classify_job(job) -> dict:
         limit=filters.get("limit", 100),
     )
 
+    source_load_seconds = round(time.perf_counter() - source_load_started, 3)
     _cache_job_review_assets(job, photos)
 
     if not photos:
         job.error_message = "No photos found from source"
+        job.status = JobStatus.COMPLETED
+        job.finished_at = time.time()
+        job.result_summary = {
+            **(job.result_summary or {}),
+            "ranked_count": 0,
+            "selected_count": 0,
+            "source_load_s": source_load_seconds,
+            "reason": "No photos found from source",
+        }
         db.save_job(job)
-        return {"ranked_count": 0, "top_score": 0}
+        _persist_job_result_artifact(job, db, summary=job.result_summary)
+        return job.result_summary
 
     ranked = await pipe.run(photos, job, selection_profile=selection_profile)
     _cache_face_review_assets(job, photos)
@@ -501,23 +569,48 @@ async def _run_classify_job(job) -> dict:
     # Persist results
     results = [r.to_dict() for r in ranked]
     db.save_photo_results(job.id, results)
+    selection_mode = str(getattr(job, "request_options", {}).get("selection_mode") or "classify")
+    if bool(getattr(job, "request_options", {}).get("exclude_screenshots")):
+        results, excluded_ids = _exclude_screen_capture_results(db, job.id, results)
+        if excluded_ids:
+            db.save_photo_results(job.id, results)
+    selected_count = 0
+    if selection_mode == "select_best" and results:
+        normalized_percent, quality_min_score, selected = _select_top_quality_results(
+            results,
+            int(getattr(job, "request_options", {}).get("quality_top_percent") or 30),
+            score_field="total_score",
+        )
+        selected_ids = {str(item.get("photo_id") or "") for item in selected if item.get("photo_id")}
+        _apply_curated_selection(
+            db,
+            job.id,
+            results,
+            selected_ids,
+            quality_top_percent=normalized_percent,
+            quality_min_score=quality_min_score,
+            selection_profile=selection_profile,
+            score_field="total_score",
+        )
+        selected_count = len(selected_ids)
     db.save_job(job)
 
-    _persist_job_result_artifact(
-        job,
-        db,
-        summary={
-            "ranked_count": len(ranked),
-            "top_score": ranked[0].total_score if ranked else 0,
-            "selection_profile": selection_profile,
-        },
-    )
-
-    return {
+    summary = {
+        **(job.result_summary or {}),
         "ranked_count": len(ranked),
         "top_score": ranked[0].total_score if ranked else 0,
         "selection_profile": selection_profile,
+        "selection_mode": selection_mode,
+        "selected_count": selected_count,
+        "source_load_s": source_load_seconds,
     }
+    job.result_summary = summary
+    job.status = JobStatus.COMPLETED
+    job.finished_at = time.time()
+    # Persist terminal state before writing its portable result artifact.
+    db.save_job(job)
+    _persist_job_result_artifact(job, db, summary=summary)
+    return summary
 
 
 def _register_known_faces(pipe: Pipeline, db: JobDB) -> None:
@@ -543,6 +636,8 @@ async def _run_sync_classification(
     cache_step_index: int = 0,
     stage1_step_index: int = 0,
     stage2_step_index: int = 0,
+    run_id: str = "",
+    retain_checkpoints: bool = False,
 ) -> tuple[object | None, JobDB, list[dict]]:
     from .sources import load_photos as _load
 
@@ -588,7 +683,16 @@ async def _run_sync_classification(
     _register_known_faces(pipe, db)
 
     queue = _get_job_queue()
-    job = queue.create_job(source, source_path)
+    job = db.load_job(run_id) if run_id else None
+    if job is None:
+        job = queue.create_job(source, source_path, job_id=run_id)
+    else:
+        job.source = source
+        job.source_path = source_path
+        job.status = JobStatus.PENDING
+        job.error_message = None
+        job.finished_at = None
+        queue.register_job(job)
     job.request_options = _build_request_options(
         selection_profile=selection_profile,
         album=album,
@@ -597,6 +701,7 @@ async def _run_sync_classification(
         date_to=date_to,
         limit=limit,
     )
+    job.request_options["retain_checkpoints"] = retain_checkpoints
     if log_tool_name and log_total_steps:
         job.request_options.update(
             {
@@ -645,20 +750,24 @@ def _finalize_sync_job(job, db: JobDB, summary: dict) -> None:
     job.finished_at = time.time()
     job.result_summary = summary
     db.save_job(job)
+    db.clear_checkpoints(job.id)
     _persist_job_result_artifact(job, db, summary=summary)
 
 
 def _persist_job_result_artifact(job, db: JobDB, *, summary: dict | None = None) -> None:
+    job_id = str(getattr(job, "id", "") or "")
+    if not job_id:
+        return
     try:
         save_job_results(
-            job.id,
+            job_id,
             job=job.to_dict(),
             summary=summary or getattr(job, "result_summary", {}) or {},
-            results=db.load_photo_results(job.id),
-            assets=db.list_job_assets(job.id),
+            results=db.load_photo_results(job_id),
+            assets=db.list_job_assets(job_id),
         )
     except Exception as exc:
-        logger.warning("Result artifact save failed for %s: %s", job.id, exc)
+        logger.warning("Result artifact save failed for %s: %s", job_id, exc)
 
 
 def _select_top_quality_results(
@@ -677,9 +786,31 @@ def _select_top_quality_results(
     )
     selected_count = max(1, math.ceil(len(ranked_by_quality) * normalized_percent / 100))
     threshold = float(ranked_by_quality[selected_count - 1].get(score_field, 0.0))
-    selected = [
+    threshold_selected = [
         item for item in results if float(item.get(score_field, 0.0)) >= threshold
     ]
+    selected: list[dict] = []
+    cluster_counts: dict[str, int] = {}
+    has_scene_recommendations = any(
+        "recommended_in_cluster" in item for item in threshold_selected
+    )
+    for item in sorted(
+        threshold_selected,
+        key=lambda candidate: (
+            -float(candidate.get(score_field, 0.0)),
+            -float(candidate.get("total_score", 0.0)),
+            int(candidate.get("cluster_rank") or 1),
+            str(candidate.get("photo_id") or ""),
+        ),
+    ):
+        if has_scene_recommendations and not bool(item.get("recommended_in_cluster")):
+            continue
+        photo_id = str(item.get("photo_id") or "")
+        cluster_id = str(item.get("scene_cluster_id") or f"photo:{photo_id}")
+        if cluster_counts.get(cluster_id, 0) >= 2:
+            continue
+        selected.append(item)
+        cluster_counts[cluster_id] = cluster_counts.get(cluster_id, 0) + 1
     return normalized_percent, threshold, selected
 
 
@@ -696,7 +827,8 @@ def _apply_curated_selection(
 ) -> None:
     selection_note = (
         f"Auto-selected by {score_field} >= {quality_min_score:.2f} "
-        f"(top {quality_top_percent}% selection, profile={selection_profile})"
+        f"(top {quality_top_percent}% selection, max 2 per scene, "
+        f"profile={selection_profile})"
     )
     for result in results:
         is_selected = result.get("photo_id", "") in selected_photo_ids
@@ -724,6 +856,10 @@ async def start_classify_job(
     date_to: str = "",
     limit: int = 100,
     selection_profile: str = "general",
+    selection_mode: str = "classify",
+    exclude_screenshots: bool = False,
+    quality_top_percent: int = 30,
+    run_id: str = "",
 ) -> str:
     """Start a background photo classification job.
 
@@ -742,9 +878,11 @@ async def start_classify_job(
     """
     if not is_valid_selection_profile(selection_profile):
         return _selection_profile_error(selection_profile)
+    if selection_mode not in {"classify", "select_best"}:
+        return json.dumps({"error": "Unsupported selection_mode"}, ensure_ascii=False)
 
     queue = _get_job_queue()
-    job = queue.create_job(source, source_path)
+    job = queue.create_job(source, source_path, job_id=run_id)
     job._filters = {
         "album": album,
         "person": person,
@@ -759,12 +897,17 @@ async def start_classify_job(
         date_from=date_from,
         date_to=date_to,
         limit=limit,
+        selection_mode=selection_mode,
+        exclude_screenshots=exclude_screenshots,
+        quality_top_percent=quality_top_percent,
     )
 
     db = _get_job_db()
     db.save_job(job)
 
-    await queue.submit(job.id)
+    # Let the accepted payload reach MCP/AppKit before synchronous source loading
+    # inside the worker can temporarily occupy the event loop.
+    queue.schedule(job.id)
     return json.dumps({"job_id": job.id, "status": job.status.value})
 
 
@@ -778,25 +921,29 @@ async def get_job_status(job_id: str) -> str:
     Returns:
         JSON with job status details.
     """
-    db = _get_job_db()
-    job = db.load_job(job_id)
-    if not job:
-        # Check in-memory queue
-        queue = _get_job_queue()
-        job = queue.get_job(job_id)
+    job, _ = _load_current_job(job_id)
     if not job:
         return json.dumps({"error": f"Job {job_id} not found"})
     return json.dumps(job.to_dict())
 
 
+def _load_current_job(job_id: str):
+    """Return the live queue state and persist it over any stale DB snapshot."""
+    db = _get_job_db()
+    persisted_job = db.load_job(job_id)
+    queue_job = _get_job_queue().get_job(job_id)
+    if queue_job is None:
+        return persisted_job, db
+
+    if persisted_job is None or queue_job.to_dict() != persisted_job.to_dict():
+        db.save_job(queue_job)
+    return queue_job, db
+
+
 @mcp.tool()
 async def get_job_summary(job_id: str) -> str:
     """Get job status plus review summary fields for UI/chat consumption."""
-    db = _get_job_db()
-    job = db.load_job(job_id)
-    if not job:
-        queue = _get_job_queue()
-        job = queue.get_job(job_id)
+    job, db = _load_current_job(job_id)
     if not job:
         return json.dumps({"error": f"Job {job_id} not found"})
 
@@ -820,6 +967,7 @@ async def get_job_summary(job_id: str) -> str:
             "finished_at": job.finished_at,
             "progress": job.progress.to_dict(),
             "result_summary": job.result_summary,
+            "execution_metrics": _job_execution_metrics(job),
             "error_message": job.error_message,
             "photo_count": len(results),
             "selected_count": selected_count,
@@ -972,7 +1120,7 @@ def _cache_job_review_assets(job, photos: list[dict]) -> None:
         try:
             preview_path = save_preview(job.id, photo["photo_id"], photo["image_b64"])
         except Exception as exc:
-            logger.warning("Preview cache failed for %s: %s", photo["photo_id"], exc)
+            logger.warning("Preview cache failed: %s", exc)
             preview_path = ""
         source_photo_path = photo.get("source_photo_path") or (
             photo["photo_id"] if job.source == "local" else ""
@@ -998,12 +1146,7 @@ def _cache_face_review_assets(job, photos: list[dict]) -> None:
                         image_b64,
                     )
                 except Exception as exc:
-                    logger.warning(
-                        "Face crop cache failed for %s#%s: %s",
-                        photo_id,
-                        face["face_idx"],
-                        exc,
-                    )
+                    logger.warning("Face crop cache failed: %s", exc)
             db.save_face_review(
                 job.id,
                 photo_id,
@@ -1273,6 +1416,7 @@ async def curate_best_photos(
     quality_top_percent: int = 30,
     selection_profile: str = "general",
     exclude_screenshots: bool = False,
+    run_id: str = "",
 ) -> str:
     """최신/필터된 사진에서 잘 나온 사진만 골라 review 또는 Apple Photos 앨범에 반영합니다.
 
@@ -1348,6 +1492,8 @@ async def curate_best_photos(
         cache_step_index=3,
         stage1_step_index=4,
         stage2_step_index=5,
+        run_id=run_id,
+        retain_checkpoints=True,
     )
     if job is None or not results:
         _log_workflow_step(
@@ -1640,6 +1786,18 @@ async def list_photo_albums() -> str:
     return json.dumps(albums)
 
 
+@mcp.tool()
+async def list_album_photo_ids(name: str, folder: str = "") -> str:
+    """쓰기 timeout 또는 부분 실패 재조정을 위해 앨범의 현재 사진 UUID를 반환합니다."""
+    writer = _get_album_writer()
+    try:
+        result = writer.list_album_photo_ids(name, folder)
+    except Exception as exc:
+        logger.exception("list_album_photo_ids failed")
+        return _format_album_writer_error("list_album_photo_ids", exc)
+    return json.dumps(result)
+
+
 # ── End-to-End Workflow Tools ──────────────────────────
 
 
@@ -1657,6 +1815,7 @@ async def classify_and_organize(
     date_to: str = "",
     limit: int = 100,
     selection_profile: str = "general",
+    run_id: str = "",
 ) -> str:
     """사진 소스에서 불러와 분류하고 Apple Photos 앨범으로 정리하는 전체 워크플로우.
 
@@ -1693,6 +1852,8 @@ async def classify_and_organize(
         date_to=date_to,
         limit=limit,
         selection_profile=normalized_profile,
+        run_id=run_id,
+        retain_checkpoints=True,
     )
     if job is None or not results:
         return json.dumps({"error": "No photos found from source"})

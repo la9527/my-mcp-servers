@@ -84,9 +84,16 @@ def load_vendor_server(server_name: str) -> ModuleType:
         if package_name is not None
         else f"photos_mcp_vendor_{server_name.replace('-', '_')}"
     )
+    module_path = (server_root / "server.py").resolve()
+    existing = sys.modules.get(module_name)
+    if existing is not None:
+        existing_path = Path(str(getattr(existing, "__file__", ""))).resolve()
+        if existing_path == module_path:
+            return existing
+
     spec = spec_from_file_location(
         module_name,
-        server_root / "server.py",
+        module_path,
     )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load vendored server: {server_name}")

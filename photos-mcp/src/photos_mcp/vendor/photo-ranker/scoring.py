@@ -229,6 +229,7 @@ def rank_photos(
                 known_persons=ps.get("known_persons", []),
                 meaningful_score=ps.get("meaningful_score", 5),
                 capture_date=ps.get("capture_date", ""),
+                technical_score=ps.get("technical_score", 0.0),
             )
         )
 

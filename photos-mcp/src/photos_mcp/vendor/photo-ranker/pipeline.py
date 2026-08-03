@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 
@@ -35,6 +36,15 @@ from .scoring import (
     compute_quality_score,
     compute_uniqueness_score,
     rank_photos,
+)
+from .scene_selection import (
+    SceneClusterer,
+    SceneSignal,
+    VisualFeatureEngine,
+    annotate_cluster_ranks,
+    choose_detail_candidates,
+    choose_quality_representatives,
+    parse_capture_time,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,6 +73,8 @@ class PhotoCandidate:
     faces: list = field(default_factory=list)  # FaceResult list from stage1
     meaningful_score: int = 5  # VLM 1-10, default midpoint
     capture_date: str = ""  # ISO date from EXIF
+    burst_group_id: str = ""
+    visual_feature: object | None = None
 
 
 @dataclass
@@ -79,6 +91,17 @@ class PipelineConfig:
     vlm_top_n: int = 0
     # VLM model path (empty = use default)
     vlm_model_path: str = ""
+    # Maximum detailed VLM candidates retained from each similar scene.
+    scene_detail_candidates: int = 4
+    # Vision feature cosine distance used for normal same-scene grouping.
+    scene_visual_distance_threshold: float = 0.08
+    # Relaxed distance when Apple Photos identifies the same person.
+    scene_relaxed_visual_distance_threshold: float = 0.10
+    # Maximum normal and extended capture-time windows.
+    scene_time_window_seconds: float = 120.0
+    scene_extended_time_window_seconds: float = 300.0
+    # Score required for an automatic recommendation outside select-best mode.
+    scene_recommendation_min_score: float = 80.0
 
 
 class Pipeline:
@@ -96,6 +119,13 @@ class Pipeline:
         self._db = db  # Optional DB for face embedding caching
         self._vlm = None  # Lazy-initialized VLMEngine (reused across stage2 calls)
         self._aesthetic = None  # Lazy-initialized AestheticEngine
+        self._visual_features = VisualFeatureEngine()
+        self._scene_clusterer = SceneClusterer(
+            time_window_seconds=self.config.scene_time_window_seconds,
+            extended_time_window_seconds=self.config.scene_extended_time_window_seconds,
+            visual_distance_threshold=self.config.scene_visual_distance_threshold,
+            relaxed_visual_distance_threshold=self.config.scene_relaxed_visual_distance_threshold,
+        )
         # Known face embeddings: name -> list of embeddings
         self._known_faces: dict[str, list[list[float]]] = {}
 
@@ -213,9 +243,13 @@ class Pipeline:
         for i, p in enumerate(photos):
             pid = p["photo_id"]
             if pid in s1_done:
-                cand = self._restore_candidate(s1_done[pid], p["image_b64"])
+                cand = self._restore_candidate(
+                    s1_done[pid],
+                    p["image_b64"],
+                    source_metadata=p,
+                )
             else:
-                cand = await self._stage1(pid, p["image_b64"])
+                cand = await self._stage1(pid, p["image_b64"], source_metadata=p)
                 if self._db and job:
                     self._db.save_checkpoint(
                         job.id, "filter", pid, self._snapshot_candidate(cand),
@@ -229,18 +263,30 @@ class Pipeline:
                     logging.INFO,
                     job,
                     stage1_step,
-                    "stage1 progress %d/%d current=%s",
+                    "stage1 progress %d/%d",
                     i + 1,
                     len(photos),
-                    pid,
                 )
 
         t_s1 = time.perf_counter() - t_start
         self._log_workflow(logging.INFO, job, stage1_step or 1, "stage1 done candidates=%d in %.2fs", len(candidates), t_s1)
 
+        # Generate local Vision features before selecting expensive VLM candidates.
+        t_scene_start = time.perf_counter()
+        visual_features = await self._extract_scene_features(candidates)
+
         # Duplicate detection across all
         t_dedup_start = time.perf_counter()
         dup_groups = self._detect_duplicates(candidates)
+
+        technical_scores = {candidate.photo_id: candidate.technical_score for candidate in candidates}
+        for group in dup_groups:
+            ranked_ids = choose_quality_representatives(
+                group.photo_ids,
+                technical_scores=technical_scores,
+            )
+            group.photo_ids = ranked_ids
+            group.representative_id = ranked_ids[0]
 
         # Mark duplicates
         dup_photo_ids = set()
@@ -252,7 +298,6 @@ class Pipeline:
         for c in candidates:
             if c.photo_id in dup_photo_ids:
                 c.is_duplicate = True
-                c.passed_stage1 = False
             if c.technical_score < self.config.min_technical_score:
                 c.passed_stage1 = False
 
@@ -270,6 +315,28 @@ class Pipeline:
         for c in candidates:
             c.uniqueness_score = compute_uniqueness_score(c.photo_id, dup_groups)
 
+        scene_clusters = self._scene_clusterer.cluster(
+            [
+                SceneSignal(
+                    photo_id=candidate.photo_id,
+                    capture_time=parse_capture_time(candidate.capture_date),
+                    visual_feature=candidate.visual_feature,
+                    technical_score=candidate.technical_score,
+                    known_persons=tuple(candidate.known_persons),
+                    burst_group_id=candidate.burst_group_id,
+                )
+                for candidate in candidates
+            ],
+            exact_duplicate_groups=(group.photo_ids for group in dup_groups),
+        )
+        detail_candidate_ids = choose_detail_candidates(
+            scene_clusters,
+            technical_scores=technical_scores,
+            face_counts={candidate.photo_id: candidate.face_count for candidate in candidates},
+            limit_per_cluster=self.config.scene_detail_candidates,
+        )
+        t_scene = time.perf_counter() - t_scene_start
+
         passed_count = sum(1 for c in candidates if c.passed_stage1)
         filtered_count = len(candidates) - passed_count
         self._log_workflow(
@@ -284,7 +351,11 @@ class Pipeline:
         )
 
         # ── Stage 2: VLM (only for candidates that passed) ──
-        stage2_candidates = [c for c in candidates if c.passed_stage1]
+        stage2_candidates = [
+            c
+            for c in candidates
+            if c.passed_stage1 and c.photo_id in detail_candidate_ids
+        ]
         if self.config.vlm_top_n > 0:
             stage2_candidates = sorted(
                 stage2_candidates,
@@ -306,9 +377,21 @@ class Pipeline:
             if any(cand.photo_id not in s2_done for cand in stage2_candidates)
             else None
         )
+        existing_runtime = (
+            dict(job.result_summary.get("vlm_runtime") or {})
+            if job and isinstance(job.result_summary, dict)
+            else {}
+        )
+        vlm_runtime_metadata: dict[str, object] = {**existing_runtime, "used": False}
         try:
             if stage2_runtime_client is not None:
+                if job:
+                    job.progress.stage = "waiting_model"
+                    if self._db:
+                        self._db.save_job(job)
                 await stage2_runtime_client.acquire()
+                if job:
+                    job.progress.stage = "vlm"
 
             for i, cand in enumerate(stage2_candidates):
                 if cand.photo_id in s2_done:
@@ -330,12 +413,17 @@ class Pipeline:
                         logging.INFO,
                         job,
                         stage2_step,
-                        "stage2 progress %d/%d current=%s",
+                        "stage2 progress %d/%d",
                         i + 1,
                         len(stage2_candidates),
-                        cand.photo_id,
                     )
         finally:
+            if self._vlm is not None and hasattr(self._vlm, "runtime_metadata"):
+                vlm_runtime_metadata = {
+                    **existing_runtime,
+                    "used": True,
+                    **self._vlm.runtime_metadata(),
+                }
             if stage2_runtime_client is not None:
                 await stage2_runtime_client.release()
             self._release_vlm_if_needed()
@@ -345,11 +433,19 @@ class Pipeline:
 
         # ── Rank results ──
         ranked = self._rank(candidates, dup_groups, selection_profile)
+        recommendation_threshold = self._scene_recommendation_threshold(ranked, job)
+        annotate_cluster_ranks(
+            ranked,
+            scene_clusters,
+            visual_features=visual_features,
+            recommendation_min_score=recommendation_threshold,
+        )
 
         t_total = time.perf_counter() - t_start
         stage_times = {
             "stage1_s": round(t_s1, 2),
             "dedup_s": round(t_dedup, 2),
+            "scene_cluster_s": round(t_scene, 2),
             "stage2_s": round(t_s2, 2),
             "total_s": round(t_total, 2),
         }
@@ -357,14 +453,27 @@ class Pipeline:
         if job:
             job.result_summary = {
                 "total_input": len(photos),
-                "passed_stage1": len(stage2_candidates),
+                "passed_stage1": passed_count,
                 "duplicates_found": len(dup_photo_ids),
+                "scene_cluster_count": len(scene_clusters),
+                "multi_photo_scene_count": sum(1 for cluster in scene_clusters if cluster.size > 1),
+                "detail_candidate_count": len(stage2_candidates),
+                "scene_recommended_count": sum(
+                    1 for item in ranked if item.recommended_in_cluster
+                ),
+                "scene_recommendation_min_score": round(recommendation_threshold, 2),
                 "ranked_count": len(ranked),
+                "vlm_runtime": {
+                    **vlm_runtime_metadata,
+                    "processed_count": len(stage2_candidates),
+                    "duration_seconds": round(t_s2, 2),
+                },
                 **stage_times,
             }
 
-        # Clear checkpoints on successful completion
-        if self._db and job:
+        # Multi-stage workflows retain analysis checkpoints until their write
+        # phase is finalized, allowing an interrupted run to resume in place.
+        if self._db and job and not job.request_options.get("retain_checkpoints"):
             self._db.clear_checkpoints(job.id)
 
         self._log_workflow(
@@ -382,20 +491,60 @@ class Pipeline:
 
         return ranked
 
-    async def _stage1(self, photo_id: str, image_b64: str) -> PhotoCandidate:
+    def _scene_recommendation_threshold(
+        self,
+        ranked_items: list[RankedPhoto],
+        job: Job | None,
+    ) -> float:
+        """Align scene recommendations with select-best percentile policy."""
+        if not ranked_items or job is None:
+            return self.config.scene_recommendation_min_score
+        options = getattr(job, "request_options", {}) or {}
+        if str(options.get("selection_mode") or "classify") != "select_best":
+            return self.config.scene_recommendation_min_score
+        try:
+            top_percent = max(1, min(int(options.get("quality_top_percent") or 30), 100))
+        except (TypeError, ValueError):
+            top_percent = 30
+        scores = sorted(
+            (float(item.total_score) for item in ranked_items),
+            reverse=True,
+        )
+        selected_count = max(1, math.ceil(len(scores) * top_percent / 100))
+        return scores[selected_count - 1]
+
+    async def _stage1(
+        self,
+        photo_id: str,
+        image_b64: str,
+        source_metadata: dict | None = None,
+    ) -> PhotoCandidate:
         """Lightweight checks: EXIF, orientation, technical quality, face count.
 
         Runs EXIF/technical/face tasks concurrently for speed.
         """
+        metadata = source_metadata or {}
         cand = PhotoCandidate(photo_id=photo_id, image_b64=image_b64)
+        cand.capture_date = str(metadata.get("capture_date") or "")
+        cand.has_gps = bool(metadata.get("has_gps") or metadata.get("gps"))
+        gps = metadata.get("gps") if isinstance(metadata.get("gps"), dict) else {}
+        cand.latitude = metadata.get("latitude", gps.get("lat"))
+        cand.longitude = metadata.get("longitude", gps.get("lon"))
+        cand.known_persons = [
+            str(name)
+            for name in list(metadata.get("known_persons") or metadata.get("persons") or [])
+            if str(name).strip()
+        ]
+        cand.burst_group_id = str(metadata.get("burst_group_id") or "")
 
         # EXIF extraction + orientation correction
         exif_data = self._exif.extract(image_b64)
-        cand.has_gps = exif_data.has_gps
-        cand.latitude = exif_data.latitude
-        cand.longitude = exif_data.longitude
-        if exif_data.capture_date:
-            cand.capture_date = exif_data.capture_date.strftime("%Y-%m-%d")
+        if exif_data.has_gps:
+            cand.has_gps = True
+            cand.latitude = exif_data.latitude
+            cand.longitude = exif_data.longitude
+        if exif_data.capture_date and not cand.capture_date:
+            cand.capture_date = exif_data.capture_date.isoformat()
         if exif_data.orientation != 1:
             corrected = self._exif.correct_orientation(image_b64)
             cand.image_b64 = corrected
@@ -432,7 +581,8 @@ class Pipeline:
 
         # Known person matching
         embeddings = [f.embedding for f in faces]
-        cand.known_persons = self._identify_known_persons(embeddings)
+        detected_persons = self._identify_known_persons(embeddings)
+        cand.known_persons = list(dict.fromkeys([*cand.known_persons, *detected_persons]))
         cand.family_score = compute_family_score(faces, cand.known_persons or None)
 
         # Quality score (aesthetic defaults to 5.0 in stage1)
@@ -440,6 +590,30 @@ class Pipeline:
         cand.quality_score = qs.total
 
         return cand
+
+    async def _extract_scene_features(
+        self,
+        candidates: list[PhotoCandidate],
+    ) -> dict[str, object | None]:
+        loop = asyncio.get_running_loop()
+        semaphore = asyncio.Semaphore(4)
+
+        async def extract(candidate: PhotoCandidate) -> tuple[str, object | None]:
+            async with semaphore:
+                try:
+                    feature = await loop.run_in_executor(
+                        None,
+                        self._visual_features.extract,
+                        candidate.image_b64,
+                    )
+                except Exception as exc:
+                    logger.warning("Scene feature extraction failed: %s", exc)
+                    feature = None
+                candidate.visual_feature = feature
+                return candidate.photo_id, feature
+
+        pairs = await asyncio.gather(*(extract(candidate) for candidate in candidates))
+        return dict(pairs)
 
     async def _stage2(self, cand: PhotoCandidate) -> None:
         """Heavy VLM inference: scene description + event classification."""
@@ -469,8 +643,7 @@ class Pipeline:
                 scene.event_confidence = max(scene.event_confidence, 0.5)
                 cand.event_score = compute_event_score(scene)
                 logger.info(
-                    "GPS correction: %s outdoor→travel (GPS present, conf=%.2f)",
-                    cand.photo_id,
+                    "GPS correction: outdoor to travel (GPS present, conf=%.2f)",
                     scene.event_confidence,
                 )
 
@@ -486,9 +659,7 @@ class Pipeline:
                 scene.event_confidence = max(scene.event_confidence, 0.4)
                 cand.event_score = compute_event_score(scene)
                 logger.info(
-                    "GPS correction: %s %s→travel (GPS present, low conf=%.2f)",
-                    cand.photo_id,
-                    scene.event_type.value,
+                    "GPS correction: event type to travel (GPS present, low conf=%.2f)",
                     scene.event_confidence,
                 )
 
@@ -531,7 +702,7 @@ class Pipeline:
                 pass
 
         except RuntimeError as e:
-            logger.warning("VLM not available for %s: %s", cand.photo_id, e)
+            logger.warning("VLM not available for this candidate: %s", e)
 
     @staticmethod
     def _snapshot_candidate(cand: PhotoCandidate) -> dict:
@@ -552,11 +723,17 @@ class Pipeline:
             "has_gps": cand.has_gps,
             "meaningful_score": cand.meaningful_score,
             "capture_date": cand.capture_date,
+            "burst_group_id": cand.burst_group_id,
         }
 
     @staticmethod
-    def _restore_candidate(snap: dict, image_b64: str) -> PhotoCandidate:
+    def _restore_candidate(
+        snap: dict,
+        image_b64: str,
+        source_metadata: dict | None = None,
+    ) -> PhotoCandidate:
         """Recreate a PhotoCandidate from a checkpoint snapshot."""
+        metadata = source_metadata or {}
         cand = PhotoCandidate(photo_id=snap["photo_id"], image_b64=image_b64)
         cand.technical_score = snap.get("technical_score", 0.0)
         cand.face_count = snap.get("face_count", 0)
@@ -567,11 +744,19 @@ class Pipeline:
         cand.uniqueness_score = snap.get("uniqueness_score", 0.0)
         cand.scene_description = snap.get("scene_description", "")
         cand.event_type = snap.get("event_type", EventType.OTHER.value)
-        cand.known_persons = snap.get("known_persons", [])
+        source_persons = list(metadata.get("known_persons") or metadata.get("persons") or [])
+        cand.known_persons = list(
+            dict.fromkeys([*snap.get("known_persons", []), *source_persons])
+        )
         cand.passed_stage1 = snap.get("passed_stage1", True)
         cand.has_gps = snap.get("has_gps", False)
         cand.meaningful_score = snap.get("meaningful_score", 5)
-        cand.capture_date = snap.get("capture_date", "")
+        cand.capture_date = snap.get("capture_date", "") or str(
+            metadata.get("capture_date") or ""
+        )
+        cand.burst_group_id = snap.get("burst_group_id", "") or str(
+            metadata.get("burst_group_id") or ""
+        )
         return cand
 
     @staticmethod
@@ -594,7 +779,7 @@ class Pipeline:
                 h = self._dedup.compute_default_hash(c.image_b64)
                 photo_hashes[c.photo_id] = h
             except Exception as e:
-                logger.warning("Hash failed for %s: %s", c.photo_id, e)
+                logger.warning("Image hash calculation failed: %s", e)
         return self._dedup.find_duplicates(
             photo_hashes, threshold=self.config.dedup_threshold
         )
@@ -622,6 +807,7 @@ class Pipeline:
                     "has_gps": c.has_gps,
                     "meaningful_score": c.meaningful_score,
                     "capture_date": c.capture_date,
+                    "technical_score": round(c.technical_score, 2),
                 }
             )
 

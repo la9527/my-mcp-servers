@@ -19,6 +19,23 @@
 - `categories`: 카테고리 앨범 구성
 - `troubleshoot`: 장애 구간 분리
 
+### 1.1 앱 시작과 capability 검사
+
+앱 시작 시 MCP 데몬은 Photos capability 검사보다 먼저 열린다. 시작 과정은 Photos 권한과 라이브러리 읽기만 메뉴 UI 밖에서 확인한다. 강제로 취소할 수 없는 AppleScript 자동화와 thumbnail export 실검사는 시작을 막지 않도록 지연하며, 메뉴의 `Run Checks` 또는 실제 기능 사용 시점에 검증한다. 수동 capability 검사의 기본 제한은 10초이고, timeout된 검사가 아직 끝나지 않은 동안에는 같은 검사를 중복 실행하지 않는다.
+
+### 1.2 LLM 없이 앱에서 직접 분류
+
+메뉴 바의 PhotosMcp 아이콘을 열고 `사진 분류 시작`을 누르면 MCP client나 LLM 대화 없이 분류할 수 있다.
+
+1. `앨범`에서 전체 보관함 또는 특정 앨범을 선택한다.
+2. 필요하면 `기간 지정`을 켜고 시작일과 종료일을 `YYYY-MM-DD`로 입력한다.
+3. `사진 분류` 또는 `우수 사진 선별`을 선택한다.
+4. 분류 기준과 최대 분석 수를 선택한다. 최대 1000장까지 한 작업으로 지정할 수 있다.
+5. 후보 사진, 현재 분석 가능 사진, 다운로드 필요 사진 수를 확인한다.
+6. `분류 시작`을 누르고 메뉴 팝오버의 진행 작업과 최근 작업에서 결과를 확인한다.
+
+앨범과 기간은 각각 선택 사항이며 함께 사용할 수 있다. 앨범과 기간을 모두 비우거나 후보가 최대 분석 수를 넘는 넓은 범위는 실행 전에 한 번 더 확인한다. 직접 실행은 읽기 전용이며 사진이나 앨범을 변경하지 않는다. 앨범 반영은 기존 `MutationPlan` 검토와 승인을 별도로 거쳐야 한다.
+
 ## 2. Linux Qwen3.6 기본 VLM
 
 환경변수를 지정하지 않으면 다음 설정이 적용된다.
@@ -42,6 +59,14 @@ photos_query(action="guide", options={"goal": "analyze"})
 ```
 
 응답의 `vision_runtime`에서 `provider`, `model`, `status`, `ready`, `on_demand`를 본다. Linux가 꺼져 있어도 `status=on_demand`이면 요청 시 자동 준비할 수 있는 정상 상태다.
+
+분석 또는 선별 작업이 완료된 뒤 `photos_query(action="result_summary")`의 `result_summary.vlm_runtime`에는 실제 실행에 사용한 `provider`, `policy`, `backend`, `model`, `target`, `prompt_version`, `input_max_dimension`, 처리 건수와 VLM 단계 시간이 남는다. API endpoint와 API key, 이미지 base64, 원본 경로는 이 metadata에 기록하지 않는다.
+
+실행 중에는 메뉴 팝오버가 원본 준비·로컬 다운로드·이미지 모델 준비 단계를 분리해 보여 준다. 대기 중인 원인은 경로·사진 식별자 대신 안전한 안내 문구만 표시하며, 모델 공급자는 `Linux Qwen3.6`, `Mac MLX`처럼 사용자가 이해할 수 있는 이름으로 표시한다.
+
+앨범 변경 중 Terminal helper가 시간 초과하거나 응답을 검증하지 못하면 응답의 `error_code`가 각각 `terminal_helper_timeout`, `terminal_helper_invalid_response`처럼 표시된다. 이 경우 변경이 일부 적용됐을 가능성이 있으므로 같은 변경을 즉시 반복하지 말고, 반환된 `mutation_receipt`와 대상 앨범의 실제 상태를 먼저 확인한다.
+
+변경 영수증의 오류는 원본 경로, Terminal 표준 오류, 사진 식별자를 포함하지 않는다. helper 오류는 `terminal_helper_*`, 그 밖의 쓰기 오류는 `mutation_execution_failed` 코드로 재조정 필요 여부만 전달한다.
 
 원격 이미지 전송을 금지할 때는 다음 환경으로 앱을 다시 실행한다.
 
@@ -86,7 +111,7 @@ Linux 첫 부팅이 필요한 호출은 평소보다 오래 걸릴 수 있다. b
 
 ## 4. 앨범 쓰기 승인
 
-모든 `photos_write`와 `photos_workflow`는 두 단계로 호출한다.
+모든 실제 변경은 `MutationPlan` 확인과 승인의 두 단계로 처리한다. 분석 workflow는 먼저 읽기 전용 분석을 수행하고 확정된 대상 계획에서 멈춘다.
 
 첫 호출:
 
@@ -107,7 +132,11 @@ photos_write(
   "mutation_plan": {
     "action": "add_selected_to_album",
     "run_id": "run-123",
-    "target_album_name": "가족 베스트"
+    "target_album_name": "가족 베스트",
+    "photo_ids": ["photo-1", "photo-2"],
+    "photo_targets": [
+      {"photo_id": "photo-1", "thumbnail_path": "/.../preview/photo-1.jpg"}
+    ]
   }
 }
 ```
@@ -125,9 +154,9 @@ photos_write(
 )
 ```
 
-token은 15분 동안 한 번만 유효하다. 앨범 이름, 사진 목록, run 또는 다른 option이 바뀌면 `mutation_plan_changed`로 거부되므로 새 plan을 확인해야 한다.
+token은 15분 동안 한 번만 유효하다. 앨범 이름, 사진 목록, run 또는 다른 option이 바뀌면 `mutation_plan_changed`로 거부되므로 새 plan을 확인해야 한다. 메뉴 앱의 `Pending Photo Changes`에서도 같은 계획을 승인하거나 거절할 수 있다. 완료 응답의 `MutationReceipt`는 확정·미확정 photo ID와 재조정 필요 여부를 제공하며 동일 요청은 `idempotency_key`로 중복 실행되지 않는다. 부분 실패나 timeout 영수증이 있으면 다음 동일 요청은 앨범의 실제 photo ID를 조회해 결과를 재조정하고, 누락 ID가 남으면 새 plan이 필요한 목록을 반환한다.
 
-현재 단계의 workflow plan은 실행 범위와 destination을 먼저 승인하는 scope plan이다. 분석 후 확정된 개별 사진 목록까지 다시 승인하는 상세 `MutationPlan`은 로드맵 Phase 4의 후속 작업이다.
+`curate_to_album`, `curate_to_directory`, `classify_then_organize_by_category`는 승인 없이 분석만 시작한다. 분석 완료 후 `photos_query(action="result_summary")`에서 `status="awaiting_mutation_approval"`, 상세 plan, token과 `next_action`을 확인하고 실제 쓰기를 별도로 승인한다.
 
 ## 5. 권장 사용자 흐름
 
@@ -145,7 +174,7 @@ token은 15분 동안 한 번만 유효하다. 앨범 이름, 사진 목록, run
 
 ### 카테고리별로 정리할 때
 
-`classify_range → result_detail 확인 → photos_write(organize_by_category) plan → 사용자 승인 → 적용` 순서를 권장한다. 단일 앨범 요청에는 `organize_by_category`를 사용하지 않는다.
+`classify_range → result_detail 확인 → photos_write(organize_by_category) plan → 사용자 승인 → 적용` 순서를 권장한다. Apple 결과는 `album_prefix`로 앨범을 만들고, local 결과는 `folder`에 category별 파일을 정리한다. 단일 앨범 요청에는 `organize_by_category`를 사용하지 않는다.
 
 ### 중단되거나 실패한 workflow를 다시 실행할 때
 
@@ -155,17 +184,16 @@ token은 15분 동안 한 번만 유효하다. 앨범 이름, 사진 목록, run
 photos_query(action="resume_plan", options={"run_id": "중단된 run ID"})
 ```
 
-내용을 확인한 뒤 `photos_workflow(action="resume", options={"run_id": "..."})`를 호출하면 mutation plan과 일회성 승인 token이 반환된다. 사용자가 명시적으로 승인한 경우에만 같은 options에 token을 추가해 다시 호출한다. 복구 작업은 기존 run을 몰래 이어서 실행하지 않고 새 run ID로 시작하며 `resumed_from_run_id`를 남긴다.
+내용을 확인한 뒤 `photos_workflow(action="resume", options={"run_id": "..."})`를 호출하면 재개 plan과 일회성 승인 token이 반환된다. 사용자가 명시적으로 승인한 경우에만 같은 options에 token을 추가해 다시 호출한다. 복구 작업은 새 ID를 만들지 않고 기존 `run_id`와 저장된 `filter`·`vlm` checkpoint를 사용해 중단 지점부터 이어진다.
 
 ## 6. 추가 사용성 개선 후보
 
-현재 `guide`, VLM 상태 노출, 2단계 쓰기 승인과 영속 run 재실행 승인은 구현됐다. 다음 개선 효과가 크다.
+현재 `guide`, VLM 상태 노출, 상세 쓰기 승인, 메뉴 승인 UI, 동일 ID checkpoint 재개와 영속 영수증이 구현됐다. 다음 개선 효과가 크다.
 
-1. 메뉴 앱에서 mutation plan을 사진 thumbnail과 함께 승인하거나 거부하는 UI
-2. Linux 부팅, 원본 다운로드, VLM 분석, 앨범 쓰기 단계를 실시간으로 보여주는 progress timeline
-3. “지난 주말 가족 사진”, “여행 베스트 20장” 같은 저장 가능한 recipe와 반복 실행
-4. workflow 분석 후 실제 선택된 사진 목록을 대상으로 하는 최종 2차 승인
-5. 실패 workflow의 재개 가능한 checkpoint와 예상 변경을 보여주는 메뉴 승인 화면
-6. 대규모 보관함을 위한 cursor pagination과 예상 처리 시간 표시
+1. Linux 부팅, 원본 다운로드, VLM 분석, 앨범 쓰기 단계를 실시간으로 보여주는 progress timeline
+2. “지난 주말 가족 사진”, “여행 베스트 20장” 같은 저장 가능한 recipe와 반복 실행
+3. category organize와 import까지 확장한 범용 reconciliation worker
+4. 실패 workflow의 완료 checkpoint와 예상 재실행 시간을 보여주는 상세 화면
+5. 대규모 보관함을 위한 cursor pagination과 예상 처리 시간 표시
 
-우선순위는 상세 mutation plan과 메뉴 승인 UI, vendor checkpoint를 포함한 in-place resume, progress timeline 순서가 적절하다.
+우선순위는 progress timeline, source 계층 통합, 범용 reconciliation 순서가 적절하다.

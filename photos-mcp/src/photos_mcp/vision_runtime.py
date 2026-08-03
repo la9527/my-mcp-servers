@@ -126,9 +126,9 @@ def resolve_vision_runtime_settings(
     if explicit_provider:
         provider = explicit_provider
     elif explicit_target and explicit_target != DEFAULT_TARGET:
-        provider = "nanobot_local" if api_base.startswith(("http://127.0.0.1", "http://localhost")) else "openai_compat"
+        provider = "local_openai_compat" if api_base.startswith(("http://127.0.0.1", "http://localhost")) else "openai_compat"
     elif explicit_api_base and api_base != DEFAULT_API_BASE:
-        provider = "openai_compat"
+        provider = "local_openai_compat" if api_base.startswith(("http://127.0.0.1", "http://localhost")) else "openai_compat"
     else:
         provider = DEFAULT_PROVIDER
 

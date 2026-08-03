@@ -67,6 +67,24 @@ def test_resolve_runtime_config_uses_openai_compat_local_llm_fallbacks(monkeypat
     assert runtime.target == "qwen3-vl-4b"
 
 
+def test_vlm_runtime_metadata_excludes_endpoint_credentials(monkeypatch) -> None:
+    vlm = _load_vlm_module()
+
+    monkeypatch.setenv("PHOTO_RANKER_VLM_BACKEND", "openai_compat")
+    monkeypatch.setenv("PHOTO_RANKER_VLM_API_BASE", "http://127.0.0.1:9999/v1")
+    monkeypatch.setenv("PHOTO_RANKER_VLM_API_KEY", "do-not-report")
+    engine = vlm.VLMEngine("vision-local-model")
+
+    metadata = engine.runtime_metadata()
+
+    assert metadata["model"] == "vision-local-model"
+    assert metadata["backend"] == "openai_compat"
+    assert metadata["prompt_version"] == "photo-ranker-scene-v1"
+    assert metadata["input_max_dimension"] == 512
+    assert "api_base" not in metadata
+    assert "api_key" not in metadata
+
+
 def test_resolve_runtime_config_prefers_explicit_runtime_target(monkeypatch) -> None:
     vlm = _load_vlm_module()
 
@@ -258,7 +276,7 @@ async def test_pipeline_run_acquires_marks_used_and_releases_broker_lease(monkey
     pipeline._vlm = fake_vlm
     monkeypatch.setattr(pipeline_module, "default_runtime_broker_client", lambda: FakeBrokerClient(), raising=False)
 
-    async def fake_stage1(photo_id: str, image_b64: str):
+    async def fake_stage1(photo_id: str, image_b64: str, source_metadata=None):
         return pipeline_module.PhotoCandidate(
             photo_id=photo_id,
             image_b64=image_b64,

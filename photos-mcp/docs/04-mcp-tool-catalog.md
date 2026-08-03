@@ -11,9 +11,54 @@
 
 이 4개 tool 은 역할 group 을 뜻한다. 모든 tool 은 `action` 과 `options` 두 입력만 받으며, 서버는 action 별로 허용되는 `options` key 를 강제한다. action 에 맞지 않는 option 은 vendor 호출 전에 `status="blocked"`, `error_code="invalid_options_for_action"` payload 로 거부한다.
 
+`source="gcs"` 분석·선별 요청은 `source_path`에 `gs://bucket-name/prefix` 또는 `bucket-name/prefix`를 지정한다. GCS blob은 로컬 원본 파일로 저장하지 않고 필요한 크기의 메모리 내 thumbnail으로 변환해 분석 pipeline에 전달한다. Google Photos는 조회 전용 source이며, 현재 분석 workflow의 지원 source는 Apple Photos, local folder, GCS다.
+
+GCS는 현재 **분석과 검토 전용**이다. `add_selected_to_album`과 `curate_to_album`은 Apple Photos UUID가 필요한 작업이라 GCS 및 local 결과를 실행 전에 차단한다. `organize_by_category`는 Apple 결과는 category album으로, local 결과는 `folder` 출력 디렉터리 아래 category 구조로 정리한다. `curate_to_directory`와 결과 내보내기는 Apple Photos 또는 local folder 결과만 지원한다. GCS 원본을 내보내려면 먼저 별도 동기화로 local folder에 복사한 뒤 local source로 다시 분석한다.
+
+사진 목록 item에는 source 고유 ID인 `asset_id`와 분석 준비 상태인 `readiness`가 함께 내려온다. 현재 상태값은 `ready`, `cloud_only`이며 Apple Photos의 `ready`는 로컬 원본 경로가 확인됐다는 뜻이다. 바로 분석할 항목은 `photos_query(action="ready_only")`로 조회한다. 이 동작은 iCloud가 경로만 먼저 노출한 불완전 HEIC를 제외하기 위해 실제 로컬 디코딩까지 확인한다. browse·inspect·prefetch와 분석 전 thumbnail·metadata 조회는 공통 `PhotoSourcePort`를 사용한다. browse·inspect·prefetch가 확인한 readiness는 workflow SQLite에 저장되지만 기본 5분 뒤 만료되며, `PHOTOS_MCP_ASSET_READINESS_TTL_SECONDS`로 조정할 수 있다. 분석 시 thumbnail 조회는 원본 변경이나 iCloud 상태 변화를 반영하는 최종 확인으로 계속 수행한다.
+
+완료된 background run의 `photos_query(action="result_summary")` 응답에는 `execution_metrics`가 포함된다. `queue_seconds`, `source_load_seconds`, `filter_seconds`, `dedup_seconds`, `inference_seconds`, `writeback_seconds`, `total_seconds` 중 실제 측정된 값만 숫자로 내려오며, 해당 단계가 없거나 아직 측정하지 못한 값은 `null`이다. 이 metadata에는 원본 경로, 이미지 bytes, base64, prompt를 넣지 않는다.
+
 기존 public tool 이름인 `photos_status`, `photos_library`, `photos_run`, `photos_result` 는 더 이상 MCP public surface 로 노출하지 않는다. 내부 facade/service 함수명은 구현 detail 로 남을 수 있지만, LLM client 는 새 4개 group tool 만 사용한다.
 
 상세 설계 배경은 `planning/03-mcp-public-tool-surface-redesign-phase1.md` 를 본다.
+
+## 1.1 action 계약 기준표
+
+아래 표는 `src/photos_mcp/facade/action_options.py`의 `ACTION_SPECS`와 항상 일치해야 하는 공개 action 기준표다. 이 표는 자동 테스트로 검증하므로, 새 action을 추가하거나 삭제할 때는 registry와 이 문서를 같은 변경에서 갱신한다.
+
+<!-- action-contract:start -->
+| Tool | Action |
+| --- | --- |
+| `photos_query` | `status` |
+| `photos_query` | `guide` |
+| `photos_query` | `resume_plan` |
+| `photos_query` | `list` |
+| `photos_query` | `ready_only` |
+| `photos_query` | `search` |
+| `photos_query` | `inspect` |
+| `photos_query` | `prefetch` |
+| `photos_query` | `result_summary` |
+| `photos_query` | `result_detail` |
+| `photos_query` | `selected` |
+| `photos_query` | `artifacts` |
+| `photos_query` | `cancel` |
+| `photos_select` | `analyze_photo` |
+| `photos_select` | `classify_range` |
+| `photos_select` | `select_best` |
+| `photos_select` | `select_best_person` |
+| `photos_write` | `add_selected_to_album` |
+| `photos_write` | `add_photo_ids_to_album` |
+| `photos_write` | `export_selected` |
+| `photos_write` | `organize_by_category` |
+| `photos_write` | `import_to_album` |
+| `photos_write` | `cleanup_album` |
+| `photos_workflow` | `resume` |
+| `photos_workflow` | `curate_to_album` |
+| `photos_workflow` | `curate_to_directory` |
+| `photos_workflow` | `classify_then_organize_by_category` |
+| `photos_workflow` | `import_then_curate_to_album` |
+<!-- action-contract:end -->
 
 ## 2. public facade tools
 
@@ -113,7 +158,7 @@ photos_select(
 중요한 경계:
 
 - `add_selected_to_album`, `add_photo_ids_to_album`, `import_to_album` 은 단일 target album 만 건드린다.
-- `organize_by_category` 만 `album_prefix` 기반 다중 분류 앨범 생성을 허용한다.
+- `organize_by_category`는 Apple 결과에서는 `album_prefix` 기반 다중 분류 앨범을 만들고, local 결과에서는 `folder`를 필수 출력 디렉터리로 사용한다.
 - 단일 앨범 action 은 `album_prefix` 를 받지 않는다.
 - 카테고리 organize action 은 `target_album_name` 을 받지 않는다.
 
@@ -234,4 +279,4 @@ review / write-back / workflow:
 
 단일 앨범에 바로 저장하려면 위 sequence 대신 `photos_workflow(action="curate_to_album")` 을 우선 사용한다.
 
-모든 `photos_write`와 `photos_workflow`는 첫 호출에서 `status="awaiting_approval"`과 `mutation_plan`을 반환한다. 사용자가 승인한 경우에만 변경되지 않은 options에 반환된 `approval_token`을 추가해 다시 호출한다.
+모든 `photos_write`는 첫 호출에서 `status="awaiting_approval"`과 확정 대상 `mutation_plan`을 반환한다. 분석 workflow는 읽기 전용 분석을 먼저 시작하고 완료 후 `awaiting_mutation_approval`에서 같은 상세 계획을 제공한다. 사용자가 승인한 경우에만 변경되지 않은 options에 반환된 `approval_token`을 추가해 실제 쓰기를 호출한다.

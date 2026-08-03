@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from _script_bootstrap import prepare_photo_ranker_runtime
+from apple_terminal_helper import write_terminal_response
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,6 +34,8 @@ def main() -> int:
     writer = AlbumWriter()
     if operation == "list_albums":
         result = writer.list_albums()
+    elif operation == "list_album_photo_ids":
+        result = writer.list_album_photo_ids(payload["name"], payload.get("folder", ""))
     elif operation == "probe_automation_access":
         result = writer.probe_automation_access()
     elif operation == "create_album":
@@ -55,10 +58,7 @@ def main() -> int:
     else:
         raise ValueError(f"Unsupported operation: {operation}")
 
-    Path(args.response).write_text(
-        json.dumps(result, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    write_terminal_response(Path(args.response), request, result)
     return 0
 
 

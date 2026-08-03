@@ -81,12 +81,12 @@ health 해석 기준:
 2. `server.py`가 `photos_query`, `photos_select`, `photos_write`, `photos_workflow` 중 하나를 받는다.
 3. facade layer 가 필요한 vendor runtime 을 준비하고 내부 substep 을 결정한다.
 4. `photo-source` 또는 `photo-ranker` 함수가 실제 작업을 수행한다.
-5. job 관련 응답이면 facade layer 가 공통 envelope 로 정규화하고 `PhotosMcpStateStore` 를 갱신한다.
+5. job 관련 응답이면 facade layer가 공통 envelope로 정규화하고 vendor `jobs.db`를 함께 사용하는 `RunRepository`를 갱신한다.
 6. menu bar UI 와 health payload 가 같은 state snapshot 을 읽는다.
 
-`wait_for_local=true`인 analyze는 예외다. 이 경우 vendor job queue 대신 facade synthetic run이 state store에 저장되고, app이 Apple Photos local download 가능 여부를 polling하다가 준비되면 analyze를 자동으로 이어서 수행한다.
+`wait_for_local=true`인 analyze도 다른 실행과 동일한 SQLite 실행 저장소에 기록된다. app이 Apple Photos local download 가능 여부를 polling하다가 준비되면 analyze를 자동으로 이어서 수행한다.
 
-`photos_write`와 `photos_workflow`는 첫 호출에서 실행하지 않고 `mutation_plan`과 `approval_token`을 반환한다. 사용자가 계획을 확인하고 승인한 경우에만 같은 action과 변경되지 않은 options에 token을 추가해 다시 호출한다. token은 15분 동안 한 번만 유효하며 options가 바뀌면 거부된다.
+`photos_write`는 첫 호출에서 실제 photo ID와 preview 경로가 포함된 `mutation_plan`을 반환한다. 앨범 workflow는 분석만 먼저 수행한 뒤 확정 대상 계획을 만들고 `awaiting_mutation_approval`에서 멈춘다. 사용자가 메뉴 또는 MCP에서 승인한 경우에만 같은 options와 token으로 쓰며, 자동 `idempotency_key`와 `MutationReceipt`가 중복 실행을 막는다. 부분 실패나 timeout 뒤 동일 요청은 쓰기를 반복하지 않고 현재 앨범의 photo ID를 다시 읽어 완료·부분 성공·재조정 대기를 확정한다.
 
 즉, `photos-mcp` 는 단순 proxy 가 아니라 아래 역할까지 같이 맡는다.
 
@@ -140,7 +140,7 @@ health 해석 기준:
 
 ## macOS 앱으로서의 동작
 
-`PhotosMcp.app` 은 `~/Applications/PhotosMcp.app` 에 설치되는 일반 macOS app 이다. Finder, Launchpad, Dock 에 나타날 수 있고, 동시에 menu bar status item UI 를 제공한다.
+`PhotosMcp.app`은 `~/Applications/PhotosMcp.app`에 설치되는 일반 macOS 앱이다. standalone 빌드는 기본적으로 `/Applications/PhotosMcp.app` 심볼릭 링크도 생성하므로 Finder, Spotlight, Launchpad 또는 `open -a PhotosMcp`로 쉽게 실행할 수 있다. 같은 공용 경로에 심볼릭 링크가 아닌 앱이 이미 있으면 안전을 위해 덮어쓰지 않는다. 앱은 menu bar status item UI도 제공한다.
 
 menu bar popover 에서는 아래를 다룬다.
 

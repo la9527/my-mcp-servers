@@ -1,7 +1,7 @@
 # photos-mcp 기능 개선 로드맵
 
 - 작성일: 2026-08-01
-- 상태: 운영 정책 확정, Phase 1 최소 구현 진행 중
+- 상태: Phase 1 Job Coordinator 및 Phase 4 안전 쓰기 핵심 구현 완료
 - 기준 저장소: `photos-mcp`
 - 선행 문서: `01`, `02`, `03` planning 문서와 `docs/15-refactor-direction.md`
 
@@ -27,13 +27,14 @@
 - [x] Nanobot import 없이 Linux wake, service와 SSH tunnel을 준비하는 command adapter 추가
 - [x] `/v1/models` 기반 multimodal preflight와 실제 이미지 smoke 검증
 - [x] `photos_query(action="guide")`와 health에 vision runtime 정보 노출
-- [x] 모든 write/workflow에 scope plan과 일회성 승인 token 적용
+- [x] 모든 write에 확정 대상 기반 `MutationPlan`과 영속 승인 token 적용
 - [x] 재실행 후 Apple Photos 권한, 읽기, 앨범 자동화, thumbnail capability 실기기 검증
 - [x] macOS Photos 권한 팝업 응답 시간을 확보하도록 preflight timeout을 10초에서 30초로 조정
-- [x] facade background run의 영속 저장과 재시작 시 `awaiting_resume_approval` 전환
-- [x] `resume_plan` 조회 후 승인 token으로 기존 요청을 새 run으로 재실행하는 복구 경로
-- [ ] 분석 후 확정된 photo ID를 포함하는 상세 `MutationPlan`과 메뉴 승인 UI
-- [ ] vendor SQLite 작업까지 포함하는 단일 영속 Job Coordinator 통합
+- [x] facade background run과 vendor 작업을 같은 SQLite 및 같은 `run_id`로 통합
+- [x] 재시작 시 `awaiting_resume_approval` 전환 및 승인 후 checkpoint 기반 in-place 재개
+- [x] 분석 후 확정된 photo ID와 thumbnail 경로를 포함하는 상세 `MutationPlan`
+- [x] 메뉴 앱의 변경 계획 승인·거절 UI
+- [x] 자동 `idempotency_key`, `MutationReceipt`, 앨범 추가 부분 실패 및 timeout의 실제 상태 재조정
 
 ### 1.2 재실행 운영 검증
 
@@ -52,11 +53,22 @@
 
 후속 번들 재검증에서는 macOS Photos 권한 팝업이 표시된 뒤 사용자가 허용을 누르기 전에 10초 제한이 먼저 끝난 것이 timeout의 주원인이었다. 이때 `not_determined`, `requested=true`가 기록됐으며 사용자 승인 후 다음 실행에서는 `authorized`가 확인됐다. 사진 보관함 초기화 시간도 일부 포함될 수 있지만, 21,786장이라는 사진 수만으로 timeout 원인을 단정할 근거는 없다. 권한 응답 시간을 확보하기 위해 기본값을 30초로 늘렸고 `PHOTOS_MCP_PREFLIGHT_TIMEOUT_SECONDS`로 시스템별 조정이 가능하다.
 
-이번 Phase 1 최소 구현은 facade가 생성하는 background run을 `~/.photos-mcp/runtime/synthetic-runs.json`에 `0600` 권한으로 저장한다. 앱이 종료될 때 `pending` 또는 `running`이었던 run은 다음 시작에서 자동 실행하지 않고 `awaiting_resume_approval`로 복구한다. 사용자는 `photos_query(action="resume_plan")`으로 저장된 원요청을 검토한 다음, `photos_workflow(action="resume")`의 plan을 별도로 승인해야 새 run이 시작된다.
+이후 30초 제한을 네 검사에 순차 적용하면서 자동화와 thumbnail timeout이 합산되어 데몬 시작이 약 65초 늦어지는 회귀를 확인했다. timeout된 Python worker는 AppleScript를 강제 취소하지 못해 자동 재검사마다 중복 worker와 Photos DB 로드가 누적됐고, 메뉴 메인 스레드가 `join()`을 기다려 앱이 멈춘 것처럼 보였다. 이를 다음과 같이 수정했다.
 
-현재 재개 의미는 완료 checkpoint에서 이어 붙이는 in-place resume가 아니라 동일 요청을 새 run으로 안전하게 다시 시작하는 방식이다. vendor SQLite checkpoint와 facade run을 하나의 ID와 상태 전이로 합치는 작업은 Phase 1의 남은 범위다.
+- HTTP/MCP 데몬을 preflight보다 먼저 시작한다.
+- preflight coordinator를 메뉴 메인 스레드 밖에서 실행한다.
+- 권한 팝업 제한은 30초로 유지하고 일반 capability 제한은 기본 10초로 분리한다.
+- 시작 시에는 권한과 DB 읽기만 검사하고, 취소할 수 없는 AppleScript 자동화·thumbnail 실검사는 메뉴의 명시적 `Run Checks` 또는 실제 기능 사용 시점으로 지연한다.
+- timeout된 같은 key의 worker가 살아 있으면 새 worker를 만들지 않는다.
+- Photos 권한이 이미 `ok`이면 다른 capability warning만으로 전체 preflight를 자동 반복하지 않는다.
 
-실제 설치 앱에서도 가짜 `pending` run을 영속 파일에 넣고 재시작하는 smoke를 수행했다. run은 `awaiting_resume_approval`, `reason=app_restarted`, `can_resume=true`로 전환됐고 `background_job_running=false`를 유지했다. `resume_plan`의 저장 요청 확인까지만 수행하고 승인 token은 보내지 않아 사진이나 앨범은 변경되지 않았다. smoke 레코드는 제거했으며 운영 파일은 빈 `{}` 상태로 복원했다.
+수동으로 실행하는 일반 capability 제한은 `PHOTOS_MCP_CAPABILITY_PREFLIGHT_TIMEOUT_SECONDS`로 조정할 수 있다.
+
+통합 구현은 facade workflow, 실행 이벤트, 변경 계획과 영수증을 vendor `photo-ranker/jobs.db` 안의 별도 테이블에 저장한다. 기존 `synthetic-runs.json`은 최초 실행 시 SQLite로 가져오기 위한 호환 입력으로만 남고 신규 상태의 기준 저장소로 사용하지 않는다. 앱이 종료될 때 `pending`, `running`, `waiting_source`, `waiting_model`, `writing`이었던 run은 다음 시작에서 자동 실행하지 않고 `awaiting_resume_approval`로 전환된다.
+
+사용자는 `photos_query(action="resume_plan")`으로 원요청을 확인하고 `photos_workflow(action="resume")`의 승인 token을 명시적으로 승인해야 한다. 승인 후에는 새 ID를 만들지 않고 같은 `run_id`를 vendor pipeline에 전달한다. 사진별 `filter`와 `vlm` checkpoint는 workflow 최종 단계 전까지 유지되며 성공적으로 끝난 뒤에만 정리된다.
+
+앨범 workflow는 더 이상 범위 승인 직후 사진을 쓰지 않는다. 먼저 분석을 background로 완료하고 실제 photo ID와 비식별 preview 경로가 들어 있는 `MutationPlan`을 생성해 `awaiting_mutation_approval`로 멈춘다. 메뉴 또는 MCP에서 승인한 뒤 해당 `photos_write`를 실행하며, 결과는 `MutationReceipt`에 완료·부분 성공·재조정 필요 상태로 남는다. 앨범 추가가 부분 성공하거나 timeout이 발생한 뒤 같은 요청을 다시 보내면 쓰기를 반복하지 않고 현재 앨범의 photo ID를 조회해 확정·미확정 목록을 갱신한다.
 
 30초 preflight 보정 후 새 서명의 첫 실행에서 사용자가 권한 팝업에 응답할 시간이 확보됐고 `photos_read`, automation, thumbnail도 완료됐다. TCC가 새 CDHash를 반영한 다음 실행에서는 네 capability가 모두 `ok`였다. 최종 설치 앱은 `daemon=ready`, `preflight=ok`, background job 없음으로 확인했다.
 
@@ -87,8 +99,9 @@ flowchart LR
     Public --> Query[Library/Result 서비스]
     Public --> Run[run_service.py]
     Public --> State[PhotosMcpStateStore]
+    State --> Coordinator[(jobs.db\nworkflow_runs/events/plans/receipts)]
     Run --> Ranker[photo-ranker pipeline]
-    Ranker --> JobDB[(SQLite JobDB)]
+    Ranker --> Coordinator
     Ranker --> Source[Apple/Local/Google/GCS source]
     Ranker --> VLM[VLM engine]
     VLM --> Broker[Nanobot runtime broker]
@@ -115,7 +128,7 @@ flowchart LR
 - 긴 분석과 workflow는 `public_tools.py`에서 background task로 시작한다.
 - 분석 파이프라인은 1단계 품질, 얼굴, EXIF 평가 후 후보에 한해 2단계 VLM 분석을 수행한다.
 - vendor 작업과 체크포인트는 SQLite에 저장한다.
-- facade가 만든 합성 작업은 앱 메모리 상태에도 별도로 저장한다.
+- facade와 vendor는 같은 `run_id`를 사용하고 동일 SQLite 안의 coordinator 및 pipeline 테이블에 기록한다.
 - Apple Photos 읽기와 쓰기의 일부는 권한 귀속을 위해 Terminal helper를 사용한다.
 - VLM은 MLX 또는 OpenAI 호환 API를 사용할 수 있으나 런타임 broker 연결은 Nanobot 구현에 직접 의존한다.
 
@@ -333,6 +346,8 @@ flowchart LR
 
 ### Phase 1. 영속 Job Coordinator 통합
 
+상태: **핵심 구현 완료 (2026-08-01)**
+
 - 단일 `run_id`, 상태 전이와 repository를 도입한다.
 - 메모리 synthetic run을 영속 작업으로 대체한다.
 - 앱 재시작 조정, 취소, 사용자 승인 재개 시험을 추가한다.
@@ -341,6 +356,8 @@ flowchart LR
 완료 조건: 실행 중 앱을 재시작해도 모든 작업이 `interrupted` 또는 `awaiting_resume_approval`로 일관되게 정리되고, 사용자 승인 없이 자동 재개되지 않는다.
 
 ### Phase 2. action handler 분리
+
+상태: **핵심 분리 완료 (2026-08-02)**. 네 public action은 `query_handler.py`, `select_handler.py`, `write_handler.py`, `workflow_handler.py`로 분리했고, `public_tools.py`는 공개 router와 workflow coordinator 보조 함수만 유지한다. 각 router의 위임과 기존 공개 계약 회귀를 자동 시험한다. command/result type의 정적 모델화는 후속 품질 개선 항목이다.
 
 - `public_tools.py`를 validator와 dispatcher로 축소한다.
 - 조회, 분석, 선별, 쓰기, workflow handler를 분리한다.
@@ -351,6 +368,8 @@ flowchart LR
 
 ### Phase 3. 사진 source와 asset readiness 통합
 
+상태: **핵심 통합 완료 (2026-08-02)**. browse·inspect·prefetch와 analyze thumbnail·metadata·Apple local-availability probe는 모두 `PhotoSourcePort`를 통해 photo-source vendor와 통신한다. 결과는 공통 `PhotoAsset`으로 정규화해 `asset_id`, `local_path_available`, `readiness`를 노출하고, 같은 `PhotosMcpStateStore`의 즉시 분석 probe가 readiness를 재사용한다. 상태는 workflow SQLite의 `photo_assets` 테이블에도 저장돼 앱 재시작 뒤 복원되며, 기본 5분 TTL 뒤에는 다시 확인한다. GCS `gs://bucket/prefix` 입력도 source adapter에서 bucket/prefix로 분리한다. Apple browse와 ranker pipeline은 `apple_photos_runtime`의 process-wide `PhotosDB` 초기화를 공유해 대형 보관함의 cold start가 동시 요청마다 중복되지 않으며, 현재 보관함 경로와 `_skip_searchinfo` 옵션으로 부가 색인 비용을 줄인다.
+
 - 공통 `PhotoAsset`과 `PhotoSourcePort`를 도입한다.
 - Apple Photos 검색, prefetch와 ranker source의 중복 경로를 통합한다.
 - cloud-only, missing, unsupported, ready 상태 의미를 고정한다.
@@ -359,6 +378,8 @@ flowchart LR
 완료 조건: 검색에서 `ready`인 asset은 같은 실행의 분석 단계에서도 별도 판정 없이 사용 가능하다.
 
 ### Phase 4. 안전한 쓰기 계약 적용
+
+상태: **핵심 구현 완료 (2026-08-01)**. 앨범 추가의 timeout 후 조회 재조정까지 구현했으며, category organize와 import의 범용 재조정 및 destructive dry-run 강화는 후속 운영 검증으로 남긴다.
 
 - `MutationPlan`, `idempotency_key`, `MutationReceipt`를 도입한다.
 - 앨범 생성, 사진 추가, category organize, cleanup 순서로 적용한다.
@@ -369,6 +390,8 @@ flowchart LR
 
 ### Phase 5. VLM 공급자와 품질 정책 개선
 
+상태: **고정 공개 평가 세트와 비교 보고서 구현 완료 (2026-08-02)**. `VisionRuntimePort`와 명시적 prepare command adapter를 사용해 Photos MCP에서 Nanobot Python import를 제거했다. 기본 Linux OpenAI 호환 경로와 `local_only` MLX 경로는 유지하며, 외부 runtime은 준비 명령으로만 연동한다. benchmark는 외부 라벨 파일로 `grounded_fact_score`, 이벤트·속성 정확도와 용어 기반 환각률을 자동 집계하고, `compare_vlm_benchmarks.py`는 동일 입력·프롬프트·계약 조건을 확인한 뒤에만 모델 추천 보고서를 만든다. `resources/vlm-benchmark/coco2017-public-v1.json`은 20장의 공개 COCO image URL·SHA-256·사람 검토 라벨을 고정하고, 준비 도구는 원본을 사용자 cache에만 저장한다. provider별 정기 실행은 운영 환경의 endpoint와 비용 정책에 따라 scheduler에서 실행한다.
+
 - Nanobot 직접 import를 제거하고 `VisionRuntimePort`를 도입한다.
 - Mac MLX, 일반 OpenAI 호환, Linux on-demand adapter를 구현한다.
 - Linux 원격 사용을 기본 허용한 상태에서 profile별 모델 선택, timeout, fallback과 `local_only` 예외 정책을 적용한다.
@@ -377,6 +400,8 @@ flowchart LR
 완료 조건: MCP client가 Nanobot이 아니어도 같은 VLM 기능이 동작하고, 모델 선택 이유가 품질 보고서로 재현된다.
 
 ### Phase 6. helper와 운영 안정성 개선
+
+상태: **운영 지표·개인정보 최소화 핵심 반영 중 (2026-08-02)**. 결과 요약에는 queue, source 준비, filter, dedup, inference, writeback, total 시간을 `execution_metrics`로 제공한다. 경로·사진 식별자·얼굴 crop 식별자는 기본 source/pipeline 로그에서 제외했다. Apple Photos Terminal helper는 request ID를 포함한 성공 envelope를 사용하고, IPC 경계는 timeout·launch·응답·helper 실패를 안전한 오류 code로 구분한다. 환경 검사 창은 기본/선택 capability와 이미지 분석 모델 상태를 분리해 보여 주며, 실제 macOS 권한과 장시간 workflow의 live 검증은 계속 필요하다.
 
 - Apple Photos helper의 구조화 응답과 오류 분류를 적용한다.
 - request/run correlation과 단계별 metric을 추가한다.

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from apple_terminal_helper import ipc
+import json
+
+from apple_terminal_helper import ipc, write_terminal_response
 
 
 def test_build_terminal_shell_command_tracks_helper_pid(tmp_path: Path) -> None:
@@ -39,3 +41,28 @@ def test_terminate_helper_process_kills_recorded_pid(tmp_path: Path, monkeypatch
     ipc._terminate_helper_process(pid_path)
 
     assert calls == [["/bin/kill", "-TERM", "12345"]]
+
+
+def test_terminal_response_correlates_request_and_unwraps_result(tmp_path: Path) -> None:
+    response_path = tmp_path / "response.json"
+    write_terminal_response(response_path, {"request_id": "req-1"}, {"album_count": 2})
+
+    raw = json.loads(response_path.read_text(encoding="utf-8"))
+
+    assert raw["request_id"] == "req-1"
+    assert ipc._decode_helper_response(raw, request_id="req-1") == {"album_count": 2}
+
+
+def test_terminal_response_rejects_mismatched_request_without_payload_echo() -> None:
+    error = None
+    try:
+        ipc._decode_helper_response(
+            {"request_id": "other", "status": "ok", "result": {"path": "/private/photo.jpg"}},
+            request_id="req-1",
+        )
+    except ipc.TerminalHelperError as exc:
+        error = exc
+
+    assert error is not None
+    assert error.code == "request_mismatch"
+    assert "/private" not in str(error)

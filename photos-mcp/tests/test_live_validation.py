@@ -3,19 +3,20 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from photos_mcp.live_validation import PASS, PARTIAL, SKIP, CheckResult, ReportSection, ValidationConfig, apple_items_are_photo_only, build_parser, derive_search_seed, format_progress_message, is_workflow_classify_start_payload, pick_library_candidates, pick_local_source_path, render_markdown_report, wait_timeout_terminal_rounds
+from photos_mcp.live_validation import PASS, PARTIAL, SKIP, CheckResult, ReportSection, ValidationConfig, _json_preview, _prepare_local_workflow_sample, apple_items_are_photo_only, build_parser, derive_search_seed, format_progress_message, is_workflow_classify_start_payload, pick_library_candidates, pick_local_source_path, render_markdown_report, status_latest_matches_run, status_running_matches_run, wait_timeout_terminal_rounds
 
 
 def test_pick_library_candidates_prefers_local_and_non_local_items() -> None:
     local_item, non_local_item = pick_library_candidates(
         [
             {"photo_id": "a", "local_path_available": False},
-            {"photo_id": "b", "local_path_available": True},
+            {"photo_id": "b", "local_path_available": True, "analyze_recommended": False},
             {"photo_id": "c", "local_path_available": False},
+            {"photo_id": "d", "local_path_available": True, "analyze_recommended": True},
         ]
     )
 
-    assert local_item == {"photo_id": "b", "local_path_available": True}
+    assert local_item == {"photo_id": "d", "local_path_available": True, "analyze_recommended": True}
     assert non_local_item == {"photo_id": "a", "local_path_available": False}
 
 
@@ -53,6 +54,28 @@ def test_pick_local_source_path_requires_existing_file(tmp_path: Path) -> None:
     assert pick_local_source_path({"path": str(sample)}) == str(sample)
     assert pick_local_source_path({"path": str(tmp_path / "missing.jpeg")}) == ""
     assert pick_local_source_path({}) == ""
+
+
+def test_status_run_helpers_require_exact_run_identity_and_state() -> None:
+    assert status_running_matches_run(
+        {"running": {"active": True, "count": 1, "current_run_id": "run-1"}},
+        "run-1",
+    )
+    assert not status_running_matches_run({"running": {"active": False, "current_run_id": "run-1"}}, "run-1")
+    assert status_latest_matches_run({"latest": {"run_id": "run-1", "status": "cancelled"}}, "run-1", status="cancelled")
+    assert not status_latest_matches_run({"latest": {"run_id": "run-2", "status": "cancelled"}}, "run-1", status="cancelled")
+
+
+def test_prepare_local_workflow_sample_uses_a_generated_non_personal_image() -> None:
+    sample = _prepare_local_workflow_sample()
+    try:
+        sample_path = Path(sample["sample_path"])
+        assert sample_path.is_file()
+        assert sample_path.parent == Path(sample["input_dir"])
+        assert sample_path.read_bytes().startswith(b"\x89PNG")
+        assert sample_path.stat().st_size > 1024
+    finally:
+        sample["temp_root"].cleanup()
 
 
 def test_apple_items_are_photo_only_rejects_video_candidates() -> None:
@@ -98,3 +121,26 @@ def test_workflow_classify_start_payload_accepts_pending_status() -> None:
 
 def test_wait_timeout_terminal_rounds_includes_probe_slack() -> None:
     assert wait_timeout_terminal_rounds(wait_timeout_seconds=6.0, poll_interval_seconds=1.0, minimum_rounds=8) == 13
+
+
+def test_live_validation_preview_redacts_personal_photo_data() -> None:
+    preview = _json_preview(
+        {
+            "status": "completed",
+            "photo_id": "private-photo-id",
+            "filename": "family-home.jpeg",
+            "path": "/private/Photos/family-home.jpeg",
+            "gps": {"lat": 37.5},
+            "query": "가족 이름",
+            "result": {"scene": "아이와 집"},
+            "error_code": "local_download_timeout",
+        },
+        max_length=1000,
+    )
+
+    assert '"status": "completed"' in preview
+    assert '"error_code": "local_download_timeout"' in preview
+    assert "private-photo-id" not in preview
+    assert "family-home" not in preview
+    assert "/private" not in preview
+    assert "가족 이름" not in preview

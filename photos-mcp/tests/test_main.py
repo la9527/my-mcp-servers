@@ -27,6 +27,53 @@ def test_health_mode_returns_expected_payload(capsys) -> None:
     assert '"endpoint": "http://127.0.0.1:18791/mcp"' in captured.out
 
 
+def test_runtime_import_smoke_prepares_osxphotos(monkeypatch, capsys) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "photos_mcp.main.prepare_photos_library_runtime",
+        lambda: calls.append("osxphotos"),
+    )
+
+    exit_code = run_cli(["--runtime-import-smoke"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert calls == ["osxphotos"]
+    assert '"runtime": "osxphotos"' in captured.out
+
+
+def test_vendor_runtime_smoke_loads_photo_source_and_pyobjc(monkeypatch, capsys) -> None:
+    calls: list[str] = []
+    prepared: list[str] = []
+    imported: list[str] = []
+
+    monkeypatch.setattr(
+        "photos_mcp.main.load_vendor_server",
+        lambda name: calls.append(name),
+    )
+    monkeypatch.setattr(
+        "photos_mcp.main.prepare_vendor_runtime",
+        lambda name: prepared.append(name),
+    )
+    monkeypatch.setitem(sys.modules, "FSEvents", object())
+    monkeypatch.setitem(sys.modules, "osxphotos", object())
+    monkeypatch.setitem(sys.modules, "Vision", object())
+    monkeypatch.setattr(
+        "photos_mcp.main.importlib.import_module",
+        lambda name: imported.append(name),
+    )
+
+    exit_code = run_cli(["--vendor-runtime-smoke"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert calls == ["photo-source"]
+    assert prepared == ["photo-ranker"]
+    assert imported == ["photos_mcp_vendor_photo_ranker.scene_selection"]
+    assert '"runtime": "photo-source"' in captured.out
+    assert '"scene_runtime": "photo-ranker-vision"' in captured.out
+
+
 def test_run_cli_returns_locked_error_when_instance_is_already_running(monkeypatch, capsys) -> None:
     @contextmanager
     def raise_locked(_config):
@@ -229,6 +276,13 @@ def test_load_vendor_server_uses_package_namespace_for_photo_source(monkeypatch,
     assert "sources" not in sys.modules
     assert "models" not in sys.modules
     assert source_root not in sys.path
+
+
+def test_load_vendor_server_reuses_same_module_instance() -> None:
+    first = load_vendor_server("photo-ranker")
+    second = load_vendor_server("photo-ranker")
+
+    assert second is first
 
 
 def test_prepare_vendor_runtime_keeps_vendors_out_of_top_level_namespace(monkeypatch) -> None:

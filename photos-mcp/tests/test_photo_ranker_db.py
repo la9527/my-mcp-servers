@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from photos_mcp.vendor_loader import prepare_vendor_runtime
 
@@ -49,3 +50,47 @@ def test_job_db_repairs_running_job_with_saved_results(tmp_path) -> None:
     assert repaired.status.value == "completed"
     assert repaired.finished_at is not None
     assert repaired.error_message is None
+
+
+def test_job_db_allows_shared_access_from_worker_threads(tmp_path) -> None:
+    JobDB = _load_job_db_class()
+    db = JobDB(tmp_path / "jobs.db")
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(db.list_jobs) for _ in range(12)]
+
+    assert [future.result() for future in futures] == [[]] * 12
+    db.close()
+
+
+def test_job_db_persists_scene_selection_fields(tmp_path) -> None:
+    JobDB = _load_job_db_class()
+    db = JobDB(tmp_path / "jobs.db")
+    db.save_photo_results(
+        "scene-job",
+        [
+            {
+                "photo_id": "photo-1",
+                "total_score": 91.5,
+                "quality_score": 88.0,
+                "technical_score": 84.25,
+                "scene_cluster_id": "scene-a",
+                "scene_cluster_size": 7,
+                "cluster_rank": 2,
+                "recommended_in_cluster": True,
+                "recommendation_slot": 2,
+                "selection_reason_codes": ["scene_alternative", "diverse_second"],
+            }
+        ],
+    )
+
+    result = db.load_photo_results("scene-job")[0]
+
+    assert result["technical_score"] == 84.25
+    assert result["scene_cluster_id"] == "scene-a"
+    assert result["scene_cluster_size"] == 7
+    assert result["cluster_rank"] == 2
+    assert result["recommended_in_cluster"] is True
+    assert result["recommendation_slot"] == 2
+    assert result["selection_reason_codes"] == ["scene_alternative", "diverse_second"]
+    db.close()

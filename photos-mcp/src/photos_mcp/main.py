@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import sys
@@ -15,8 +16,11 @@ from photos_mcp.config import load_config
 from photos_mcp.daemon import PhotosMcpDaemonController
 from photos_mcp.logging_setup import build_dated_log_path, configure_root_logging
 from photos_mcp.menu_app import run_menu_app
+from photos_mcp.preflight import prepare_photos_library_runtime
+from photos_mcp.run_repository import default_run_repository_path
 from photos_mcp.single_instance import AlreadyRunningError, acquire_single_instance_lock
 from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.vendor_loader import load_vendor_server, prepare_vendor_runtime
 
 
 logger = logging.getLogger(__name__)
@@ -47,8 +51,38 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
         print(f"{config.app_name} {__version__}")
         return 0
 
+    if args == ["--runtime-import-smoke"]:
+        prepare_photos_library_runtime()
+        print(json.dumps({"status": "ok", "runtime": "osxphotos"}))
+        return 0
+
+    if args == ["--vendor-runtime-smoke"]:
+        # Keep this side-effect free: it verifies the vendored photo source and
+        # ranking dependencies without opening or changing the library.
+        load_vendor_server("photo-source")
+        import FSEvents  # noqa: F401
+        import osxphotos  # noqa: F401
+        import Vision  # noqa: F401
+
+        prepare_vendor_runtime("photo-ranker")
+        importlib.import_module("photos_mcp_vendor_photo_ranker.scene_selection")
+
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "runtime": "photo-source",
+                    "scene_runtime": "photo-ranker-vision",
+                }
+            )
+        )
+        return 0
+
     if args and args[0] in {"-h", "--help"}:
-        print("Usage: photos-mcp [--health|--version]")
+        print(
+            "Usage: photos-mcp "
+            "[--health|--runtime-import-smoke|--vendor-runtime-smoke|--version]"
+        )
         return 0
 
     log_path = configure_root_logging(
@@ -63,6 +97,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 endpoint=config.endpoint,
                 health_endpoint=config.health_endpoint,
                 persistence_path=config.runtime_root / "synthetic-runs.json",
+                repository_path=default_run_repository_path(),
             )
             daemon_controller = PhotosMcpDaemonController(config, state_store)
             logger.info("launching menu app endpoint=%s", config.endpoint)

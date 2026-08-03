@@ -30,9 +30,12 @@ class AlbumWriter:
             "PHOTO_RANKER_TERMINAL_PYTHON_BIN",
             self._app_dir,
         )
-        self._terminal_timeout_secs = float(
-            os.getenv("PHOTO_RANKER_TERMINAL_TIMEOUT_SECS", "90")
-        )
+        timeout_value = os.getenv("PHOTO_RANKER_ALBUM_TERMINAL_TIMEOUT_SECS")
+        if timeout_value is None:
+            timeout_value = os.getenv("PHOTO_RANKER_TERMINAL_TIMEOUT_SECS")
+        if timeout_value is None:
+            timeout_value = "240"
+        self._terminal_timeout_secs = float(timeout_value)
 
     def _should_use_terminal_helper(self) -> bool:
         return sys.platform == "darwin" and self._apple_events_mode == "terminal"
@@ -121,6 +124,29 @@ class AlbumWriter:
             {"name": a.name, "uuid": a.uuid, "count": len(a.photos())}
             for a in self._lib.albums()
         ]
+
+    def list_album_photo_ids(self, name: str, folder: str = "") -> dict:
+        """Return the current Photos UUIDs in an album for write reconciliation."""
+        if self._should_use_terminal_helper():
+            result = self._run_terminal_helper(
+                "list_album_photo_ids",
+                {"name": name, "folder": folder},
+            )
+            return dict(result)
+
+        self._ensure_lib()
+        album = self._lib.album(name, top_level=not folder)
+        if album is None:
+            return {"album": name, "folder": folder, "exists": False, "photo_ids": []}
+
+        photo_ids = [str(photo.uuid) for photo in album.photos() if getattr(photo, "uuid", None)]
+        return {
+            "album": name,
+            "folder": folder,
+            "exists": True,
+            "photo_ids": photo_ids,
+            "photo_count": len(photo_ids),
+        }
 
     def probe_automation_access(self) -> dict:
         """Perform a lightweight Apple Events probe without enumerating album contents."""

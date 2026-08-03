@@ -8,7 +8,33 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
+from typing import Any
+
+
+class TerminalHelperError(RuntimeError):
+    """A safe, structured failure emitted by the Terminal helper boundary."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _decode_helper_response(raw: Any, *, request_id: str) -> dict | list:
+    """Validate correlated envelopes while accepting legacy helper payloads."""
+    if not isinstance(raw, dict) or "request_id" not in raw:
+        if isinstance(raw, (dict, list)):
+            return raw
+        raise TerminalHelperError("invalid_response", "Terminal helper returned an invalid response")
+    if raw.get("request_id") != request_id:
+        raise TerminalHelperError("request_mismatch", "Terminal helper response did not match the request")
+    if raw.get("status") != "ok":
+        raise TerminalHelperError("helper_reported_error", "Terminal helper reported an unsuccessful operation")
+    result = raw.get("result")
+    if not isinstance(result, (dict, list)):
+        raise TerminalHelperError("invalid_response", "Terminal helper returned an invalid response")
+    return result
 
 
 def _build_terminal_shell_command(
@@ -105,13 +131,13 @@ def run_in_terminal(
             helper times out, helper exits non-zero, or response JSON missing.
     """
     if sys.platform != "darwin":
-        raise RuntimeError("Terminal helper is only supported on macOS")
+        raise TerminalHelperError("unsupported_platform", "Terminal helper is only supported on macOS")
 
     python_bin = Path(python_bin)
     if not helper_script.exists():
-        raise RuntimeError(f"Terminal helper script not found: {helper_script}")
+        raise TerminalHelperError("helper_script_missing", "Terminal helper script not found")
     if not python_bin.exists():
-        raise RuntimeError(f"Terminal helper python not found: {python_bin}")
+        raise TerminalHelperError("python_missing", "Terminal helper python not found")
 
     with tempfile.TemporaryDirectory(prefix=tmp_prefix) as tmp_dir:
         tmp_path = Path(tmp_dir)
@@ -122,8 +148,10 @@ def run_in_terminal(
         stdout_path = tmp_path / "stdout.log"
         stderr_path = tmp_path / "stderr.log"
 
+        request_id = str(request.get("request_id") or uuid.uuid4())
+        request_payload = {**request, "request_id": request_id}
         request_path.write_text(
-            json.dumps(request, ensure_ascii=False),
+            json.dumps(request_payload, ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -141,26 +169,29 @@ def run_in_terminal(
         )
         escaped_command = shell_command.replace("\\", "\\\\").replace('"', '\\"')
 
-        window_id = subprocess.check_output(
-            [
-                "/usr/bin/osascript",
-                "-e",
-                'tell application "Terminal"',
-                "-e",
-                "activate",
-                "-e",
-                'do script ""',
-                "-e",
-                'set targetWindowId to id of front window',
-                "-e",
-                f'do script "{escaped_command}" in front window',
-                "-e",
-                'return targetWindowId',
-                "-e",
-                "end tell",
-            ],
-            text=True,
-        ).strip()
+        try:
+            window_id = subprocess.check_output(
+                [
+                    "/usr/bin/osascript",
+                    "-e",
+                    'tell application "Terminal"',
+                    "-e",
+                    "activate",
+                    "-e",
+                    'do script ""',
+                    "-e",
+                    'set targetWindowId to id of front window',
+                    "-e",
+                    f'do script "{escaped_command}" in front window',
+                    "-e",
+                    'return targetWindowId',
+                    "-e",
+                    "end tell",
+                ],
+                text=True,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise TerminalHelperError("terminal_launch_failed", "Terminal helper could not be launched") from exc
 
         timed_out = False
         try:
@@ -189,7 +220,8 @@ def run_in_terminal(
                 )
 
         if timed_out or not exit_path.exists():
-            raise RuntimeError(
+            raise TerminalHelperError(
+                "timeout",
                 f"Terminal helper timed out after {timeout_secs:.0f}s"
             )
 
@@ -198,11 +230,13 @@ def run_in_terminal(
         stderr_text = stderr_path.read_text(encoding="utf-8") if stderr_path.exists() else ""
 
         if exit_code != "0":
-            raise RuntimeError(
-                stderr_text.strip() or stdout_text.strip() or "Terminal helper failed"
-            )
+            raise TerminalHelperError("helper_failed", "Terminal helper failed")
 
         if not response_path.exists():
-            raise RuntimeError("Terminal helper did not write a response")
+            raise TerminalHelperError("response_missing", "Terminal helper did not write a response")
 
-        return json.loads(response_path.read_text(encoding="utf-8"))
+        try:
+            response = json.loads(response_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TerminalHelperError("invalid_response", "Terminal helper returned invalid JSON") from exc
+        return _decode_helper_response(response, request_id=request_id)

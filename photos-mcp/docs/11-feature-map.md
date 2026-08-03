@@ -107,7 +107,9 @@
 - 기본 정책: `remote_allowed`, 요청 시 Wake-on-LAN과 SSH tunnel 준비
 - 로컬 강제: `PHOTOS_MCP_VLM_POLICY=local_only`
 - 상태 확인: `photos_query(action="guide")` 응답의 `vision_runtime`
-- 모든 `photos_write`와 `photos_workflow`: plan 확인 후 일회성 `approval_token` 필요
+- 모든 `photos_write`: 실제 사진 대상 plan 확인 후 일회성 `approval_token` 필요
+- 분석 workflow: 분석 완료 후 확정 대상 plan과 `next_action`을 승인해야 실제 쓰기 수행
+- 실패 workflow: `resume_plan` 확인과 승인 후 같은 `run_id`의 checkpoint에서 재개
 
 ### 2.6 internal Apple Photos write / organize
 
@@ -126,33 +128,26 @@
 
 ## 3. menu bar UI 기능
 
-### status text
+### 상태 아이콘
 
-- `PM`
-- `PM*`
-- `PM!`
-- `PM-`
+- macOS SF Symbol을 우선 사용하며, 지원하지 않는 시스템에서는 `PM` 텍스트로 대체한다.
+- 준비됨, 작업 중, 확인 필요, 서버 중지 상태를 아이콘과 tooltip 문구로 함께 구분한다.
+- 색상만으로 상태를 전달하지 않는다. 팝오버 첫 문장과 VoiceOver label에도 같은 상태 의미를 포함한다.
 
-상태 의미:
+### 동적 팝오버
 
-- ready / ok 계열
-- busy / running 계열
-- degraded / error 계열
-- stopped 계열
+- 상태 요약, 사진 변경 승인, 진행 중인 작업, 최근 작업, 환경 검사 순으로 필요한 섹션만 표시한다.
+- 빈 작업·승인·최근 작업 섹션은 표시하지 않으며, 높이는 콘텐츠에 따라 220~620pt 범위에서 조절한다.
+- 최근 작업은 최대 3건을 보여 주고, 내부 run ID 대신 사용자 작업명·결과·상대 시각을 표시한다.
+- 작업 중에는 단계, 진행률, 취소 동작을 제공한다. 완료된 결과는 읽기 전용 결과 창에서 비식별 preview와 판정 근거를 확인한다.
+- 모든 버튼에는 tooltip, accessibility label, 키보드 focus 순서가 있다.
 
-### popover 기능
+### 보조 화면과 관리 동작
 
-- daemon / preflight 요약
-- endpoint 표시
-- `Start` / `Stop`
-- `Run Checks`
-- `Refresh`
-- `Quit`
-- active jobs 최대 2개 표시
-- recent terminal jobs 표시
-- active job cancel
-- recent history delete
-- recent history clear all
+- `···` 관리 메뉴: 서버 시작/중지, 새로 고침, 환경 검사, Photos 권한 설정, 완료·전체 기록 지우기, 종료를 제공한다.
+- 환경 검사 창: 기본 권한·보관함 읽기와 선택 thumbnail·앨범 자동화 검사를 분리해 보여 준다. 선택 검사의 미실행 상태는 중립적으로 표현하며, 전체 재검사와 개인정보를 제외한 진단 정보 복사를 제공한다.
+- 사진 변경 검토: 앨범 이름, 사진 수, 비식별 preview를 확인한 뒤에만 승인·거절할 수 있다.
+- 사진 결과 창: 추천·보관·검토 수를 요약하고 filter, 항목 상세, Finder에서 preview 보기, 안전한 요약 복사를 제공한다. 여기서 Apple Photos 변경은 수행하지 않는다.
 
 ## 4. health payload 의미
 
