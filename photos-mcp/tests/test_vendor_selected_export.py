@@ -16,6 +16,61 @@ def _server_module():
 
 
 @pytest.mark.asyncio
+async def test_prepare_apple_originals_updates_only_verified_paths(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    module = _server_module()
+    original = tmp_path / "original.jpg"
+    from PIL import Image
+
+    Image.new("RGB", (120, 80), "white").save(original)
+    updates: list[tuple[str, str, str]] = []
+
+    class FakeDB:
+        def load_job(self, _job_id):
+            return SimpleNamespace(source="apple")
+
+        def list_job_assets(self, _job_id):
+            return {"photo-1": {"source_photo_path": ""}}
+
+        def update_job_asset_source_path(self, job_id, photo_id, path):
+            updates.append((job_id, photo_id, path))
+
+    photo = SimpleNamespace(
+        uuid="photo-1",
+        path="",
+        original_filesize=original.stat().st_size,
+        original_width=120,
+        original_height=80,
+    )
+    monkeypatch.setattr(module, "_get_job_db", lambda: FakeDB())
+    monkeypatch.setattr(
+        module,
+        "get_apple_photos_db",
+        lambda: SimpleNamespace(get_photo=lambda _photo_id: photo),
+    )
+    sources = importlib.import_module("photos_mcp_vendor_photo_ranker.sources")
+    monkeypatch.setattr(sources, "download_apple_original", lambda _photo: str(original))
+
+    result = json.loads(await module.prepare_apple_originals(
+        "run-1",
+        '["photo-1"]',
+    ))
+
+    assert result == {
+        "status": "completed",
+        "requested": 1,
+        "ready_before": 0,
+        "downloaded": 1,
+        "ready": 1,
+        "pending": 0,
+        "retry_available": False,
+    }
+    assert updates == [("run-1", "photo-1", str(original))]
+
+
+@pytest.mark.asyncio
 async def test_vendor_export_selected_writes_original_layout_xmp_and_manifest(
     monkeypatch,
     tmp_path: Path,

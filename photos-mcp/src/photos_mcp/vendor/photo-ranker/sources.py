@@ -549,6 +549,74 @@ def _download_missing_apple_photo(photo) -> str | None:
     return _pick_cached_apple_export(photo.uuid)
 
 
+def download_apple_original(photo) -> str | None:
+    """Download and return only a verified Apple Photos original."""
+
+    global _APPLE_PHOTOKIT_DISABLED, _APPLE_TERMINAL_HELPER_DISABLED
+
+    direct_original = preferred_original_path(photo, getattr(photo, "path", None))
+    if direct_original:
+        return direct_original
+
+    cache_dir = _get_apple_cache_dir() / photo.uuid
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached_candidates = [
+        path
+        for path in cache_dir.iterdir()
+        if path.is_file() and path.suffix.lower() not in {".aae", ".json", ".xmp"}
+    ]
+    for candidate in sorted(cached_candidates, key=_safe_file_size, reverse=True):
+        if verified := preferred_original_path(photo, str(candidate)):
+            _APPLE_DOWNLOADED_PATHS[photo.uuid] = verified
+            return verified
+
+    try:
+        import osxphotos
+    except ImportError:
+        return None
+
+    for strategy_name, option_kwargs in _apple_export_strategies():
+        try:
+            export_results = osxphotos.PhotoExporter(photo).export(
+                cache_dir,
+                filename=_preferred_apple_filename(photo),
+                options=osxphotos.ExportOptions(**option_kwargs, overwrite=True),
+            )
+        except Exception as exc:
+            if strategy_name.endswith("_photokit") and _is_photokit_auth_error(exc):
+                _APPLE_PHOTOKIT_DISABLED = True
+            logger.warning("Apple Photos original preparation failed via %s", strategy_name)
+            continue
+
+        for exported_file in getattr(export_results, "exported", None) or []:
+            if verified := preferred_original_path(photo, str(exported_file)):
+                _APPLE_DOWNLOADED_PATHS[photo.uuid] = verified
+                logger.info("Prepared a verified Apple Photos original via %s", strategy_name)
+                return verified
+        logger.warning("Apple Photos export via %s did not produce a verified original", strategy_name)
+
+    if _should_use_terminal_helper():
+        try:
+            fetched_path = _run_terminal_fetch_helper(photo.uuid)
+        except Exception as exc:
+            logger.warning("Terminal helper failed to prepare an Apple Photos original")
+            if _should_disable_terminal_helper_after_error(exc):
+                _APPLE_TERMINAL_HELPER_DISABLED = True
+        else:
+            if verified := preferred_original_path(photo, fetched_path):
+                _APPLE_DOWNLOADED_PATHS[photo.uuid] = verified
+                return verified
+
+    return None
+
+
+def _safe_file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 def _resolve_apple_photo_path(photo, *, download_missing: bool) -> str | None:
     path = getattr(photo, "path", None)
     resolved = preferred_analysis_path(photo, path)

@@ -212,6 +212,57 @@ def test_photo_ranker_terminal_mode_falls_back_to_helper_after_direct_failures(
     assert result == str(helper_path)
 
 
+def test_photo_ranker_original_preparation_rejects_derivative_then_uses_original(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    load_vendor_server("photo-ranker")
+    sources_module = importlib.import_module("photos_mcp_vendor_photo_ranker.sources")
+    from PIL import Image
+
+    derivative = tmp_path / "derivative.jpg"
+    original = tmp_path / "original.jpg"
+    Image.new("RGB", (12, 8), "gray").save(derivative)
+    Image.new("RGB", (120, 80), "white").save(original)
+    calls: list[dict[str, bool]] = []
+
+    class FakeExporter:
+        def __init__(self, photo):
+            self.photo = photo
+
+        def export(self, *_args, **kwargs):
+            calls.append(dict(kwargs["options"]))
+            path = derivative if len(calls) == 1 else original
+            return SimpleNamespace(exported=[str(path)])
+
+    monkeypatch.setitem(
+        sys.modules,
+        "osxphotos",
+        SimpleNamespace(
+            PhotoExporter=FakeExporter,
+            ExportOptions=lambda **kwargs: kwargs,
+        ),
+    )
+    monkeypatch.setattr(sources_module, "_APPLE_DOWNLOAD_CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(sources_module, "_APPLE_PHOTOKIT_DISABLED", False)
+    monkeypatch.setattr(sources_module, "_APPLE_FETCH_MODE", "direct")
+    sources_module._APPLE_DOWNLOADED_PATHS.clear()
+    photo = SimpleNamespace(
+        uuid="original-preparation-photo",
+        path="",
+        filename="photo.jpg",
+        original_filesize=0,
+        original_width=120,
+        original_height=80,
+    )
+
+    result = sources_module.download_apple_original(photo)
+
+    assert result == str(original)
+    assert len(calls) == 2
+    assert all(options["overwrite"] is True for options in calls)
+
+
 def test_photo_source_terminal_mode_uses_direct_export_before_helper(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setenv("PHOTO_SOURCE_APPLE_FETCH_MODE", "terminal")

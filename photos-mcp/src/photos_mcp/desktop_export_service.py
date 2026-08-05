@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Awaitable, Callable
 
+from photos_mcp.facade.common import call_vendor
 from photos_mcp.facade.write_handler import handle_write
 from photos_mcp.mutation_approval import (
     begin_mutation_receipt,
@@ -16,6 +18,72 @@ from photos_mcp.state import PhotosMcpStateStore
 
 ResolvePlan = Callable[..., Awaitable[dict[str, Any]]]
 WriteHandler = Callable[..., Awaitable[dict[str, Any]]]
+VendorCaller = Callable[..., Awaitable[Any]]
+
+
+async def prepare_retry_originals(
+    state_store: PhotosMcpStateStore,
+    run_id: str,
+    receipt_id: str,
+    *,
+    call_vendor_fn: VendorCaller = call_vendor,
+) -> dict[str, Any]:
+    """Prepare only the exact originals captured by a previous export receipt."""
+
+    receipt = state_store.run_repository.get_mutation_receipt_by_id(receipt_id)
+    if receipt is None or str(receipt.get("action") or "") != "export_selected_bundle":
+        return {"status": "blocked", "error_code": "resume_receipt_not_found"}
+    if str(receipt.get("run_id") or "") != str(run_id or ""):
+        return {"status": "blocked", "error_code": "resume_receipt_run_mismatch"}
+    photo_ids = [str(value) for value in receipt.get("requested_photo_ids") or [] if str(value)]
+    if not photo_ids:
+        return {"status": "blocked", "error_code": "resume_receipt_photo_set_missing"}
+    if not str(receipt.get("output_dir") or ""):
+        return {
+            "status": "completed",
+            "requested": len(photo_ids),
+            "ready": len(photo_ids),
+            "pending": 0,
+            "preparation_skipped": True,
+        }
+
+    summary = await call_vendor_fn("photo-ranker", "get_job_summary", run_id)
+    source = str(summary.get("source") or "") if isinstance(summary, dict) else ""
+    if source == "local":
+        return {
+            "status": "completed",
+            "requested": len(photo_ids),
+            "ready": len(photo_ids),
+            "pending": 0,
+            "preparation_skipped": True,
+        }
+    if source != "apple":
+        return {"status": "failed", "error_code": "job_source_unavailable"}
+
+    payload = await call_vendor_fn(
+        "photo-ranker",
+        "prepare_apple_originals",
+        run_id,
+        json.dumps(photo_ids, ensure_ascii=False),
+    )
+    raw = dict(payload) if isinstance(payload, dict) else {}
+    safe = {
+        key: raw[key]
+        for key in (
+            "status",
+            "error_code",
+            "requested",
+            "ready_before",
+            "downloaded",
+            "ready",
+            "pending",
+            "retry_available",
+            "preparation_skipped",
+        )
+        if key in raw
+    }
+    safe.setdefault("status", "failed")
+    return safe
 
 
 async def prepare_selected_export(

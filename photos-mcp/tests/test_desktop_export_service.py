@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from photos_mcp.desktop_export_service import execute_selected_export, prepare_selected_export
+from photos_mcp.desktop_export_service import (
+    execute_selected_export,
+    prepare_retry_originals,
+    prepare_selected_export,
+)
 from photos_mcp.state import PhotosMcpStateStore
 
 
@@ -99,3 +105,108 @@ async def test_desktop_export_does_not_consume_pending_plan(tmp_path) -> None:
     )
     assert result["error_code"] == "desktop_export_not_approved"
     assert called is False
+
+
+@pytest.mark.asyncio
+async def test_retry_original_preparation_uses_exact_receipt_photo_set(tmp_path) -> None:
+    store = PhotosMcpStateStore(
+        endpoint="http://local/mcp",
+        health_endpoint="http://local/health",
+        repository_path=tmp_path / "runs.sqlite3",
+    )
+    store.run_repository.save_mutation_receipt({
+        "receipt_id": "receipt-1",
+        "idempotency_key": "mutation:receipt-1",
+        "action": "export_selected_bundle",
+        "run_id": "run-1",
+        "status": "partial",
+        "output_dir": str(tmp_path / "export"),
+        "requested_photo_ids": ["private-1", "private-2"],
+    })
+    captured: dict[str, object] = {}
+
+    async def fake_vendor(vendor, function, run_id, photo_ids_json=""):
+        if function == "get_job_summary":
+            return {"source": "apple"}
+        captured.update(
+            vendor=vendor,
+            function=function,
+            run_id=run_id,
+            photo_ids=json.loads(photo_ids_json),
+        )
+        return {
+            "status": "partial",
+            "requested": 2,
+            "ready": 1,
+            "pending": 1,
+            "private_path": "/must/not/leak.jpg",
+        }
+
+    result = await prepare_retry_originals(
+        store,
+        "run-1",
+        "receipt-1",
+        call_vendor_fn=fake_vendor,
+    )
+
+    assert captured["photo_ids"] == ["private-1", "private-2"]
+    assert result == {
+        "status": "partial",
+        "requested": 2,
+        "ready": 1,
+        "pending": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_retry_original_preparation_rejects_receipt_from_another_run(tmp_path) -> None:
+    store = PhotosMcpStateStore(
+        endpoint="http://local/mcp",
+        health_endpoint="http://local/health",
+        repository_path=tmp_path / "runs.sqlite3",
+    )
+    store.run_repository.save_mutation_receipt({
+        "receipt_id": "receipt-1",
+        "idempotency_key": "mutation:receipt-1",
+        "action": "export_selected_bundle",
+        "run_id": "run-other",
+        "status": "partial",
+        "output_dir": str(tmp_path / "export"),
+        "requested_photo_ids": ["private-1"],
+    })
+
+    result = await prepare_retry_originals(store, "run-1", "receipt-1")
+
+    assert result["status"] == "blocked"
+    assert result["error_code"] == "resume_receipt_run_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_retry_original_preparation_skips_album_only_receipt(tmp_path) -> None:
+    store = PhotosMcpStateStore(
+        endpoint="http://local/mcp",
+        health_endpoint="http://local/health",
+        repository_path=tmp_path / "runs.sqlite3",
+    )
+    store.run_repository.save_mutation_receipt({
+        "receipt_id": "receipt-1",
+        "idempotency_key": "mutation:receipt-1",
+        "action": "export_selected_bundle",
+        "run_id": "run-1",
+        "status": "partial",
+        "target_album_id": "album-1",
+        "requested_photo_ids": ["private-1"],
+    })
+
+    async def unexpected_vendor(*_args, **_kwargs):
+        raise AssertionError("album-only retry must not prepare iCloud originals")
+
+    result = await prepare_retry_originals(
+        store,
+        "run-1",
+        "receipt-1",
+        call_vendor_fn=unexpected_vendor,
+    )
+
+    assert result["status"] == "completed"
+    assert result["preparation_skipped"] is True

@@ -494,6 +494,26 @@ class JobDB:
         self._conn.commit()
 
     @_synchronized
+    def update_job_asset_source_path(
+        self,
+        job_id: str,
+        photo_id: str,
+        source_photo_path: str,
+    ) -> None:
+        """Update a verified original path without replacing review metadata."""
+        self._conn.execute(
+            """
+            INSERT INTO job_assets
+                (job_id, photo_id, source_photo_path, selection_overridden)
+            VALUES (?, ?, ?, 0)
+            ON CONFLICT(job_id, photo_id) DO UPDATE SET
+                source_photo_path = excluded.source_photo_path
+            """,
+            (job_id, photo_id, source_photo_path),
+        )
+        self._conn.commit()
+
+    @_synchronized
     def update_photo_review(
         self,
         job_id: str,

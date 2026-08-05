@@ -55,7 +55,11 @@ from AppKit import (
 from Foundation import NSIndexPath, NSMakeSize, NSSet, NSUserDefaults
 
 from photos_mcp.photo_viewer_appkit import PhotosMcpPhotoViewerController
-from photos_mcp.desktop_export_service import execute_selected_export, prepare_selected_export
+from photos_mcp.desktop_export_service import (
+    execute_selected_export,
+    prepare_retry_originals,
+    prepare_selected_export,
+)
 from photos_mcp.facade.common import call_vendor
 from photos_mcp.ui_theme import accent_color, app_font
 from photos_mcp.viewer_asset_service import hydrate_viewer_source_paths
@@ -1215,7 +1219,15 @@ class PhotosMcpResultsController(NSWindowController):
         receipt = dict(result.get("mutation_receipt") or {})
         receipt_id = str(receipt.get("receipt_id") or "")
         if result.get("retry_available") and receipt_id:
-            alert.addButtonWithTitle_("미완료 대상 다시 실행")
+            needs_original_preparation = bool(
+                self._pending_export_options.get("output_dir")
+                and str(local.get("status") or "") in {"failed", "partial", "pending"}
+            )
+            alert.addButtonWithTitle_(
+                "원본 준비 후 다시 실행"
+                if needs_original_preparation
+                else "미완료 대상 다시 실행"
+            )
             alert.addButtonWithTitle_("닫기")
             response = alert.runModal()
             if (
@@ -1226,13 +1238,82 @@ class PhotosMcpResultsController(NSWindowController):
             if response == NSAlertFirstButtonReturn:
                 retry_options = dict(self._pending_export_options)
                 retry_options["resume_from_receipt_id"] = receipt_id
-                self._start_export_plan(retry_options)
+                if needs_original_preparation:
+                    self._start_original_preparation(retry_options, receipt_id)
+                else:
+                    self._start_export_plan(retry_options)
             else:
                 self._finish_export_flow()
             return
         alert.addButtonWithTitle_("확인")
         alert.runModal()
         self._finish_export_flow()
+
+    @objc.python_method
+    def _start_original_preparation(
+        self,
+        options: dict[str, Any],
+        receipt_id: str,
+    ) -> None:
+        self._pending_export_options = dict(options)
+        self._export_button.setEnabled_(False)
+        self._export_button.setTitle_("iCloud 원본 준비 중…")
+        state_store = self._menu_controller._state_store
+        generation = self._result_generation
+        export_generation = self._export_generation
+        run_id = str(options.get("run_id") or "")
+
+        def worker() -> None:
+            try:
+                payload = asyncio.run(
+                    prepare_retry_originals(state_store, run_id, receipt_id)
+                )
+            except Exception as exc:
+                payload = {"status": "failed", "error": str(exc)}
+            payload["generation"] = generation
+            payload["export_generation"] = export_generation
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "originalPreparationFinished:", payload, False
+            )
+
+        self._export_worker = Thread(
+            target=worker,
+            name="photos-mcp-original-preparation",
+            daemon=True,
+        )
+        self._export_worker.start()
+
+    def originalPreparationFinished_(self, payload) -> None:
+        result = dict(payload or {})
+        if int(result.get("generation") or -1) != self._result_generation:
+            return
+        if int(result.get("export_generation") or -1) != self._export_generation:
+            return
+
+        ready = int(result.get("ready") or 0)
+        downloaded = int(result.get("downloaded") or 0)
+        pending = int(result.get("pending") or 0)
+        if result.get("status") in {"completed", "partial"} and ready > 0:
+            if pending > 0:
+                self._show_alert(
+                    "준비된 원본부터 다시 실행합니다",
+                    f"새로 준비 {downloaded}장 · 준비 완료 {ready}장 · 아직 대기 {pending}장",
+                )
+            self._start_export_plan(dict(self._pending_export_options))
+            return
+
+        self._finish_export_flow()
+        if pending > 0:
+            self._show_alert(
+                "iCloud 원본이 아직 준비되지 않았습니다",
+                f"준비 완료 {ready}장 · 아직 대기 {pending}장\n\n"
+                "네트워크와 Apple 사진의 다운로드 상태를 확인한 뒤 다시 시도하세요.",
+            )
+            return
+        self._show_alert(
+            "원본 준비를 시작하지 못했습니다",
+            str(result.get("error") or result.get("error_code") or "알 수 없는 오류"),
+        )
 
     @objc.python_method
     def _show_alert(self, title: str, detail: str) -> None:
