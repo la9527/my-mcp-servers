@@ -17,7 +17,7 @@ from datetime import datetime, time
 from pathlib import Path
 
 from apple_terminal_helper import run_in_terminal
-from photos_mcp.apple_photo_asset import preferred_analysis_path
+from photos_mcp.apple_photo_asset import preferred_analysis_path, preferred_original_path
 from photos_mcp.apple_photos_runtime import get_apple_photos_db
 from photos_mcp.runtime_bootstrap import default_terminal_python
 
@@ -42,6 +42,9 @@ _TERMINAL_TIMEOUT_SECS = float(os.getenv("PHOTO_RANKER_TERMINAL_TIMEOUT_SECS", "
 
 
 _TERMINAL_PYTHON = default_terminal_python("PHOTO_RANKER_TERMINAL_PYTHON_BIN", _APP_DIR)
+# Analysis inputs retain twice the previous edge length so face and detail
+# signals have enough pixels without forcing list/inspect thumbnails to grow.
+DEFAULT_ANALYSIS_MAX_SIZE = 1024
 
 
 def _apple_media_type(photo) -> str:
@@ -131,7 +134,7 @@ def load_photos(
     date_from: str = "",
     date_to: str = "",
     limit: int = 100,
-    max_size: int = 512,
+    max_size: int = DEFAULT_ANALYSIS_MAX_SIZE,
 ) -> list[dict]:
     """Load photos from the given source as pipeline-ready dicts.
 
@@ -167,7 +170,7 @@ def _load_local(
     directory: str,
     *,
     limit: int = 100,
-    max_size: int = 512,
+    max_size: int = DEFAULT_ANALYSIS_MAX_SIZE,
 ) -> list[dict]:
     """Load images from a local directory."""
     from PIL import Image
@@ -224,7 +227,7 @@ def _load_gcs(
     date_from: str = "",
     date_to: str = "",
     limit: int = 100,
-    max_size: int = 512,
+    max_size: int = DEFAULT_ANALYSIS_MAX_SIZE,
 ) -> list[dict]:
     """Load GCS image objects without saving source bytes to the local filesystem."""
     try:
@@ -294,7 +297,7 @@ def _load_apple(
     date_from: str = "",
     date_to: str = "",
     limit: int = 100,
-    max_size: int = 512,
+    max_size: int = DEFAULT_ANALYSIS_MAX_SIZE,
 ) -> list[dict]:
     """Load images from Apple Photos via osxphotos."""
     try:
@@ -353,17 +356,20 @@ def _load_apple(
 
     results: list[dict] = []
     for p in photos:
-        source_path = _resolve_apple_photo_path(p, download_missing=True)
-        if not source_path:
+        analysis_path = _resolve_apple_photo_path(p, download_missing=True)
+        if not analysis_path:
             continue
         try:
-            img = Image.open(source_path)
+            img = Image.open(analysis_path)
             b64 = _image_to_b64(img, max_size)
+            original_path = preferred_original_path(p, analysis_path) or ""
             results.append(
                 {
                     "photo_id": p.uuid,
                     "image_b64": b64,
-                    "source_photo_path": source_path,
+                    "source_photo_path": original_path,
+                    "analysis_photo_path": analysis_path,
+                    "original_available": bool(original_path),
                     "capture_date": p.date.isoformat() if p.date else "",
                     "gps": (
                         {"lat": p.latitude, "lon": p.longitude}
@@ -389,7 +395,7 @@ def _load_apple(
 # ── Helpers ────────────────────────────────────────────
 
 
-def _image_to_b64(img, max_size: int = 512) -> str:
+def _image_to_b64(img, max_size: int = DEFAULT_ANALYSIS_MAX_SIZE) -> str:
     """Resize and encode a PIL Image as base64 JPEG."""
     img.thumbnail((max_size, max_size))
     if img.mode not in ("RGB", "L"):

@@ -144,6 +144,7 @@ Actions:
 | `add_selected_to_album` | selected item 을 단일 Apple Photos album 에 추가 | `run_id`, `target_album_name` |
 | `add_photo_ids_to_album` | explicit photo ids 를 단일 Apple Photos album 에 추가 | `photo_ids`, `target_album_name` |
 | `export_selected` | selected item 을 local directory 로 export | `run_id`, `output_dir` |
+| `export_selected_bundle` | selected item을 Apple 사진 앨범과 분류별 원본 폴더 중 하나 이상에 내보내고 대상별 영수증을 저장 | `run_id`, `output_dir` 또는 `target_album_name`/`target_album_id` |
 | `organize_by_category` | classify result 를 category album/directory 로 정리 | `album_prefix` 또는 `folder` |
 | `import_to_album` | local photo paths 를 Apple Photos album 으로 import | `photo_paths`, `target_album_name` |
 | `cleanup_album` | validation/temporary album 삭제 | `target_album_name` |

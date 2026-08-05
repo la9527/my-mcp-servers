@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import math
+import shutil
 import time
 
 from apple_terminal_helper import TerminalHelperError
 from mcp.server.fastmcp import FastMCP
+from photos_mcp.apple_photo_asset import preferred_original_path
+from photos_mcp.apple_photos_runtime import get_apple_photos_db
 from photos_mcp.logging_setup import ToolLogContext, log_context
 from photos_mcp.runtime_broker_client import default_runtime_broker_client
 
@@ -843,6 +846,7 @@ def _apply_curated_selection(
             tags=tags,
             selected=is_selected,
             note=selection_note if is_selected else "",
+            preserve_manual_selection=True,
         )
 
 
@@ -1226,15 +1230,17 @@ async def create_album(name: str, folder: str = "") -> str:
 @mcp.tool()
 async def add_to_album(
     photo_uuids_json: str,
-    album_name: str,
+    album_name: str = "",
     folder: str = "",
+    album_id: str = "",
 ) -> str:
     """기존 Photos 라이브러리 사진을 앨범에 추가합니다 (복제 없음).
 
     Args:
         photo_uuids_json: JSON array of photo UUID strings
-        album_name: 대상 앨범 이름 (없으면 자동 생성)
+        album_name: 대상 앨범 이름 (album_id가 없을 때는 필수)
         folder: 선택적 폴더 경로
+        album_id: 기존 앨범의 정확한 UUID
 
     Returns:
         JSON with added count and errors.
@@ -1242,7 +1248,12 @@ async def add_to_album(
     writer = _get_album_writer()
     uuids = json.loads(photo_uuids_json)
     try:
-        result = writer.add_photos_to_album(uuids, album_name, folder)
+        result = writer.add_photos_to_album(
+            uuids,
+            album_name,
+            folder,
+            album_id=album_id,
+        )
     except Exception as exc:
         logger.exception("add_to_album failed")
         return _format_album_writer_error("add_to_album", exc)
@@ -1327,10 +1338,41 @@ async def get_review_items(
 ) -> str:
     """분류 결과를 WebUI 검토용 preview/tag 메타와 함께 반환합니다."""
     db = _get_job_db()
-    return json.dumps(
-        _build_review_items(db, job_id, top_n=top_n, selected_only=selected_only),
-        ensure_ascii=False,
-    )
+    items = _build_review_items(db, job_id, top_n=top_n, selected_only=selected_only)
+    if selected_only:
+        items = _prepare_original_export_items(db, job_id, items)
+    return json.dumps(items, ensure_ascii=False)
+
+
+def _prepare_original_export_items(db, job_id: str, items: list[dict]) -> list[dict]:
+    """Replace Apple derivative paths with verified original paths only."""
+
+    load_job = getattr(db, "load_job", None)
+    if not callable(load_job):
+        load_job = getattr(db, "get_job", None)
+    job = load_job(job_id) if callable(load_job) else None
+    if str(getattr(job, "source", "") or "") != "apple":
+        return items
+
+    try:
+        database = get_apple_photos_db()
+    except Exception:
+        return [{**item, "source_photo_path": ""} for item in items]
+
+    prepared = []
+    for item in items:
+        photo_id = str(item.get("photo_id") or "")
+        try:
+            photo = database.get_photo(photo_id) if photo_id else None
+            original_path = (
+                preferred_original_path(photo, str(item.get("source_photo_path") or ""))
+                if photo is not None
+                else None
+            )
+        except Exception:
+            original_path = None
+        prepared.append({**item, "source_photo_path": str(original_path or "")})
+    return prepared
 
 
 @mcp.tool()
@@ -1355,47 +1397,120 @@ async def set_photo_review(
 
 
 @mcp.tool()
+async def set_all_photo_reviews(job_id: str, selected: bool) -> str:
+    """분류 결과 전체의 선택 여부를 일괄 저장합니다."""
+    db = _get_job_db()
+    return json.dumps(
+        db.set_all_photo_reviews(job_id, selected),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
 async def export_selected_photos(
     job_id: str,
     output_dir: str,
     min_score: float = 0.0,
     group_by_date: bool = False,
     mode: str = "copy",
+    metadata_mode: str = "auto",
+    exiftool_path: str = "",
+    photo_ids_json: str = "[]",
+    receipt_id: str = "",
 ) -> str:
-    """선택된(selected=true) 사진만 출력 디렉터리로 내보냅니다."""
+    """선택된 원본을 안전한 분류 경로와 XMP 메타데이터로 내보냅니다."""
     db = _get_job_db()
+    exact_photo_ids = [str(value) for value in json.loads(photo_ids_json or "[]") if str(value)]
     selected_items = _build_review_items(
         db,
         job_id,
         top_n=100000,
-        selected_only=True,
+        selected_only=not bool(exact_photo_ids),
     )
+    selected_items = _prepare_original_export_items(db, job_id, selected_items)
+    unresolved_photo_ids: list[str] = []
+    if exact_photo_ids:
+        items_by_id = {
+            str(item.get("photo_id") or ""): item
+            for item in selected_items
+            if isinstance(item, dict)
+        }
+        unresolved_photo_ids = [
+            photo_id for photo_id in exact_photo_ids if photo_id not in items_by_id
+        ]
+        selected_items = [
+            {**items_by_id[photo_id], "selected": True}
+            for photo_id in exact_photo_ids
+            if photo_id in items_by_id
+        ]
     if not selected_items:
         return json.dumps({
             "job_id": job_id,
-            "selected_count": 0,
+            "selected_count": len(exact_photo_ids),
             "exported": 0,
+            "failed_count": len(unresolved_photo_ids),
+            "missing_count": len(unresolved_photo_ids),
             "message": "No selected photos found",
         })
 
-    exportable = []
-    missing_paths = []
+    exportable: list[dict] = []
+    missing_paths = list(unresolved_photo_ids)
     for item in selected_items:
         source_path = item.get("source_photo_path", "")
         if not source_path:
             missing_paths.append(item["photo_id"])
             continue
-        exportable.append({**item, "photo_id": source_path})
+        exportable.append(item)
 
-    result = _get_local_writer().organize_by_classification(
+    normalized_metadata_mode = str(metadata_mode or "auto").strip().lower()
+    if normalized_metadata_mode not in {"auto", "sidecar", "embedded"}:
+        return json.dumps({
+            "status": "blocked",
+            "error_code": "unsupported_metadata_mode",
+            "allowed_metadata_modes": ["auto", "sidecar", "embedded"],
+        }, ensure_ascii=False)
+    resolved_exiftool = ""
+    if normalized_metadata_mode != "sidecar":
+        resolved_exiftool = str(exiftool_path or shutil.which("exiftool") or "")
+    if normalized_metadata_mode == "embedded" and not resolved_exiftool:
+        return json.dumps({
+            "status": "blocked",
+            "error_code": "exiftool_required_for_embedded_metadata",
+            "selected_count": len(exact_photo_ids) if exact_photo_ids else len(selected_items),
+            "exported": 0,
+            "failed_count": len(exact_photo_ids) if exact_photo_ids else len(selected_items),
+        }, ensure_ascii=False)
+
+    result = _get_local_writer().export_selected_originals(
         exportable,
         output_dir,
         min_score=min_score,
-        group_by_date=group_by_date,
         mode=mode,
+        receipt_id=receipt_id or job_id,
+        exiftool_executable=resolved_exiftool or None,
     )
     result["job_id"] = job_id
-    result["selected_count"] = len(selected_items)
+    result["selected_count"] = len(exact_photo_ids) if exact_photo_ids else len(selected_items)
+    result["metadata_mode"] = (
+        "embedded_and_sidecar" if resolved_exiftool else "sidecar"
+    )
+    result["failed_count"] = int(result.get("failed") or 0) + len(missing_paths)
+    result["missing_count"] = len(missing_paths)
+    successful_indexes = [
+        int(value) for value in result.pop("successful_item_indexes", [])
+        if isinstance(value, int) or str(value).isdigit()
+    ]
+    result["successful_photo_ids"] = [
+        str(exportable[index].get("photo_id") or "")
+        for index in successful_indexes
+        if 0 <= index < len(exportable)
+    ]
+    if (
+        normalized_metadata_mode == "embedded"
+        and int(result.get("metadata_embedded") or 0) < len(result["successful_photo_ids"])
+    ):
+        result["status"] = "partial"
+        result["error_code"] = "metadata_embedding_incomplete"
     if missing_paths:
         result["missing_source_paths"] = missing_paths
     return json.dumps(result, ensure_ascii=False)
@@ -1787,11 +1902,11 @@ async def list_photo_albums() -> str:
 
 
 @mcp.tool()
-async def list_album_photo_ids(name: str, folder: str = "") -> str:
+async def list_album_photo_ids(name: str = "", folder: str = "", album_id: str = "") -> str:
     """쓰기 timeout 또는 부분 실패 재조정을 위해 앨범의 현재 사진 UUID를 반환합니다."""
     writer = _get_album_writer()
     try:
-        result = writer.list_album_photo_ids(name, folder)
+        result = writer.list_album_photo_ids(name, folder, album_id=album_id)
     except Exception as exc:
         logger.exception("list_album_photo_ids failed")
         return _format_album_writer_error("list_album_photo_ids", exc)

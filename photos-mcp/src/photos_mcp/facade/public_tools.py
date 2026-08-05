@@ -330,6 +330,8 @@ async def photos_write(
     action: str = "add_selected_to_album",
     options: Any = None,
     _resume_run_id: str = "",
+    _mutation_plan: dict[str, Any] | None = None,
+    _mutation_receipt_id: str = "",
 ) -> dict[str, Any]:
     return await handle_write(
         state_store=state_store,
@@ -338,6 +340,8 @@ async def photos_write(
         call_vendor_fn=call_vendor,
         photos_result_fn=photos_result,
         photos_run_fn=photos_run,
+        mutation_plan=_mutation_plan,
+        mutation_receipt_id=_mutation_receipt_id,
     )
 
 

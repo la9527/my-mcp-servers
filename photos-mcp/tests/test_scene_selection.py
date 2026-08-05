@@ -34,6 +34,16 @@ def test_parse_capture_time_normalizes_aware_values_to_naive_utc() -> None:
     assert module.parse_capture_time("not-a-date") is None
 
 
+def test_visual_feature_engine_initializes_vision_runtime_before_worker_use(monkeypatch) -> None:
+    module = _load_module()
+    sentinel = (object(), object())
+
+    monkeypatch.setattr(module, "_load_vision_runtime", lambda: sentinel)
+    engine = module.VisualFeatureEngine()
+
+    assert engine._vision_runtime is sentinel
+
+
 def test_scene_cluster_combines_nearby_similar_photos_but_not_other_scenes() -> None:
     module = _load_module()
     clusterer = module.SceneClusterer(
@@ -115,6 +125,20 @@ def test_detail_candidate_compression_keeps_at_most_four_per_scene() -> None:
     assert len(selected) == 4
     assert "photo-2" in selected
     assert "photo-5" in selected
+
+
+def test_detail_candidate_ranks_are_stable_within_each_scene() -> None:
+    module = _load_module()
+    cluster = module.SceneCluster("scene-test", ("photo-a", "photo-b", "photo-c"))
+
+    ranks = module.detail_candidate_ranks(
+        [cluster],
+        technical_scores={"photo-a": 70.0, "photo-b": 90.0, "photo-c": 80.0},
+        face_counts={},
+        limit_per_cluster=2,
+    )
+
+    assert ranks == {"photo-b": 1, "photo-c": 2}
 
 
 def test_cluster_annotation_never_recommends_more_than_two() -> None:

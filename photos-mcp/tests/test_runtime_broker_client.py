@@ -76,6 +76,7 @@ def test_default_runtime_broker_client_uses_linux_prepare_command(monkeypatch) -
 
     assert isinstance(client, runtime_broker.CommandRuntimeBrokerClient)
     assert client.command.endswith("/bin/ensure-linux-llama-cpp")
+    assert client.activity_command.endswith("/bin/touch-linux-llm-activity")
     assert client.timeout_seconds == 330.0
 
 
@@ -90,3 +91,16 @@ async def test_command_runtime_broker_runs_prepare_command() -> None:
     await client.acquire()
     await client.mark_used()
     await client.release()
+
+
+@pytest.mark.asyncio
+async def test_command_runtime_broker_runs_activity_command_after_inference() -> None:
+    runtime_broker = _load_runtime_broker_module()
+    client = runtime_broker.CommandRuntimeBrokerClient(
+        command="/usr/bin/true",
+        activity_command="/usr/bin/true",
+        timeout_seconds=1.0,
+    )
+
+    await client.acquire()
+    await client.mark_used()

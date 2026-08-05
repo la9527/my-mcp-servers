@@ -31,6 +31,7 @@ class VisionRuntimeSettings:
     api_key: str | None
     target: str
     prepare_command: str
+    activity_command: str
     prepare_timeout_seconds: float
     auto_unload: bool
 
@@ -65,6 +66,10 @@ def _default_prepare_command() -> str:
     return str(Path.home() / "bin" / "ensure-linux-llama-cpp")
 
 
+def _default_activity_command() -> str:
+    return str(Path.home() / "bin" / "touch-linux-llm-activity")
+
+
 def resolve_vision_runtime_settings(
     model_override: str | None = None,
 ) -> VisionRuntimeSettings:
@@ -89,6 +94,7 @@ def resolve_vision_runtime_settings(
             api_key=None,
             target=os.environ.get("PHOTOS_MCP_LOCAL_VLM_TARGET", DEFAULT_LOCAL_TARGET),
             prepare_command="",
+            activity_command="",
             prepare_timeout_seconds=0.0,
             auto_unload=auto_unload,
         )
@@ -110,6 +116,7 @@ def resolve_vision_runtime_settings(
             api_key=None,
             target=os.environ.get("PHOTO_RANKER_VLM_TARGET", DEFAULT_LOCAL_TARGET),
             prepare_command="",
+            activity_command="",
             prepare_timeout_seconds=0.0,
             auto_unload=auto_unload,
         )
@@ -144,6 +151,10 @@ def resolve_vision_runtime_settings(
             os.environ.get("PHOTOS_MCP_LINUX_VLM_PREPARE_COMMAND")
             or _default_prepare_command()
         )
+        activity_command = (
+            os.environ.get("PHOTOS_MCP_LINUX_VLM_ACTIVITY_COMMAND")
+            or _default_activity_command()
+        )
     else:
         model = (
             model_override
@@ -152,6 +163,7 @@ def resolve_vision_runtime_settings(
         )
         target = explicit_target or DEFAULT_LOCAL_TARGET
         prepare_command = os.environ.get("PHOTOS_MCP_VLM_PREPARE_COMMAND", "")
+        activity_command = os.environ.get("PHOTOS_MCP_VLM_ACTIVITY_COMMAND", "")
 
     return VisionRuntimeSettings(
         policy=policy,
@@ -162,6 +174,7 @@ def resolve_vision_runtime_settings(
         api_key=_env_first("PHOTO_RANKER_VLM_API_KEY", "LOCAL_LLM_API_KEY", default=""),
         target=target,
         prepare_command=prepare_command,
+        activity_command=activity_command,
         prepare_timeout_seconds=float(
             os.environ.get(
                 "PHOTOS_MCP_LINUX_VLM_PREPARE_TIMEOUT_SECONDS",

@@ -50,6 +50,7 @@ GCS는 현재 **분석과 검토 전용**이다. `add_selected_to_album`과 `cur
 | `photos_write` | `add_selected_to_album` |
 | `photos_write` | `add_photo_ids_to_album` |
 | `photos_write` | `export_selected` |
+| `photos_write` | `export_selected_bundle` |
 | `photos_write` | `organize_by_category` |
 | `photos_write` | `import_to_album` |
 | `photos_write` | `cleanup_album` |
@@ -151,6 +152,7 @@ photos_select(
 - `add_selected_to_album`
 - `add_photo_ids_to_album`
 - `export_selected`
+- `export_selected_bundle`
 - `organize_by_category`
 - `import_to_album`
 - `cleanup_album`
@@ -158,6 +160,7 @@ photos_select(
 중요한 경계:
 
 - `add_selected_to_album`, `add_photo_ids_to_album`, `import_to_album` 은 단일 target album 만 건드린다.
+- `export_selected_bundle`은 사용자가 결과 화면에서 고른 사진을 기존/새 Apple 사진 앨범과 분류별 원본 폴더 중 하나 이상에 보낸다. 기존 앨범은 `target_album_id` UUID를 우선 사용하고, 로컬 결과에는 안전한 파일명, XMP sidecar, manifest를 남긴다.
 - `organize_by_category`는 Apple 결과에서는 `album_prefix` 기반 다중 분류 앨범을 만들고, local 결과에서는 `folder`를 필수 출력 디렉터리로 사용한다.
 - 단일 앨범 action 은 `album_prefix` 를 받지 않는다.
 - 카테고리 organize action 은 `target_album_name` 을 받지 않는다.

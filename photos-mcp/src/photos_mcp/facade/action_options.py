@@ -114,7 +114,7 @@ _register(ActionSpec(
     action="analyze_photo",
     allowed=_set("source", "photo_id", "path_or_bucket", "prompt", "include_faces", "max_size", "wait_for_local", "wait_timeout_seconds", "wait_poll_interval_seconds", "run_id"),
     required=_set("photo_id"),
-    defaults={"source": "apple", "path_or_bucket": "", "prompt": "", "include_faces": False, "max_size": 512, "wait_for_local": False, "wait_timeout_seconds": 120.0, "wait_poll_interval_seconds": 3.0, "run_id": ""},
+    defaults={"source": "apple", "path_or_bucket": "", "prompt": "", "include_faces": False, "max_size": 1024, "wait_for_local": False, "wait_timeout_seconds": 120.0, "wait_poll_interval_seconds": 3.0, "run_id": ""},
 ))
 _register(ActionSpec(
     tool="photos_select",
@@ -141,16 +141,16 @@ _register(ActionSpec(
 _register(ActionSpec(
     tool="photos_write",
     action="add_selected_to_album",
-    allowed=_set("run_id", "target_album_name", "folder"),
-    required=_set("run_id", "target_album_name"),
+    allowed=_set("run_id", "target_album_name", "target_album_id", "folder"),
+    required=_set("run_id"),
     forbidden=_set("album_prefix", "group_by_date", "min_score", "selection_profile", "date_from", "date_to", "results_json"),
     defaults={"folder": ""},
 ))
 _register(ActionSpec(
     tool="photos_write",
     action="add_photo_ids_to_album",
-    allowed=_set("source", "photo_ids", "target_album_name", "folder"),
-    required=_set("photo_ids", "target_album_name"),
+    allowed=_set("source", "photo_ids", "target_album_name", "target_album_id", "folder"),
+    required=_set("photo_ids"),
     forbidden=_set("album_prefix", "group_by_date", "min_score", "selection_profile", "date_from", "date_to", "run_id"),
     defaults={"source": "apple", "folder": ""},
 ))
@@ -160,6 +160,34 @@ _register(ActionSpec(
     allowed=_set("run_id", "output_dir", "top_n", "min_score", "group_by_date", "mode"),
     required=_set("run_id", "output_dir"),
     defaults={"top_n": 50, "min_score": 0.0, "group_by_date": False, "mode": "copy"},
+))
+_register(ActionSpec(
+    tool="photos_write",
+    action="export_selected_bundle",
+    allowed=_set(
+        "run_id",
+        "output_dir",
+        "target_album_name",
+        "target_album_id",
+        "folder",
+        "metadata_mode",
+        "exiftool_path",
+        "resume_from_receipt_id",
+    ),
+    required=_set("run_id"),
+    defaults={
+        "output_dir": "",
+        "target_album_name": "",
+        "target_album_id": "",
+        "folder": "",
+        "metadata_mode": "auto",
+        "exiftool_path": "",
+        "resume_from_receipt_id": "",
+    },
+    usage_hint=(
+        "Choose at least one destination: output_dir for classified original copies, "
+        "or target_album_name/target_album_id for an Apple Photos album. Both may be used together."
+    ),
 ))
 _register(ActionSpec(
     tool="photos_write",
@@ -316,9 +344,11 @@ def _retry_example_options(spec: ActionSpec, raw_options: dict[str, Any]) -> dic
         "wait_timeout_seconds",
         "wait_poll_interval_seconds",
         "target_album_name",
+        "target_album_id",
         "album_prefix",
         "folder",
         "output_dir",
+        "metadata_mode",
         "photo_paths",
         "run_id",
     ):
@@ -385,5 +415,38 @@ def validate_action_options(tool: str, action: str, options: Any) -> ValidatedAc
             missing_options=missing,
             raw_options=raw_options,
         ))
+
+    if tool == "photos_write" and normalized_action in {
+        "add_selected_to_album",
+        "add_photo_ids_to_album",
+    }:
+        if _is_missing(normalized_options.get("target_album_name")) and _is_missing(
+            normalized_options.get("target_album_id")
+        ):
+            raise ActionValidationError(_blocked_payload(
+                tool=tool,
+                action=normalized_action,
+                error_code="album_target_required",
+                error="An Apple Photos album name or album UUID is required",
+                spec=spec,
+                missing_options=["target_album_name_or_target_album_id"],
+                raw_options=raw_options,
+            ))
+
+    if tool == "photos_write" and normalized_action == "export_selected_bundle":
+        has_local = not _is_missing(normalized_options.get("output_dir"))
+        has_album = not _is_missing(normalized_options.get("target_album_name")) or not _is_missing(
+            normalized_options.get("target_album_id")
+        )
+        if not has_local and not has_album:
+            raise ActionValidationError(_blocked_payload(
+                tool=tool,
+                action=normalized_action,
+                error_code="export_destination_required",
+                error="Choose an Apple Photos album, a local output directory, or both",
+                spec=spec,
+                missing_options=["output_dir_or_album_target"],
+                raw_options=raw_options,
+            ))
 
     return ValidatedAction(action=normalized_action, options=normalized_options)

@@ -17,6 +17,20 @@ logger = logging.getLogger(__name__)
 SCENE_CLUSTER_ALGORITHM_VERSION = "vision-featureprint-v1"
 
 
+def _load_vision_runtime() -> tuple[Any, Any] | None:
+    """Load PyObjC Vision once before executor threads begin image work."""
+    try:
+        from Foundation import NSData
+        import Vision
+
+        if not hasattr(Vision, "VNGenerateImageFeaturePrintRequest"):
+            raise RuntimeError("Vision FeaturePrint request is unavailable")
+        return NSData, Vision
+    except Exception as exc:
+        logger.warning("Vision FeaturePrint is unavailable; using thumbnail descriptor: %s", exc)
+        return None
+
+
 def parse_capture_time(value: str | None) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -57,22 +71,29 @@ class VisualFeatureEngine:
     platforms where the Vision framework cannot be imported.
     """
 
+    def __init__(self) -> None:
+        # Pipeline creates this object on its main execution thread. Importing a
+        # PyObjC framework concurrently inside the executor can expose a partly
+        # initialized module to another worker.
+        self._vision_runtime = _load_vision_runtime()
+
     def extract(self, image_b64: str) -> np.ndarray:
+        if self._vision_runtime is None:
+            return self._extract_thumbnail(image_b64)
         try:
             return self._extract_vision(image_b64)
         except Exception as exc:
             logger.warning("Vision feature print failed; using thumbnail descriptor: %s", exc)
             return self._extract_thumbnail(image_b64)
 
-    @staticmethod
-    def _extract_vision(image_b64: str) -> np.ndarray:
-        from Foundation import NSData
-        import Vision
-
+    def _extract_vision(self, image_b64: str) -> np.ndarray:
+        nsdata_class, vision = self._vision_runtime or (None, None)
+        if nsdata_class is None or vision is None:
+            raise RuntimeError("Vision FeaturePrint runtime is unavailable")
         image_bytes = base64.b64decode(image_b64)
-        data = NSData.dataWithBytes_length_(image_bytes, len(image_bytes))
-        request = Vision.VNGenerateImageFeaturePrintRequest.alloc().init()
-        handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(data, {})
+        data = nsdata_class.dataWithBytes_length_(image_bytes, len(image_bytes))
+        request = vision.VNGenerateImageFeaturePrintRequest.alloc().init()
+        handler = vision.VNImageRequestHandler.alloc().initWithData_options_(data, {})
         success, error = handler.performRequests_error_([request], None)
         if not success or error is not None:
             raise RuntimeError(str(error or "Vision feature print request failed"))
@@ -277,7 +298,25 @@ def choose_detail_candidates(
     face_counts: dict[str, int],
     limit_per_cluster: int = 4,
 ) -> set[str]:
-    selected: set[str] = set()
+    return set(
+        detail_candidate_ranks(
+            clusters,
+            technical_scores=technical_scores,
+            face_counts=face_counts,
+            limit_per_cluster=limit_per_cluster,
+        )
+    )
+
+
+def detail_candidate_ranks(
+    clusters: Iterable[SceneCluster],
+    *,
+    technical_scores: dict[str, float],
+    face_counts: dict[str, int],
+    limit_per_cluster: int = 4,
+) -> dict[str, int]:
+    """Return the stable within-scene rank of each expensive VLM candidate."""
+    selected: dict[str, int] = {}
     limit = max(1, int(limit_per_cluster))
     for cluster in clusters:
         ranked = sorted(
@@ -290,7 +329,8 @@ def choose_detail_candidates(
                 photo_id,
             ),
         )
-        selected.update(ranked[:limit])
+        for rank, photo_id in enumerate(ranked[:limit], start=1):
+            selected[photo_id] = rank
     return selected
 
 

@@ -33,14 +33,21 @@ class NoopRuntimeBrokerClient:
 
 
 class CommandRuntimeBrokerClient:
-    def __init__(self, *, command: str, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        command: str,
+        timeout_seconds: float,
+        activity_command: str = "",
+    ) -> None:
         self.command = command
         self.timeout_seconds = timeout_seconds
+        self.activity_command = activity_command
 
-    async def acquire(self) -> None:
-        argv = shlex.split(self.command)
+    async def _run_command(self, command: str) -> None:
+        argv = shlex.split(command)
         if not argv:
-            raise RuntimeError("Vision runtime prepare command is empty")
+            return
 
         process = await asyncio.create_subprocess_exec(
             *argv,
@@ -56,7 +63,7 @@ class CommandRuntimeBrokerClient:
             process.kill()
             await process.communicate()
             raise RuntimeError(
-                f"Vision runtime prepare command timed out after {self.timeout_seconds:.0f}s"
+                f"Vision runtime command timed out after {self.timeout_seconds:.0f}s"
             ) from exc
 
         if process.returncode != 0:
@@ -64,13 +71,24 @@ class CommandRuntimeBrokerClient:
             if not detail:
                 detail = stdout.decode("utf-8", errors="replace").strip()
             raise RuntimeError(
-                f"Vision runtime prepare command failed with exit code {process.returncode}: {detail}"
+                f"Vision runtime command failed with exit code {process.returncode}: {detail}"
             )
+
+    async def acquire(self) -> None:
+        if not self.command.strip():
+            raise RuntimeError("Vision runtime prepare command is empty")
+        await self._run_command(self.command)
         logger.info("Vision runtime prepare command completed: %s", self.command)
 
     async def mark_used(self) -> None:
-        # The inference HTTP request itself is the Linux idle-watch activity signal.
-        return None
+        if not self.activity_command.strip():
+            return None
+        try:
+            await self._run_command(self.activity_command)
+        except Exception as exc:
+            # Inference already succeeded. A best-effort activity touch must not
+            # discard that completed result if the remote host is unavailable.
+            logger.warning("Vision runtime activity command failed: %s", exc)
 
     async def release(self) -> None:
         # Keep the tunnel available; Linux applies its own idle power-off policy.
@@ -90,4 +108,5 @@ def default_runtime_broker_client() -> VisionRuntimePort:
     return CommandRuntimeBrokerClient(
         command=settings.prepare_command,
         timeout_seconds=settings.prepare_timeout_seconds,
+        activity_command=settings.activity_command,
     )

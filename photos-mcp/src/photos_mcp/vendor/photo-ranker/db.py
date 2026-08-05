@@ -126,6 +126,7 @@ class JobDB:
                 source_photo_path TEXT DEFAULT '',
                 tags_json TEXT DEFAULT '[]',
                 selected INTEGER DEFAULT 0,
+                selection_overridden INTEGER NOT NULL DEFAULT 0,
                 note TEXT DEFAULT '',
                 PRIMARY KEY (job_id, photo_id),
                 FOREIGN KEY (job_id) REFERENCES jobs(id)
@@ -171,6 +172,15 @@ class JobDB:
         self._ensure_column("photo_results", "recommended_in_cluster", "INTEGER DEFAULT 0")
         self._ensure_column("photo_results", "recommendation_slot", "INTEGER DEFAULT 0")
         self._ensure_column("photo_results", "selection_reason_json", "TEXT DEFAULT '[]'")
+        self._ensure_column("photo_results", "detail_candidate", "INTEGER DEFAULT 0")
+        self._ensure_column("photo_results", "detail_candidate_rank", "INTEGER DEFAULT 0")
+        # Existing asset rows may contain a manual choice, so migrate them as
+        # protected. New rows explicitly start as automatic defaults.
+        self._ensure_column(
+            "job_assets",
+            "selection_overridden",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
         self._repair_stale_jobs()
         self._conn.commit()
 
@@ -357,7 +367,7 @@ class JobDB:
     def save_photo_results(
         self, job_id: str, results: list[dict]
     ) -> None:
-        """Save ranked photo results for a job."""
+        """Save ranked results and persist their initial recommendation state."""
         for r in results:
             self._conn.execute(
                 """
@@ -368,8 +378,8 @@ class JobDB:
                      known_persons_json, meaningful_score, capture_date,
                      technical_score, scene_cluster_id, scene_cluster_size,
                      cluster_rank, recommended_in_cluster, recommendation_slot,
-                     selection_reason_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     selection_reason_json, detail_candidate, detail_candidate_rank)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -392,6 +402,26 @@ class JobDB:
                     int(bool(r.get("recommended_in_cluster", False))),
                     r.get("recommendation_slot", 0),
                     json.dumps(r.get("selection_reason_codes", [])),
+                    int(bool(r.get("detail_candidate", False))),
+                    r.get("detail_candidate_rank", 0),
+                ),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO job_assets
+                    (job_id, photo_id, selected, selection_overridden)
+                VALUES (?, ?, ?, 0)
+                ON CONFLICT(job_id, photo_id) DO UPDATE SET
+                    selected = CASE
+                        WHEN job_assets.selection_overridden = 0
+                        THEN excluded.selected
+                        ELSE job_assets.selected
+                    END
+                """,
+                (
+                    job_id,
+                    r.get("photo_id", ""),
+                    1 if r.get("recommended_in_cluster", False) else 0,
                 ),
             )
         self._conn.commit()
@@ -426,6 +456,8 @@ class JobDB:
                 "recommended_in_cluster": bool(r["recommended_in_cluster"]) if "recommended_in_cluster" in r.keys() else False,
                 "recommendation_slot": r["recommendation_slot"] if "recommendation_slot" in r.keys() else 0,
                 "selection_reason_codes": json.loads(r["selection_reason_json"] or "[]") if "selection_reason_json" in r.keys() else [],
+                "detail_candidate": bool(r["detail_candidate"]) if "detail_candidate" in r.keys() else False,
+                "detail_candidate_rank": r["detail_candidate_rank"] if "detail_candidate_rank" in r.keys() else 0,
             }
             for r in rows
         ]
@@ -450,8 +482,9 @@ class JobDB:
         self._conn.execute(
             """
             INSERT INTO job_assets
-                (job_id, photo_id, preview_path, source_photo_path)
-            VALUES (?, ?, ?, ?)
+                (job_id, photo_id, preview_path, source_photo_path,
+                 selection_overridden)
+            VALUES (?, ?, ?, ?, 0)
             ON CONFLICT(job_id, photo_id) DO UPDATE SET
                 preview_path = excluded.preview_path,
                 source_photo_path = excluded.source_photo_path
@@ -468,6 +501,7 @@ class JobDB:
         tags: list[str] | None = None,
         selected: bool | None = None,
         note: str | None = None,
+        preserve_manual_selection: bool = False,
     ) -> dict:
         """Update review metadata for a classified photo."""
         current = self.list_job_assets(job_id).get(
@@ -479,21 +513,32 @@ class JobDB:
                 "source_photo_path": "",
                 "tags": [],
                 "selected": False,
+                "selection_overridden": False,
                 "note": "",
             },
         )
-        next_tags = current["tags"] if tags is None else tags
-        next_selected = current["selected"] if selected is None else bool(selected)
-        next_note = current["note"] if note is None else note
+        keep_manual = preserve_manual_selection and current["selection_overridden"]
+        next_tags = current["tags"] if tags is None or keep_manual else tags
+        next_selected = (
+            current["selected"]
+            if selected is None or keep_manual
+            else bool(selected)
+        )
+        next_note = current["note"] if note is None or keep_manual else note
+        selection_overridden = current["selection_overridden"] or (
+            selected is not None and not preserve_manual_selection
+        )
 
         self._conn.execute(
             """
             INSERT INTO job_assets
-                (job_id, photo_id, preview_path, source_photo_path, tags_json, selected, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (job_id, photo_id, preview_path, source_photo_path, tags_json,
+                 selected, selection_overridden, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id, photo_id) DO UPDATE SET
                 tags_json = excluded.tags_json,
                 selected = excluded.selected,
+                selection_overridden = excluded.selection_overridden,
                 note = excluded.note
             """,
             (
@@ -503,14 +548,53 @@ class JobDB:
                 current["source_photo_path"],
                 json.dumps(next_tags, ensure_ascii=False),
                 1 if next_selected else 0,
+                1 if selection_overridden else 0,
                 next_note,
             ),
         )
         self._conn.commit()
         current["tags"] = next_tags
         current["selected"] = next_selected
+        current["selection_overridden"] = selection_overridden
         current["note"] = next_note
         return current
+
+    @_synchronized
+    def set_all_photo_reviews(self, job_id: str, selected: bool) -> dict:
+        """Set selection for every job result without changing review details."""
+        selected_value = 1 if selected else 0
+        self._conn.execute(
+            """
+            INSERT INTO job_assets
+                (job_id, photo_id, selected, selection_overridden)
+            SELECT job_id, photo_id, ?, 1
+            FROM photo_results
+            WHERE job_id = ?
+            ON CONFLICT(job_id, photo_id) DO UPDATE SET
+                selected = excluded.selected,
+                selection_overridden = 1
+            """,
+            (selected_value, job_id),
+        )
+        counts = self._conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(job_assets.selected), 0) AS selected
+            FROM photo_results
+            JOIN job_assets
+              ON job_assets.job_id = photo_results.job_id
+             AND job_assets.photo_id = photo_results.photo_id
+            WHERE photo_results.job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        self._conn.commit()
+        return {
+            "job_id": job_id,
+            "total": int(counts["total"]),
+            "selected": int(counts["selected"]),
+        }
 
     @_synchronized
     def list_job_assets(self, job_id: str) -> dict[str, dict]:
@@ -527,6 +611,7 @@ class JobDB:
                 "source_photo_path": row["source_photo_path"],
                 "tags": json.loads(row["tags_json"] or "[]"),
                 "selected": bool(row["selected"]),
+                "selection_overridden": bool(row["selection_overridden"]),
                 "note": row["note"] or "",
             }
             for row in rows

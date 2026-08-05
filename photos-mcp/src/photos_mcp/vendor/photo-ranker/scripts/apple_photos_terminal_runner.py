@@ -34,8 +34,17 @@ def main() -> int:
     writer = AlbumWriter()
     if operation == "list_albums":
         result = writer.list_albums()
+    elif operation == "resolve_album":
+        result = writer.resolve_album(
+            payload["album_id"],
+            payload.get("album_name", ""),
+        )
     elif operation == "list_album_photo_ids":
-        result = writer.list_album_photo_ids(payload["name"], payload.get("folder", ""))
+        result = writer.list_album_photo_ids(
+            payload.get("name", ""),
+            payload.get("folder", ""),
+            payload.get("album_id", ""),
+        )
     elif operation == "probe_automation_access":
         result = writer.probe_automation_access()
     elif operation == "create_album":
@@ -45,8 +54,9 @@ def main() -> int:
     elif operation == "add_photos_to_album":
         result = writer.add_photos_to_album(
             payload["photo_uuids"],
-            payload["album_name"],
+            payload.get("album_name", ""),
             payload.get("folder", ""),
+            payload.get("album_id", ""),
         )
     elif operation == "import_photos":
         result = writer.import_photos(

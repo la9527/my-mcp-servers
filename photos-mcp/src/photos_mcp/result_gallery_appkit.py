@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import subprocess
+from threading import Thread
 from typing import Any
 
 import objc
 from AppKit import (
     NSAlert,
+    NSAlertFirstButtonReturn,
+    NSAlertSecondButtonReturn,
+    NSAlertThirdButtonReturn,
     NSAlertStyleWarning,
     NSBackingStoreBuffered,
     NSButton,
@@ -27,8 +33,10 @@ from AppKit import (
     NSLineBreakByWordWrapping,
     NSMakeRect,
     NSModalResponseOK,
+    NSOpenPanel,
     NSPasteboard,
     NSPasteboardTypeString,
+    NSPopUpButton,
     NSSavePanel,
     NSScrollView,
     NSTextField,
@@ -47,6 +55,8 @@ from AppKit import (
 from Foundation import NSIndexPath, NSMakeSize, NSSet, NSUserDefaults
 
 from photos_mcp.photo_viewer_appkit import PhotosMcpPhotoViewerController
+from photos_mcp.desktop_export_service import execute_selected_export, prepare_selected_export
+from photos_mcp.facade.common import call_vendor
 from photos_mcp.ui_theme import accent_color, app_font
 from photos_mcp.viewer_asset_service import hydrate_viewer_source_paths
 
@@ -156,16 +166,14 @@ def sorted_result_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def result_category(item: dict[str, Any]) -> str:
     if result_item_failure(item):
         return "review"
-    score = float(item.get("total_score") or item.get("quality_score") or 0.0)
-    if bool(item.get("selected")):
-        return "recommended"
     if "recommended_in_cluster" in item:
         if bool(item.get("recommended_in_cluster")):
             return "recommended"
-    elif score >= 80.0:
+        return "review"
+    # Export selection is independent from the analysis category. Legacy
+    # payloads without scene recommendation metadata use only the score.
+    if float(item.get("total_score") or item.get("quality_score") or 0.0) >= 80.0:
         return "recommended"
-    if score >= 65.0:
-        return "keep"
     return "review"
 
 
@@ -216,6 +224,11 @@ class PhotosMcpResultCollectionItem(NSCollectionViewItem):
         self._reason.setLineBreakMode_(NSLineBreakByWordWrapping)
         self._reason.setMaximumNumberOfLines_(2)
         self._reason.setUsesSingleLineMode_(False)
+        self._export_check = NSButton.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 28.0, 28.0))
+        self._export_check.setButtonType_(3)
+        self._export_check.setTitle_("")
+        self._export_check.setAccessibilityLabel_("내보내기 선택")
+        root.addSubview_(self._export_check)
 
     def prepareForReuse(self) -> None:
         objc.super(PhotosMcpResultCollectionItem, self).prepareForReuse()
@@ -238,15 +251,23 @@ class PhotosMcpResultCollectionItem(NSCollectionViewItem):
         self._badge.setFrame_(NSMakeRect(12.0, 58.0, max(70.0, width - 88.0), 18.0))
         self._score.setFrame_(NSMakeRect(max(12.0, width - 64.0), 56.0, 52.0, 21.0))
         self._reason.setFrame_(NSMakeRect(12.0, 12.0, max(1.0, width - 24.0), 38.0))
+        self._export_check.setFrame_(NSMakeRect(max(8.0, width - 36.0), max(8.0, height - 36.0), 28.0, 28.0))
 
     @objc.python_method
-    def configure(self, item: dict[str, Any]) -> None:
+    def configure(self, item: dict[str, Any], controller: Any | None = None) -> None:
         self.setRepresentedObject_(item)
+        self._export_check.setState_(1 if bool(item.get("selected")) else 0)
+        self._export_check.setIdentifier_(str(item.get("_export_token") or ""))
+        self._export_check.setAccessibilityLabel_(
+            f"내보내기 선택 {str(item.get('_export_token') or '').replace('result-', '')}"
+        )
+        self._export_check.setTarget_(controller)
+        self._export_check.setAction_("toggleItemSelection:")
+        self._export_check.setEnabled_(not bool(getattr(controller, "_export_in_progress", False)))
         failure = result_item_failure(item)
         category = result_category(item)
         category_label = "실패" if failure else {
             "recommended": "추천",
-            "keep": "보관",
             "review": "검토 필요",
         }[category]
         cluster_size = max(1, int(item.get("scene_cluster_size") or 1))
@@ -260,7 +281,6 @@ class PhotosMcpResultCollectionItem(NSCollectionViewItem):
                 category_label = f"대안 · {cluster_size}장 중 {cluster_rank}위"
         tone = "error" if failure else {
             "recommended": "success",
-            "keep": "neutral",
             "review": "warning",
         }[category]
         reason = failure or str(item.get("scene_description") or "분석 결과를 확인하세요.")
@@ -326,6 +346,7 @@ class PhotosMcpResultsController(NSWindowController):
         self._items: list[dict[str, Any]] = []
         self._visible_items: list[dict[str, Any]] = []
         self._viewer_items_by_id: dict[str, dict[str, Any]] = {}
+        self._photo_id_by_export_token: dict[str, str] = {}
         self._filter = "all"
         self._selected_photo_id = ""
         defaults = NSUserDefaults.standardUserDefaults()
@@ -333,6 +354,16 @@ class PhotosMcpResultsController(NSWindowController):
         self._density_index = initial_density_index(stored_density)
         self._computed_columns = 3
         self._viewer_controller = PhotosMcpPhotoViewerController.alloc().init()
+        self._selection_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="photos-mcp-review-selection",
+        )
+        self._export_worker: Thread | None = None
+        self._pending_export_options: dict[str, Any] = {}
+        self._result_generation = 0
+        self._export_generation = 0
+        self._export_in_progress = False
+        self._selection_persist_error = ""
         self._is_laying_out = False
         window.setTitle_("사진 분류 결과")
         window.setMinSize_(NSMakeSize(_RESULT_MIN_WIDTH, _RESULT_MIN_HEIGHT))
@@ -347,8 +378,24 @@ class PhotosMcpResultsController(NSWindowController):
         return self
 
     def showWithResult_(self, payload: dict[str, Any]) -> None:
+        if self._export_in_progress:
+            self.window().makeKeyAndOrderFront_(None)
+            self._show_alert(
+                "내보내기가 진행 중입니다",
+                "현재 내보내기가 끝난 뒤 다른 사진 결과를 열어주세요.",
+            )
+            return
+        self._result_generation += 1
+        self._export_generation += 1
+        self._export_in_progress = False
+        self._selection_persist_error = ""
         self._payload = dict(payload or {})
         self._items = sorted_result_items(self._payload)[:1000]
+        self._photo_id_by_export_token = {}
+        for index, item in enumerate(self._items, start=1):
+            token = f"result-{index}"
+            item["_export_token"] = token
+            self._photo_id_by_export_token[token] = str(item.get("photo_id") or "")
         private_items = hydrate_viewer_source_paths(self._payload, self._items)
         self._viewer_items_by_id = {
             str(item.get("photo_id") or ""): item for item in private_items
@@ -444,6 +491,75 @@ class PhotosMcpResultsController(NSWindowController):
             alert.addButtonWithTitle_("확인")
             alert.runModal()
 
+    def toggleItemSelection_(self, sender) -> None:
+        if self._export_in_progress:
+            return
+        photo_id = self._photo_id_by_export_token.get(self._sender_identifier(sender), "")
+        selected = bool(sender.state())
+        if not photo_id:
+            return
+        for item in self._items:
+            if str(item.get("photo_id") or "") == photo_id:
+                item["selected"] = selected
+                break
+        self._refresh_selection_controls()
+        self._persist_single_selection(photo_id, selected)
+
+    def selectAllExport_(self, _sender) -> None:
+        self._set_all_selection(True)
+
+    def clearAllExport_(self, _sender) -> None:
+        self._set_all_selection(False)
+
+    def exportSelected_(self, _sender) -> None:
+        result_generation = self._result_generation
+        selected_count = self._selected_export_count()
+        if selected_count <= 0:
+            self._show_alert("내보낼 사진이 없습니다", "사진 카드에서 내보낼 사진을 선택하세요.")
+            return
+
+        chooser = NSAlert.alloc().init()
+        chooser.setMessageText_(f"선택한 {selected_count}장 내보내기")
+        chooser.setInformativeText_(
+            "Apple 사진 앨범과 로컬 분류 폴더를 함께 선택하거나 한 곳만 선택할 수 있습니다."
+        )
+        chooser.addButtonWithTitle_("두 곳 모두")
+        chooser.addButtonWithTitle_("Apple 사진 앨범")
+        chooser.addButtonWithTitle_("로컬 분류 폴더")
+        chooser.addButtonWithTitle_("취소")
+        response = chooser.runModal()
+        if result_generation != self._result_generation:
+            return
+        if response not in {NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAlertThirdButtonReturn}:
+            return
+
+        wants_album = response in {NSAlertFirstButtonReturn, NSAlertSecondButtonReturn}
+        wants_local = response in {NSAlertFirstButtonReturn, NSAlertThirdButtonReturn}
+        options: dict[str, Any] = {
+            "run_id": str(self._payload.get("job_id") or self._payload.get("run_id") or ""),
+            "metadata_mode": "auto",
+        }
+        if wants_album:
+            if wants_local:
+                output_dir = self._choose_export_directory()
+                if result_generation != self._result_generation:
+                    return
+                if not output_dir:
+                    return
+                options["output_dir"] = output_dir
+            self._begin_export_flow()
+            self._start_album_target_choice(options)
+            return
+        if wants_local:
+            output_dir = self._choose_export_directory()
+            if result_generation != self._result_generation:
+                return
+            if not output_dir:
+                return
+            options["output_dir"] = output_dir
+        self._begin_export_flow()
+        self._start_export_plan(options)
+
     def windowDidResize_(self, _notification) -> None:
         if not self._is_laying_out:
             self._layout_view(anchor_index=self._top_visible_index())
@@ -462,7 +578,7 @@ class PhotosMcpResultsController(NSWindowController):
         item = collection_view.makeItemWithIdentifier_forIndexPath_(_ITEM_IDENTIFIER, index_path)
         index = int(index_path.item())
         if 0 <= index < len(self._visible_items):
-            item.configure(self._visible_items[index])
+            item.configure(self._visible_items[index], self)
         return item
 
     def collectionView_didSelectItemsAtIndexPaths_(self, _collection_view, index_paths) -> None:
@@ -489,7 +605,6 @@ class PhotosMcpResultsController(NSWindowController):
         self._summary_labels: dict[str, Any] = {}
         for key, title, tone in (
             ("recommended", "추천", "success"),
-            ("keep", "보관", "neutral"),
             ("review", "검토 필요", "warning"),
         ):
             card = self._card(root, tone=tone)
@@ -499,12 +614,15 @@ class PhotosMcpResultsController(NSWindowController):
             self._summary_labels[key] = label
 
         self._filter_buttons: dict[str, Any] = {}
-        for key in ("all", "recommended", "keep", "review"):
+        for key in ("all", "recommended", "review"):
             self._filter_buttons[key] = self._button(root, "", "filterResults:", identifier=key)
         self._density_smaller = self._button(root, "−", "changeDensity:", identifier="smaller")
         self._density_label = self._label(root, "자동 3열", 9.5, bold=True)
         self._density_label.setAlignment_(1)
         self._density_larger = self._button(root, "+", "changeDensity:", identifier="larger")
+        self._selection_label = self._label(root, "선택한 0장", 10.0, bold=True)
+        self._select_all_button = self._button(root, "전체 선택", "selectAllExport:")
+        self._clear_all_button = self._button(root, "전체 해제", "clearAllExport:")
 
         self._flow_layout = NSCollectionViewFlowLayout.alloc().init()
         self._flow_layout.setScrollDirection_(NSCollectionViewScrollDirectionVertical)
@@ -561,7 +679,8 @@ class PhotosMcpResultsController(NSWindowController):
         self._inspector_event = self._label(self._inspector_card, "", 9.5, secondary=True)
 
         self._finder_button = self._button(root, "Finder에서 보기", "revealSelected:")
-        self._export_button = self._button(root, "결과 내보내기", "exportResults:")
+        self._json_export_button = self._button(root, "결과 JSON", "exportResults:")
+        self._export_button = self._button(root, "선택한 사진 내보내기", "exportSelected:", primary=True)
         self._close_button = self._button(root, "닫기", "closeWindow:", primary=True)
         self._layout_view()
 
@@ -583,8 +702,8 @@ class PhotosMcpResultsController(NSWindowController):
 
             tile_y = height - 162.0
             tile_gap = 10.0
-            tile_width = (gallery_width - tile_gap * 2.0) / 3.0
-            for index, key in enumerate(("recommended", "keep", "review")):
+            tile_width = (gallery_width - tile_gap) / 2.0
+            for index, key in enumerate(("recommended", "review")):
                 self._summary_cards[key].setFrame_(
                     NSMakeRect(margin + index * (tile_width + tile_gap), tile_y, tile_width, 58.0)
                 )
@@ -594,8 +713,8 @@ class PhotosMcpResultsController(NSWindowController):
             density_width = 150.0
             filter_area_width = gallery_width - density_width - 10.0
             filter_gap = 6.0
-            filter_width = (filter_area_width - filter_gap * 3.0) / 4.0
-            for index, key in enumerate(("all", "recommended", "keep", "review")):
+            filter_width = (filter_area_width - filter_gap * 2.0) / 3.0
+            for index, key in enumerate(("all", "recommended", "review")):
                 self._filter_buttons[key].setFrame_(
                     NSMakeRect(margin + index * (filter_width + filter_gap), toolbar_y, filter_width, 32.0)
                 )
@@ -618,7 +737,11 @@ class PhotosMcpResultsController(NSWindowController):
 
             footer_y = 24.0
             self._finder_button.setFrame_(NSMakeRect(margin, footer_y, 150.0, 34.0))
-            self._export_button.setFrame_(NSMakeRect(width - margin - 222.0, footer_y, 112.0, 34.0))
+            self._selection_label.setFrame_(NSMakeRect(margin + 166.0, footer_y + 7.0, 100.0, 20.0))
+            self._select_all_button.setFrame_(NSMakeRect(margin + 270.0, footer_y, 86.0, 34.0))
+            self._clear_all_button.setFrame_(NSMakeRect(margin + 362.0, footer_y, 86.0, 34.0))
+            self._json_export_button.setFrame_(NSMakeRect(width - margin - 414.0, footer_y, 96.0, 34.0))
+            self._export_button.setFrame_(NSMakeRect(width - margin - 308.0, footer_y, 198.0, 34.0))
             self._close_button.setFrame_(NSMakeRect(width - margin - 100.0, footer_y, 100.0, 34.0))
             self._update_collection_layout(gallery_width)
             if anchor_index is not None and self._visible_items:
@@ -668,12 +791,10 @@ class PhotosMcpResultsController(NSWindowController):
             else "선택한 작업에 저장된 분석 결과가 없습니다."
         )
         self._summary_labels["recommended"].setStringValue_(f"추천  {counts['recommended']}")
-        self._summary_labels["keep"].setStringValue_(f"보관  {counts['keep']}")
         self._summary_labels["review"].setStringValue_(f"검토 필요  {counts['review']}")
         labels = {
             "all": f"전체 {len(self._items)}",
             "recommended": f"추천 {counts['recommended']}",
-            "keep": f"보관 {counts['keep']}",
             "review": f"검토 필요 {counts['review']}",
         }
         for key, button in self._filter_buttons.items():
@@ -682,6 +803,7 @@ class PhotosMcpResultsController(NSWindowController):
         self._scroll_view.setHidden_(not self._visible_items)
         self._empty_card.setHidden_(bool(self._visible_items))
         self._collection_view.reloadData()
+        self._refresh_selection_controls()
         self._sync_selection()
         self._update_inspector()
         self._layout_view()
@@ -765,10 +887,360 @@ class PhotosMcpResultsController(NSWindowController):
 
     @objc.python_method
     def _category_counts(self) -> dict[str, int]:
-        counts = {"recommended": 0, "keep": 0, "review": 0}
+        counts = {"recommended": 0, "review": 0}
         for item in self._items:
             counts[result_category(item)] += 1
         return counts
+
+    @objc.python_method
+    def _selected_export_count(self) -> int:
+        return sum(1 for item in self._items if bool(item.get("selected")))
+
+    @objc.python_method
+    def _refresh_selection_controls(self) -> None:
+        count = self._selected_export_count()
+        if hasattr(self, "_selection_label"):
+            self._selection_label.setStringValue_(f"선택한 {count}장")
+            self._export_button.setTitle_(f"선택한 {count}장 내보내기")
+            self._export_button.setEnabled_(count > 0 and not self._export_in_progress)
+            self._select_all_button.setEnabled_(not self._export_in_progress)
+            self._clear_all_button.setEnabled_(not self._export_in_progress)
+        if hasattr(self, "_collection_view"):
+            self._collection_view.reloadData()
+
+    @objc.python_method
+    def _set_all_selection(self, selected: bool) -> None:
+        if self._export_in_progress:
+            return
+        for item in self._items:
+            item["selected"] = selected
+        self._refresh_selection_controls()
+        run_id = str(self._payload.get("job_id") or self._payload.get("run_id") or "")
+        generation = self._result_generation
+
+        def worker() -> None:
+            try:
+                asyncio.run(call_vendor("photo-ranker", "set_all_photo_reviews", run_id, selected))
+            except Exception as exc:
+                self._selection_persist_error = str(exc)
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "selectionPersistFailed:", {"message": str(exc), "generation": generation}, False
+                )
+
+        self._selection_executor.submit(worker)
+
+    @objc.python_method
+    def _persist_single_selection(self, photo_id: str, selected: bool) -> None:
+        run_id = str(self._payload.get("job_id") or self._payload.get("run_id") or "")
+        generation = self._result_generation
+
+        def worker() -> None:
+            try:
+                asyncio.run(
+                    call_vendor(
+                        "photo-ranker",
+                        "set_photo_review",
+                        run_id,
+                        photo_id,
+                        selected=selected,
+                    )
+                )
+            except Exception as exc:
+                self._selection_persist_error = str(exc)
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "selectionPersistFailed:", {"message": str(exc), "generation": generation}, False
+                )
+
+        self._selection_executor.submit(worker)
+
+    def selectionPersistFailed_(self, message) -> None:
+        payload = dict(message or {}) if isinstance(message, dict) else {"message": str(message)}
+        if int(payload.get("generation") or -1) != self._result_generation:
+            return
+        self._show_alert(
+            "선택 상태를 저장하지 못했습니다",
+            f"결과를 다시 열면 이전 선택 상태로 돌아갈 수 있습니다.\n\n{payload.get('message', '')}",
+        )
+
+    @objc.python_method
+    def _begin_export_flow(self) -> None:
+        self._export_generation += 1
+        self._export_in_progress = True
+        self._refresh_selection_controls()
+
+    @objc.python_method
+    def _finish_export_flow(self) -> None:
+        self._export_in_progress = False
+        self._refresh_selection_controls()
+
+    @objc.python_method
+    def _start_album_target_choice(self, options: dict[str, Any]) -> None:
+        self._pending_export_options = dict(options)
+        self._export_button.setEnabled_(False)
+        self._export_button.setTitle_("앨범 목록 불러오는 중…")
+        generation = self._result_generation
+        export_generation = self._export_generation
+
+        def worker() -> None:
+            try:
+                albums = asyncio.run(call_vendor("photo-ranker", "list_photo_albums"))
+                if isinstance(albums, dict) and (albums.get("error") or albums.get("error_code")):
+                    payload = {"albums": [], "error": str(albums.get("error") or albums.get("error_code"))}
+                else:
+                    payload = {"albums": albums if isinstance(albums, list) else []}
+            except Exception as exc:
+                payload = {"albums": [], "error": str(exc)}
+            payload["generation"] = generation
+            payload["export_generation"] = export_generation
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "albumsLoadedForExport:", payload, False
+            )
+
+        self._export_worker = Thread(target=worker, name="photos-mcp-export-albums", daemon=True)
+        self._export_worker.start()
+
+    def albumsLoadedForExport_(self, payload) -> None:
+        result = dict(payload or {})
+        if int(result.get("generation") or -1) != self._result_generation:
+            return
+        if int(result.get("export_generation") or -1) != self._export_generation:
+            return
+        if result.get("error"):
+            self._finish_export_flow()
+            self._show_alert("Apple 사진 앨범을 불러오지 못했습니다", str(result["error"]))
+            return
+        albums = [dict(item) for item in result.get("albums") or [] if isinstance(item, dict)]
+        options = dict(self._pending_export_options)
+        accessory = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 420.0, 72.0))
+        popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(0.0, 40.0, 420.0, 28.0), False
+        )
+        popup.setAccessibilityLabel_("기존 Apple 사진 앨범")
+        popup.addItemWithTitle_("새 앨범 만들기…")
+        for album in albums:
+            folder = str(album.get("folder") or "")
+            name = str(album.get("name") or "이름 없는 앨범")
+            count = int(album.get("count") or 0)
+            prefix = f"{folder} / " if folder else ""
+            popup.addItemWithTitle_(f"{prefix}{name} ({count}장)")
+        if albums:
+            popup.selectItemAtIndex_(1)
+        accessory.addSubview_(popup)
+        new_name = NSTextField.alloc().initWithFrame_(NSMakeRect(0.0, 4.0, 420.0, 28.0))
+        new_name.setPlaceholderString_("새 앨범을 선택한 경우 앨범명 입력")
+        new_name.setAccessibilityLabel_("새 Apple 사진 앨범명")
+        accessory.addSubview_(new_name)
+
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Apple 사진 앨범 선택")
+        alert.setInformativeText_("기존 앨범은 UUID로 정확히 지정됩니다.")
+        alert.setAccessoryView_(accessory)
+        alert.addButtonWithTitle_("계속")
+        alert.addButtonWithTitle_("취소")
+        response = alert.runModal()
+        if (
+            int(result.get("generation") or -1) != self._result_generation
+            or int(result.get("export_generation") or -1) != self._export_generation
+        ):
+            return
+        if response != NSAlertFirstButtonReturn:
+            self._finish_export_flow()
+            return
+
+        selected_index = int(popup.indexOfSelectedItem())
+        if selected_index > 0 and selected_index - 1 < len(albums):
+            album = albums[selected_index - 1]
+            options["target_album_id"] = str(album.get("uuid") or album.get("album_id") or "")
+            options["target_album_name"] = str(album.get("name") or "")
+        else:
+            album_name = str(new_name.stringValue() or "").strip()
+            if not album_name:
+                self._show_alert("앨범명이 필요합니다", "새로 만들 Apple 사진 앨범명을 입력하세요.")
+                self._finish_export_flow()
+                return
+            options["target_album_name"] = album_name
+        self._start_export_plan(options)
+
+    @objc.python_method
+    def _choose_export_directory(self) -> str:
+        panel = NSOpenPanel.openPanel()
+        panel.setCanChooseDirectories_(True)
+        panel.setCanChooseFiles_(False)
+        panel.setCanCreateDirectories_(True)
+        panel.setAllowsMultipleSelection_(False)
+        panel.setPrompt_("선택")
+        if panel.runModal() != NSModalResponseOK or panel.URL() is None:
+            return ""
+        return str(panel.URL().path() or "")
+
+    @objc.python_method
+    def _start_export_plan(self, options: dict[str, Any]) -> None:
+        self._pending_export_options = dict(options)
+        self._export_button.setEnabled_(False)
+        self._export_button.setTitle_("내보내기 계획 확인 중…")
+        state_store = self._menu_controller._state_store
+        generation = self._result_generation
+        export_generation = self._export_generation
+        selection_barrier = self._selection_executor.submit(
+            lambda: self._selection_persist_error
+        )
+
+        def worker() -> None:
+            try:
+                persist_error = str(selection_barrier.result() or "")
+                if persist_error:
+                    payload = {
+                        "status": "failed",
+                        "error_code": "selection_persistence_failed",
+                        "error": persist_error,
+                    }
+                else:
+                    payload = asyncio.run(prepare_selected_export(state_store, options))
+            except Exception as exc:
+                payload = {"status": "failed", "error": str(exc)}
+            payload["generation"] = generation
+            payload["export_generation"] = export_generation
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "exportPlanReady:", payload, False
+            )
+
+        self._export_worker = Thread(target=worker, name="photos-mcp-export-plan", daemon=True)
+        self._export_worker.start()
+
+    def exportPlanReady_(self, payload) -> None:
+        result = dict(payload or {})
+        if int(result.get("generation") or -1) != self._result_generation:
+            return
+        if int(result.get("export_generation") or -1) != self._export_generation:
+            return
+        if result.get("status") != "awaiting_approval":
+            self._finish_export_flow()
+            self._show_alert(
+                "내보내기 계획을 만들지 못했습니다",
+                str(result.get("error") or result.get("error_code") or "알 수 없는 오류"),
+            )
+            return
+        plan = dict(result.get("mutation_plan") or {})
+        destinations = dict(plan.get("destinations") or {})
+        destination_text = []
+        if destinations.get("local_directory"):
+            destination_text.append("로컬 분류 폴더")
+        if destinations.get("apple_album"):
+            destination_text.append("Apple 사진 앨범")
+        destination_details = []
+        if plan.get("target_album_name"):
+            folder_prefix = f"{plan.get('folder')} / " if plan.get("folder") else ""
+            destination_details.append(f"앨범: {folder_prefix}{plan.get('target_album_name')}")
+        if plan.get("output_dir"):
+            destination_details.append(f"로컬 폴더: {plan.get('output_dir')}")
+        if plan.get("metadata_mode"):
+            destination_details.append(f"메타데이터: {plan.get('metadata_mode')}")
+        alert = NSAlert.alloc().init()
+        alert.setAlertStyle_(NSAlertStyleWarning)
+        alert.setMessageText_(f"선택한 {int(plan.get('photo_count') or 0)}장을 내보낼까요?")
+        approval_detail = (
+            f"대상: {', '.join(destination_text)}\n"
+            f"원본 준비 완료 {int(plan.get('originals_ready_count') or 0)}장 · "
+            f"준비 필요 {int(plan.get('originals_pending_count') or 0)}장\n\n"
+        )
+        if destination_details:
+            approval_detail += "\n".join(destination_details) + "\n\n"
+        approval_detail += "승인 후에만 사진 앨범과 파일 시스템이 변경됩니다."
+        alert.setInformativeText_(approval_detail)
+        alert.addButtonWithTitle_("승인하고 내보내기")
+        alert.addButtonWithTitle_("취소")
+        response = alert.runModal()
+        if (
+            int(result.get("generation") or -1) != self._result_generation
+            or int(result.get("export_generation") or -1) != self._export_generation
+        ):
+            self._menu_controller._state_store.decide_mutation_plan(
+                result["approval_token"], "rejected"
+            )
+            return
+        if response != NSAlertFirstButtonReturn:
+            self._menu_controller._state_store.decide_mutation_plan(result["approval_token"], "rejected")
+            self._finish_export_flow()
+            return
+        self._menu_controller._state_store.decide_mutation_plan(result["approval_token"], "approved")
+        self._start_export_execution(str(result["approval_token"]))
+
+    @objc.python_method
+    def _start_export_execution(self, approval_token: str) -> None:
+        options = dict(self._pending_export_options)
+        state_store = self._menu_controller._state_store
+        self._export_button.setEnabled_(False)
+        self._export_button.setTitle_("내보내는 중…")
+        generation = self._result_generation
+        export_generation = self._export_generation
+
+        def worker() -> None:
+            try:
+                payload = asyncio.run(
+                    execute_selected_export(state_store, options, approval_token)
+                )
+            except Exception as exc:
+                payload = {"status": "failed", "error": str(exc)}
+            payload["generation"] = generation
+            payload["export_generation"] = export_generation
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "exportExecutionFinished:", payload, False
+            )
+
+        self._export_worker = Thread(target=worker, name="photos-mcp-export-write", daemon=True)
+        self._export_worker.start()
+
+    def exportExecutionFinished_(self, payload) -> None:
+        result = dict(payload or {})
+        if int(result.get("generation") or -1) != self._result_generation:
+            return
+        if int(result.get("export_generation") or -1) != self._export_generation:
+            return
+        destinations = dict(result.get("destinations") or {})
+        local = dict(destinations.get("local_directory") or {})
+        album = dict(destinations.get("apple_album") or {})
+        detail = (
+            f"로컬 폴더: {local.get('status', '선택 안 함')} · {int(local.get('exported') or 0)}장\n"
+            f"Apple 앨범: {album.get('status', '선택 안 함')} · {int(album.get('added') or 0)}장"
+        )
+        if result.get("status") == "completed":
+            self._finish_export_flow()
+            self._show_alert("내보내기가 완료되었습니다", detail)
+            return
+
+        alert = NSAlert.alloc().init()
+        alert.setAlertStyle_(NSAlertStyleWarning)
+        alert.setMessageText_("일부 내보내기를 확인해야 합니다")
+        alert.setInformativeText_(detail)
+        receipt = dict(result.get("mutation_receipt") or {})
+        receipt_id = str(receipt.get("receipt_id") or "")
+        if result.get("retry_available") and receipt_id:
+            alert.addButtonWithTitle_("미완료 대상 다시 실행")
+            alert.addButtonWithTitle_("닫기")
+            response = alert.runModal()
+            if (
+                int(result.get("generation") or -1) != self._result_generation
+                or int(result.get("export_generation") or -1) != self._export_generation
+            ):
+                return
+            if response == NSAlertFirstButtonReturn:
+                retry_options = dict(self._pending_export_options)
+                retry_options["resume_from_receipt_id"] = receipt_id
+                self._start_export_plan(retry_options)
+            else:
+                self._finish_export_flow()
+            return
+        alert.addButtonWithTitle_("확인")
+        alert.runModal()
+        self._finish_export_flow()
+
+    @objc.python_method
+    def _show_alert(self, title: str, detail: str) -> None:
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(title)
+        alert.setInformativeText_(detail)
+        alert.addButtonWithTitle_("확인")
+        alert.runModal()
 
     @objc.python_method
     def _sender_identifier(self, sender) -> str:

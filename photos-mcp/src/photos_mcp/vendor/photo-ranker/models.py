@@ -115,6 +115,8 @@ class RankedPhoto:
     recommended_in_cluster: bool = False
     recommendation_slot: int = 0
     selection_reason_codes: list[str] = field(default_factory=list)
+    detail_candidate: bool = False
+    detail_candidate_rank: int = 0
 
     def to_dict(self) -> dict:
         d = {
@@ -142,6 +144,8 @@ class RankedPhoto:
                 "recommended_in_cluster": self.recommended_in_cluster,
                 "recommendation_slot": self.recommendation_slot,
                 "selection_reason_codes": list(self.selection_reason_codes),
+                "detail_candidate": self.detail_candidate,
+                "detail_candidate_rank": self.detail_candidate_rank,
             }
         )
         return d

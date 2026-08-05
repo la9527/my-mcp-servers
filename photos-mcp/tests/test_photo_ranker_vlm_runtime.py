@@ -80,7 +80,7 @@ def test_vlm_runtime_metadata_excludes_endpoint_credentials(monkeypatch) -> None
     assert metadata["model"] == "vision-local-model"
     assert metadata["backend"] == "openai_compat"
     assert metadata["prompt_version"] == "photo-ranker-scene-v1"
-    assert metadata["input_max_dimension"] == 512
+    assert metadata["input_max_dimension"] == 1024
     assert "api_base" not in metadata
     assert "api_key" not in metadata
 

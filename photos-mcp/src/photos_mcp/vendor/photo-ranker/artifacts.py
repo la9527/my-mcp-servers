@@ -71,7 +71,7 @@ def save_job_results(
     return str(dest)
 
 
-def save_preview(job_id: str, photo_id: str, image_b64: str, max_size: int = 512) -> str:
+def save_preview(job_id: str, photo_id: str, image_b64: str, max_size: int = 1024) -> str:
     """Save a JPEG preview for a classified photo and return the file path."""
     previews_dir, _ = ensure_job_dirs(job_id)
     image = _decode_image(image_b64)

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "privacy": {
+    "contains_photo_ids": false,
+    "contains_paths": false,
+    "contains_images": false,
+    "contains_face_boxes": false,
+    "contains_individual_face_scores": false
+  },
+  "dataset": {
+    "input_photos": 1000,
+    "changed_top1_scenes": 30,
+    "manual_sampled_changed_scenes": 12,
+    "sampling": "chronologically spread private changed Top-1 scenes"
+  },
+  "manual_visual_review": {
+    "face_adjusted_candidate_clearly_preferred": 3,
+    "visually_equivalent_or_near_duplicate": 6,
+    "existing_candidate_preferred_or_change_not_supported": 3,
+    "criteria": [
+      "visible faces and eye direction",
+      "face sharpness and exposure",
+      "group framing",
+      "overall photo composition"
+    ]
+  },
+  "decision": {
+    "activate_as_default_ranking": false,
+    "mode": "shadow_only",
+    "reason": "The signal improves some portraits but does not reliably distinguish expression, composition, or near-duplicate frames.",
+    "next_gate": "Review at least 250 labeled scenes and compare Top-1, NDCG@2, Recall@4, and group-photo failure rate."
+  }
+}

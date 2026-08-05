@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "privacy": {
+    "contains_photo_ids": false,
+    "contains_paths": false,
+    "contains_face_boxes": false,
+    "contains_individual_face_scores": false
+  },
+  "runtime": {
+    "face_capture_revision": 3,
+    "rss_before_mb": 56.7,
+    "rss_after_mb": 141.41
+  },
+  "input_photos": 1000,
+  "face_capture_quality": {
+    "images_with_faces": 485,
+    "images_without_faces": 515,
+    "face_observations": 822,
+    "scores": {
+      "count": 822,
+      "min": 0.042877,
+      "mean": 0.261164,
+      "median": 0.215637,
+      "p95": 0.519043,
+      "max": 0.658691
+    },
+    "request_seconds": {
+      "count": 1000,
+      "min": 0.002931,
+      "mean": 0.005441,
+      "median": 0.005071,
+      "p95": 0.00776,
+      "max": 0.096851
+    }
+  },
+  "group_face_quality": {
+    "images_scored": 485,
+    "scores": {
+      "count": 485,
+      "min": 0.056488,
+      "mean": 0.263571,
+      "median": 0.226685,
+      "p95": 0.497178,
+      "max": 0.626465
+    },
+    "low_quality_below_0_35": 357,
+    "formula": "0.55*min + 0.25*area_weighted_mean + 0.20*lower_quartile_mean"
+  },
+  "shadow_candidate_impact": {
+    "clusters_total": 776,
+    "clusters_with_face_signal": 359,
+    "top1_changed": 30,
+    "top4_membership_changed": 2,
+    "limitation": "This is a score-shift measurement only. Human labels are required to decide whether a changed candidate is actually better."
+  }
+}

@@ -51,6 +51,7 @@ def _plan_summary(action: str, options: dict[str, Any]) -> dict[str, Any]:
     for key in (
         "run_id", "source", "album", "person", "date_from", "date_to", "limit",
         "target_album_name", "album_prefix", "folder", "output_dir", "selection_profile",
+        "target_album_id", "metadata_mode", "resume_from_receipt_id",
     ):
         value = options.get(key)
         if value not in (None, "", []):
@@ -141,7 +142,25 @@ def require_mutation_approval(
                 "idempotency_key": idempotency_key,
                 "mutation_receipt": receipt,
             }, None
-        repo.consume_mutation_plan(approval_token)
+        if pending["status"] != "approved":
+            return {
+                "status": "blocked",
+                "terminal": False,
+                "error_code": "mutation_not_approved",
+                "tool": tool,
+                "action": validated.action,
+                "approval_required": True,
+                "approval_token": approval_token,
+                "next_suggested_action": tool,
+            }, None
+        if not repo.consume_mutation_plan(approval_token):
+            return {
+                "status": "blocked",
+                "terminal": False,
+                "error_code": "mutation_token_already_consumed",
+                "duplicate_suppressed": True,
+                "idempotency_key": idempotency_key,
+            }, None
         normalized["__mutation_context"] = {
             "approval_token": approval_token,
             "idempotency_key": idempotency_key,
@@ -204,7 +223,10 @@ def begin_mutation_receipt(context: dict[str, Any], options: dict[str, Any]) -> 
         "started_at": _utcnow_iso(),
         "action": str(plan.get("action") or ""),
         "target_album_name": str(plan.get("target_album_name") or ""),
+        "target_album_id": str(plan.get("target_album_id") or ""),
         "folder": str(plan.get("folder") or ""),
+        "output_dir": str(plan.get("output_dir") or ""),
+        "metadata_mode": str(plan.get("metadata_mode") or ""),
         "requested_photo_ids": list(plan.get("photo_ids") or []),
         "requested_photo_paths": list(plan.get("photo_paths") or []),
         "confirmed_photo_ids": [],
@@ -243,6 +265,8 @@ def finalize_mutation_receipt(
         return finalized
 
     payload = dict(result or {})
+    destination_receipts = dict(payload.get("destination_receipts") or {})
+    explicit_status = str(payload.get("status") or "")
     failed = int(payload.get("failed") or payload.get("failure_count") or 0)
     added_value = payload.get(
         "added",
@@ -253,7 +277,21 @@ def finalize_mutation_receipt(
     )
     added = int(added_value or 0)
     has_error = bool(payload.get("error") or payload.get("error_code"))
-    if has_error:
+    if destination_receipts:
+        destination_statuses = {
+            str(item.get("status") or "")
+            for item in destination_receipts.values()
+            if isinstance(item, dict)
+        }
+        if destination_statuses and destination_statuses <= {"completed", "already_exists"}:
+            status = "completed"
+        elif "failed" in destination_statuses and destination_statuses == {"failed"}:
+            status = "failed"
+        else:
+            status = "partial"
+    elif explicit_status in {"partial", "failed", "reconciling"}:
+        status = explicit_status
+    elif has_error:
         status = "failed" if added == 0 else "partial"
     elif failed > 0 or (requested and added < len(requested)):
         status = "partial"
@@ -267,6 +305,7 @@ def finalize_mutation_receipt(
             "confirmed_photo_ids": confirmed,
             "unconfirmed_photo_ids": [] if status == "completed" else requested,
             "reconciliation_required": status in {"partial", "failed"},
+            "destination_receipts": destination_receipts,
         }
     )
     return finalized

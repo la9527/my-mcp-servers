@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "privacy": {
+    "contains_photo_ids": false,
+    "contains_paths": false,
+    "contains_descriptions": false,
+    "contains_individual_scores": false
+  },
+  "input_photos": 100,
+  "selection_mode": "select_best",
+  "quality_top_percent": 30,
+  "elapsed_seconds": 420.61,
+  "scene_cluster_count": 83,
+  "multi_photo_scene_count": 12,
+  "largest_scene_size": 5,
+  "cluster_size_distribution": {
+    "1": 71,
+    "2": 9,
+    "3": 2,
+    "5": 1
+  },
+  "detail_candidate_capacity_from_clusters": 99,
+  "recommended_count": 27,
+  "max_recommended_in_one_scene": 2,
+  "recommended_event_distribution": {
+    "birthday": 5,
+    "celebration": 6,
+    "meal": 2,
+    "travel": 14
+  },
+  "vlm_completed_count": 99,
+  "recall_at_4_observable_after_run": false,
+  "recall_at_4_limitation": "The current pipeline does not expose each detailed candidate and rank in its result contract."
+}

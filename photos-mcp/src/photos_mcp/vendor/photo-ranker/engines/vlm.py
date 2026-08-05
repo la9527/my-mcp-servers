@@ -50,8 +50,8 @@ meaningful_score 기준: 특별한 행사(생일,졸업)=9-10, 가족·여행·�
 JSON만 출력:
 {"scene":"한 문장 설명","people_count":0,"is_family_photo":false,"expressions":[],"event_type":"","event_confidence":0.0,"quality_notes":"","meaningful_score":1}"""
 
-# Max dimension for input images (resize to save VLM inference time)
-_MAX_IMAGE_DIM = 512
+# Preserve twice the previous detail for face and photo-quality analysis.
+_MAX_IMAGE_DIM = 1024
 SCENE_PROMPT_VERSION = "photo-ranker-scene-v1"
 
 

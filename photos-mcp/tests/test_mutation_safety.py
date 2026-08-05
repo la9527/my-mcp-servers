@@ -85,6 +85,7 @@ async def test_partial_write_receipt_requires_reconciliation(monkeypatch) -> Non
     client = MockMcpClient(store)
     options = {"photo_ids": ["p-1", "p-2"], "target_album_name": "부분 성공"}
     approval = await client.call("photos_write", {"action": "add_photo_ids_to_album", "options": options})
+    assert store.decide_mutation_plan(approval["approval_token"], "approved") is True
     result = await client.call(
         "photos_write",
         {
@@ -121,6 +122,7 @@ async def test_timeout_leaves_durable_reconciliation_receipt(monkeypatch) -> Non
     client = MockMcpClient(store)
     options = {"photo_ids": ["p-1"], "target_album_name": "타임아웃"}
     approval = await client.call("photos_write", {"action": "add_photo_ids_to_album", "options": options})
+    assert store.decide_mutation_plan(approval["approval_token"], "approved") is True
 
     with pytest.raises(ToolError):
         await client.call(
@@ -157,6 +159,7 @@ async def test_reconciliation_query_failure_remains_blocked(monkeypatch) -> None
     client = MockMcpClient(store)
     options = {"photo_ids": ["p-1"], "target_album_name": "재조정 대기"}
     approval = await client.call("photos_write", {"action": "add_photo_ids_to_album", "options": options})
+    assert store.decide_mutation_plan(approval["approval_token"], "approved") is True
 
     with pytest.raises(ToolError):
         await client.call(

@@ -6,6 +6,7 @@ from typing import Any
 
 from photos_mcp.facade.action_options import ActionValidationError, validate_action_options
 from photos_mcp.facade.common import call_vendor
+from photos_mcp.state import PhotosMcpStateStore
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -25,16 +26,19 @@ def _target(item: dict[str, Any]) -> dict[str, Any]:
     preview_path = str(item.get("preview_path") or "")
     if preview_path:
         target["thumbnail_path"] = preview_path
-    source_path = str(item.get("source_photo_path") or "")
-    if source_path:
-        target["source_name"] = Path(source_path).name
     for key in ("capture_date", "event_type", "scene_description"):
         if item.get(key) not in (None, ""):
             target[key] = item[key]
     return target
 
 
-async def resolve_mutation_plan(tool: str, action: str, options: Any) -> dict[str, Any]:
+async def resolve_mutation_plan(
+    tool: str,
+    action: str,
+    options: Any,
+    *,
+    state_store: PhotosMcpStateStore | None = None,
+) -> dict[str, Any]:
     """Resolve a human-reviewable plan before a write approval is issued."""
     try:
         validated = validate_action_options(tool, action, options)
@@ -47,26 +51,59 @@ async def resolve_mutation_plan(tool: str, action: str, options: Any) -> dict[st
         "action": selected_action,
         "destructive": selected_action == "cleanup_album",
         "target_album_name": str(opts.get("target_album_name") or ""),
+        "target_album_id": str(opts.get("target_album_id") or ""),
         "folder": str(opts.get("folder") or ""),
+        "output_dir": str(opts.get("output_dir") or ""),
+        "metadata_mode": str(opts.get("metadata_mode") or ""),
         "run_id": str(opts.get("run_id") or ""),
         "photo_ids": [],
         "photo_targets": [],
     }
 
-    if selected_action in {"add_selected_to_album", "export_selected", "organize_by_category"}:
+    if selected_action in {
+        "add_selected_to_album",
+        "export_selected",
+        "export_selected_bundle",
+        "organize_by_category",
+    }:
         run_id = str(opts.get("run_id") or "")
+        resume_photo_ids: list[str] = []
+        if selected_action == "export_selected_bundle" and state_store is not None:
+            receipt_id = str(opts.get("resume_from_receipt_id") or "")
+            previous = state_store.run_repository.get_mutation_receipt_by_id(receipt_id) if receipt_id else None
+            if previous and str(previous.get("run_id") or "") == run_id:
+                resume_photo_ids = [
+                    str(value) for value in previous.get("requested_photo_ids") or [] if str(value)
+                ]
         items = await call_vendor(
             "photo-ranker",
             "get_review_items",
             run_id,
             top_n=int(opts.get("top_n") or 100000),
-            selected_only=selected_action != "organize_by_category",
+            selected_only=selected_action != "organize_by_category" and not bool(resume_photo_ids),
         )
         if isinstance(items, list):
+            if resume_photo_ids:
+                resume_set = set(resume_photo_ids)
+                items = [
+                    item for item in items
+                    if isinstance(item, dict) and str(item.get("photo_id") or "") in resume_set
+                ]
             plan["photo_targets"] = [
                 _target(item) for item in items if isinstance(item, dict) and item.get("photo_id")
             ]
-            plan["photo_ids"] = [item["photo_id"] for item in plan["photo_targets"]]
+            plan["photo_ids"] = resume_photo_ids or [
+                item["photo_id"] for item in plan["photo_targets"]
+            ]
+            if selected_action == "export_selected_bundle":
+                plan["originals_ready_count"] = sum(
+                    1 for item in items
+                    if isinstance(item, dict) and str(item.get("source_photo_path") or "")
+                )
+                plan["originals_pending_count"] = max(
+                    0,
+                    len(plan["photo_ids"]) - int(plan["originals_ready_count"]),
+                )
     elif selected_action == "add_photo_ids_to_album":
         plan["photo_ids"] = [str(item) for item in _as_list(opts.get("photo_ids")) if str(item)]
         plan["photo_targets"] = [{"photo_id": item} for item in plan["photo_ids"]]
@@ -93,5 +130,10 @@ async def resolve_mutation_plan(tool: str, action: str, options: Any) -> dict[st
                 plan[key] = opts[key]
 
     plan["photo_count"] = len(plan.get("photo_ids") or plan.get("photo_paths") or [])
+    if selected_action == "export_selected_bundle":
+        plan["destinations"] = {
+            "local_directory": bool(plan.get("output_dir")),
+            "apple_album": bool(plan.get("target_album_name") or plan.get("target_album_id")),
+        }
     plan["requires_exact_target_review"] = bool(plan.get("photo_targets"))
     return plan

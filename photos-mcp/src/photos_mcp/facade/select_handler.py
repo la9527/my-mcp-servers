@@ -31,7 +31,7 @@ async def handle_select(
             path_or_bucket=str(opts.get("path_or_bucket") or ""),
             prompt=str(opts.get("prompt") or ""),
             include_faces=bool(opts.get("include_faces")),
-            max_size=int(opts.get("max_size") or 512),
+            max_size=int(opts.get("max_size") or 1024),
             wait_for_local=bool(opts.get("wait_for_local")),
             wait_timeout_seconds=float(opts.get("wait_timeout_seconds") or 120.0),
             wait_poll_interval_seconds=float(opts.get("wait_poll_interval_seconds") or 3.0),

@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "privacy": {
+    "contains_photo_ids": false,
+    "contains_paths": false,
+    "contains_individual_face_scores": false,
+    "private_input_required": true
+  },
+  "evaluation": {
+    "completed_human_review_scene_count": 84,
+    "face_quality_backend": "apple-vision-face-capture-v2",
+    "face_capture_revision": 3,
+    "request_seconds": {
+      "count": 215,
+      "mean": 0.015068,
+      "median": 0.014822,
+      "p95": 0.024244
+    },
+    "photos_with_face_signal": 145,
+    "photos_without_face_signal": 70,
+    "scenes_with_relative_face_signal": 55,
+    "technical_to_face_shadow_top1_changed": 22
+  },
+  "human_label_metrics": {
+    "current_stored_candidate_order": {
+      "scene_count": 84,
+      "top1_match_count": 54,
+      "top1_match_rate": 0.642857,
+      "primary_recall_at_4_count": 82,
+      "primary_recall_at_4": 0.97619,
+      "ndcg_at_4": 0.840698
+    },
+    "technical_score_only_shadow": {
+      "scene_count": 84,
+      "top1_match_count": 54,
+      "top1_match_rate": 0.642857,
+      "primary_recall_at_4_count": 82,
+      "primary_recall_at_4": 0.97619,
+      "ndcg_at_4": 0.840698
+    },
+    "technical_plus_relative_face_quality_shadow": {
+      "scene_count": 84,
+      "top1_match_count": 49,
+      "top1_match_rate": 0.583333,
+      "primary_recall_at_4_count": 82,
+      "primary_recall_at_4": 0.97619,
+      "ndcg_at_4": 0.817904
+    }
+  },
+  "interpretation": {
+    "face_bonus": "0..1 relative bonus only within a scene; no-face photos receive no penalty.",
+    "scope": "shadow evaluation only; this does not modify product ranking or Apple Photos."
+  }
+}

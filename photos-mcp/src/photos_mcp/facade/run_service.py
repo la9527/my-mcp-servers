@@ -616,7 +616,7 @@ async def photos_run(
     folder: str = "",
     min_score: float = 0.0,
     group_by_date: bool = False,
-    max_size: int = 512,
+    max_size: int = 1024,
     wait_for_local: bool = False,
     wait_timeout_seconds: float = DEFAULT_ANALYZE_WAIT_TIMEOUT_SECONDS,
     wait_poll_interval_seconds: float = DEFAULT_ANALYZE_WAIT_POLL_INTERVAL_SECONDS,

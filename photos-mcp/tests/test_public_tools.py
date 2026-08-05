@@ -14,8 +14,9 @@ from photos_mcp.state import PhotosMcpStateStore
 
 
 class MockMcpClient:
-    def __init__(self, mcp_server) -> None:
+    def __init__(self, mcp_server, state_store: PhotosMcpStateStore | None = None) -> None:
         self._mcp_server = mcp_server
+        self._state_store = state_store
 
     async def list_tools(self) -> list[str]:
         return sorted(self._mcp_server._tool_manager._tools)
@@ -31,7 +32,10 @@ def _client() -> MockMcpClient:
         health_endpoint="http://127.0.0.1:18791/health",
     )
     state_store.set_daemon_status("ready")
-    return MockMcpClient(build_server(config=load_config(), state_store=state_store))
+    return MockMcpClient(
+        build_server(config=load_config(), state_store=state_store),
+        state_store,
+    )
 
 
 @pytest.mark.asyncio
@@ -73,6 +77,8 @@ async def _call_with_approval(
 ) -> dict:
     plan = await client.call_tool(tool, arguments)
     assert plan["status"] == "awaiting_approval"
+    assert client._state_store is not None
+    assert client._state_store.decide_mutation_plan(plan["approval_token"], "approved") is True
     approved_arguments = {
         "action": arguments["action"],
         "options": {
@@ -166,6 +172,7 @@ async def test_interrupted_workflow_requires_plan_and_approval_before_resume(mon
     )
     assert approval["status"] == "awaiting_approval"
     assert approval["recovery_plan"]["request"]["action"] == "curate_to_album"
+    assert state_store.decide_mutation_plan(approval["approval_token"], "approved") is True
 
     resumed = await client.call_tool(
         "photos_workflow",

@@ -29,8 +29,13 @@ async def _reconcile_album_mutation(receipt: dict[str, Any]) -> dict[str, Any]:
     """Resolve an uncertain album write against the current Photos album membership."""
     requested = [str(value) for value in receipt.get("requested_photo_ids") or []]
     album_name = str(receipt.get("target_album_name") or "")
+    album_id = str(receipt.get("target_album_id") or "")
     action = str(receipt.get("action") or "")
-    if not requested or not album_name or action not in {"add_selected_to_album", "add_photo_ids_to_album"}:
+    if (
+        not requested
+        or not (album_name or album_id)
+        or action not in {"add_selected_to_album", "add_photo_ids_to_album"}
+    ):
         return receipt
 
     reconciled = dict(receipt)
@@ -42,6 +47,7 @@ async def _reconcile_album_mutation(receipt: dict[str, Any]) -> dict[str, Any]:
             "list_album_photo_ids",
             album_name,
             folder=str(receipt.get("folder") or ""),
+            album_id=album_id,
         )
         if not isinstance(current, dict):
             raise RuntimeError("album membership query returned an invalid response")
@@ -232,7 +238,12 @@ def build_server(
     async def photos_write(action: str = "add_selected_to_album", options: dict[str, Any] | None = None) -> dict[str, Any]:
         """Plan a write first and repeat unchanged options with approval_token after user approval. Use organize_by_category only for category albums. Do not pass target_album_name there."""
 
-        mutation_plan = await resolve_mutation_plan("photos_write", action, options)
+        mutation_plan = await resolve_mutation_plan(
+            "photos_write",
+            action,
+            options,
+            state_store=state_store,
+        )
         approval_payload, approved_options = require_mutation_approval(
             "photos_write",
             action,
@@ -277,6 +288,8 @@ def build_server(
                 state_store=state_store,
                 action=action,
                 options=execution_options,
+                _mutation_plan=dict(mutation_context.get("mutation_plan") or {}),
+                _mutation_receipt_id=str(receipt.get("receipt_id") or ""),
             )
         except BaseException as exc:
             failed_receipt = finalize_mutation_receipt(receipt, None, error=exc)
@@ -320,7 +333,12 @@ def build_server(
             )
             return _ingest_tool_response("photos_workflow", payload, state_store)
 
-        mutation_plan = await resolve_mutation_plan("photos_workflow", action, options)
+        mutation_plan = await resolve_mutation_plan(
+            "photos_workflow",
+            action,
+            options,
+            state_store=state_store,
+        )
         approval_payload, approved_options = require_mutation_approval(
             "photos_workflow",
             action,

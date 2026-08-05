@@ -14,6 +14,7 @@ import sys
 import time
 
 from apple_terminal_helper import run_in_terminal
+from photos_mcp.apple_photos_runtime import get_apple_photos_db
 from photos_mcp.runtime_bootstrap import default_terminal_python
 
 logger = logging.getLogger(__name__)
@@ -92,8 +93,9 @@ class AlbumWriter:
         if folder:
             target_folder = self._ensure_folder(folder)
 
-        # Check if album already exists
-        existing = self._lib.album(name, top_level=not folder)
+        # A name lookup across all nested folders is ambiguous. Reuse only an
+        # album whose reported parent folder exactly matches the request.
+        existing = self._existing_album_at_location(name, folder)
         if existing:
             logger.info("Album already exists: %s", name)
             return {
@@ -114,39 +116,116 @@ class AlbumWriter:
 
     def list_albums(self) -> list[dict]:
         """List all albums in Photos."""
-        if self._should_use_terminal_helper():
-            result = self._run_terminal_helper("list_albums", {})
-            return list(result)
+        # Album discovery is read-only. Reading Photos.sqlite avoids an
+        # unbounded AppleEvent wait while Photos is syncing or busy.
+        if self._lib is None:
+            database = get_apple_photos_db()
+            albums = []
+            for album in list(database.album_info or []):
+                folder_names = [str(value) for value in list(album.folder_names or []) if value]
+                folder = "/".join(folder_names)
+                name = str(album.title or "")
+                item = {
+                    "name": name,
+                    "uuid": str(album.uuid or ""),
+                    "count": len(album.photos or []),
+                }
+                if folder:
+                    item["folder"] = folder
+                    item["path"] = f"{folder}/{name}" if name else folder
+                albums.append(item)
+            return albums
 
         self._ensure_lib()
 
-        return [
-            {"name": a.name, "uuid": a.uuid, "count": len(a.photos())}
-            for a in self._lib.albums()
-        ]
+        albums = []
+        for album in self._lib.albums():
+            item = {
+                "name": album.name,
+                "uuid": album.uuid,
+                "count": len(album.photos()),
+            }
+            item.update(self._album_location(album))
+            albums.append(item)
+        return albums
 
-    def list_album_photo_ids(self, name: str, folder: str = "") -> dict:
-        """Return the current Photos UUIDs in an album for write reconciliation."""
+    def resolve_album(self, album_id: str, album_name: str = "") -> dict:
+        """Resolve exactly one album by its Photos UUID.
+
+        A supplied name is validation-only. It is never used as a fallback when
+        the UUID is missing or invalid.
+        """
         if self._should_use_terminal_helper():
             result = self._run_terminal_helper(
-                "list_album_photo_ids",
-                {"name": name, "folder": folder},
+                "resolve_album",
+                {"album_id": album_id, "album_name": album_name},
             )
             return dict(result)
 
         self._ensure_lib()
-        album = self._lib.album(name, top_level=not folder)
+        album = self._resolve_album_by_uuid(album_id)
         if album is None:
-            return {"album": name, "folder": folder, "exists": False, "photo_ids": []}
+            return {
+                "album": album_name,
+                "album_id": album_id,
+                "uuid": album_id,
+                "exists": False,
+            }
+
+        resolved_name = str(album.name)
+        self._validate_album_name(album_id, album_name, resolved_name)
+        result = {
+            "album": resolved_name,
+            "album_id": str(album.uuid),
+            "uuid": str(album.uuid),
+            "exists": True,
+        }
+        result.update(self._album_location(album))
+        return result
+
+    def list_album_photo_ids(
+        self,
+        name: str = "",
+        folder: str = "",
+        album_id: str = "",
+    ) -> dict:
+        """Return the current Photos UUIDs in an album for write reconciliation."""
+        if self._should_use_terminal_helper():
+            result = self._run_terminal_helper(
+                "list_album_photo_ids",
+                {"name": name, "folder": folder, "album_id": album_id},
+            )
+            return dict(result)
+
+        self._ensure_lib()
+        if album_id:
+            album = self._resolve_album_by_uuid(album_id)
+            if album is not None:
+                self._validate_album_name(album_id, name, str(album.name))
+        else:
+            album = self._lib.album(name, top_level=not folder)
+        if album is None:
+            return {
+                "album": name,
+                "album_id": album_id,
+                "uuid": album_id,
+                "folder": folder,
+                "exists": False,
+                "photo_ids": [],
+            }
 
         photo_ids = [str(photo.uuid) for photo in album.photos() if getattr(photo, "uuid", None)]
-        return {
-            "album": name,
+        result = {
+            "album": str(album.name),
+            "album_id": str(album.uuid),
+            "uuid": str(album.uuid),
             "folder": folder,
             "exists": True,
             "photo_ids": photo_ids,
             "photo_count": len(photo_ids),
         }
+        result.update(self._album_location(album))
+        return result
 
     def probe_automation_access(self) -> dict:
         """Perform a lightweight Apple Events probe without enumerating album contents."""
@@ -230,8 +309,9 @@ class AlbumWriter:
     def add_photos_to_album(
         self,
         photo_uuids: list[str],
-        album_name: str,
+        album_name: str = "",
         folder: str = "",
+        album_id: str = "",
     ) -> dict:
         """Add existing Photos library photos to an album.
 
@@ -239,8 +319,12 @@ class AlbumWriter:
 
         Args:
             photo_uuids: List of Photos UUID strings.
-            album_name: Target album name (created if missing).
+            album_name: Target album name (created if missing). Optional when
+                        album_id is provided, otherwise required.
             folder: Optional folder for the album.
+            album_id: Existing album UUID. When provided, the exact album must
+                      exist and album_name is validation-only. No album is
+                      created and no name lookup fallback is attempted.
 
         Returns:
             {"album": str, "added": int, "failed": int, "errors": list}
@@ -252,6 +336,7 @@ class AlbumWriter:
                     "photo_uuids": photo_uuids,
                     "album_name": album_name,
                     "folder": folder,
+                    "album_id": album_id,
                 },
             )
             return dict(result)
@@ -259,9 +344,27 @@ class AlbumWriter:
         self._ensure_lib()
         import photoscript
 
-        # Ensure album
-        album_info = self.create_album(album_name, folder)
-        album = self._lib.album(album_name)
+        if album_id:
+            album = self._resolve_album_by_uuid(album_id)
+            if album is None:
+                raise ValueError(f"Apple Photos album UUID not found: {album_id}")
+            resolved_name = str(album.name)
+            self._validate_album_name(album_id, album_name, resolved_name)
+            album_info = {
+                "album": resolved_name,
+                "uuid": str(album.uuid),
+                "created": False,
+            }
+        else:
+            if not album_name:
+                raise ValueError("album_name is required when album_id is not provided")
+            album_info = self.create_album(album_name, folder)
+            album = self._resolve_album_by_uuid(str(album_info["uuid"]))
+            if album is None:
+                raise RuntimeError(
+                    f"Created Apple Photos album could not be resolved: {album_info['uuid']}"
+                )
+            resolved_name = str(album.name)
 
         added = 0
         failed = 0
@@ -288,16 +391,18 @@ class AlbumWriter:
         logger.info(
             "Added %d photos to album %r (failed: %d)",
             added,
-            album_name,
+            resolved_name,
             failed,
         )
 
         return {
-            "album": album_name,
+            "album": resolved_name,
+            "album_id": str(album.uuid),
+            "uuid": str(album.uuid),
             "added": added,
             "failed": failed,
             "errors": errors,
-            "touched_album_names": [album_name],
+            "touched_album_names": [resolved_name],
             "created_album": bool(album_info.get("created", False)),
         }
 
@@ -496,6 +601,87 @@ class AlbumWriter:
         }
 
     # ── Helpers ────────────────────────────────────────
+
+    def _resolve_album_by_uuid(self, album_id: str):
+        """Return only the album addressed by album_id, or None if absent."""
+        normalized_id = str(album_id).strip()
+        if not normalized_id:
+            raise ValueError("album_id must not be empty")
+
+        try:
+            album = self._lib.album(uuid=normalized_id)
+        except ValueError:
+            return None
+        if album is None:
+            return None
+
+        requested_uuid = normalized_id.split("/", 1)[0]
+        resolved_uuid = str(getattr(album, "uuid", "")).split("/", 1)[0]
+        if not resolved_uuid or resolved_uuid != requested_uuid:
+            raise ValueError(
+                f"Apple Photos resolved a different album UUID: "
+                f"requested={requested_uuid}, resolved={resolved_uuid or '<missing>'}"
+            )
+        return album
+
+    def _existing_album_at_location(self, name: str, folder: str):
+        candidates = [
+            album for album in self._lib.albums()
+            if str(getattr(album, "name", "")) == name
+        ]
+        if not folder:
+            locations = [(album, self._album_location(album)) for album in candidates]
+            known_top_level = [
+                album
+                for album, location in locations
+                if location.get("path") and not location.get("folder")
+            ]
+            unknown_location = [album for album, location in locations if not location.get("path")]
+            if len(known_top_level) > 1 or (known_top_level and unknown_location):
+                raise ValueError(f"Multiple Apple Photos albums match top-level/{name}")
+            if known_top_level:
+                return known_top_level[0]
+            if len(unknown_location) > 1:
+                raise ValueError(f"Cannot safely resolve top-level Apple Photos album {name}")
+            return self._lib.album(name, top_level=True)
+
+        exact = [
+            album for album in candidates
+            if str(self._album_location(album).get("folder") or "") == folder
+        ]
+        if len(exact) > 1:
+            raise ValueError(f"Multiple Apple Photos albums match {folder}/{name}")
+        if exact:
+            return exact[0]
+        if any(not self._album_location(album).get("folder") for album in candidates):
+            raise ValueError(
+                f"Cannot safely resolve Apple Photos album location for {folder}/{name}"
+            )
+        return None
+
+    @staticmethod
+    def _validate_album_name(album_id: str, supplied_name: str, resolved_name: str) -> None:
+        if supplied_name and supplied_name != resolved_name:
+            raise ValueError(
+                f"Apple Photos album name does not match UUID {album_id}: "
+                f"expected {supplied_name!r}, found {resolved_name!r}"
+            )
+
+    @staticmethod
+    def _album_location(album) -> dict:
+        """Return optional path metadata without requiring it from test doubles."""
+        path_reader = getattr(album, "path_str", None)
+        if not callable(path_reader):
+            return {}
+        try:
+            path = str(path_reader() or "")
+        except Exception as exc:
+            logger.debug("Could not read Apple Photos album path: %s", exc)
+            return {}
+        if not path:
+            return {}
+        folder = path.rsplit("/", 1)[0] if "/" in path else ""
+        return {"path": path, "folder": folder}
 
     def _ensure_folder(self, folder_path: str):
         """Create folder hierarchy and return the leaf folder."""

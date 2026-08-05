@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "privacy": {
+    "contains_photo_ids": false,
+    "contains_paths": false,
+    "contains_descriptions": false,
+    "contains_individual_scores": false
+  },
+  "input_photos": 1000,
+  "selection_mode": "select_best",
+  "quality_top_percent": 30,
+  "elapsed_seconds": 3.84,
+  "scene_cluster_count": 776,
+  "multi_photo_scene_count": 150,
+  "largest_scene_size": 8,
+  "cluster_size_distribution": {
+    "1": 626,
+    "2": 107,
+    "3": 26,
+    "4": 7,
+    "5": 8,
+    "6": 1,
+    "8": 1
+  },
+  "detail_candidate_capacity_from_clusters": 986,
+  "recommended_count": 293,
+  "max_recommended_in_one_scene": 2,
+  "recommended_event_distribution": {
+    "birthday": 18,
+    "celebration": 18,
+    "travel": 257
+  },
+  "vlm_completed_count": 986,
+  "detail_candidate_count": 986,
+  "recall_at_4_observable_after_run": true,
+  "recall_at_4_limitation": "Human best-photo labels are still required before Recall@4 can be calculated."
+}

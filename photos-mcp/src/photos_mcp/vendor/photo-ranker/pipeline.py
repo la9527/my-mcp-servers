@@ -42,7 +42,7 @@ from .scene_selection import (
     SceneSignal,
     VisualFeatureEngine,
     annotate_cluster_ranks,
-    choose_detail_candidates,
+    detail_candidate_ranks,
     choose_quality_representatives,
     parse_capture_time,
 )
@@ -329,12 +329,13 @@ class Pipeline:
             ],
             exact_duplicate_groups=(group.photo_ids for group in dup_groups),
         )
-        detail_candidate_ids = choose_detail_candidates(
+        detail_candidate_ranks_by_id = detail_candidate_ranks(
             scene_clusters,
             technical_scores=technical_scores,
             face_counts={candidate.photo_id: candidate.face_count for candidate in candidates},
             limit_per_cluster=self.config.scene_detail_candidates,
         )
+        detail_candidate_ids = set(detail_candidate_ranks_by_id)
         t_scene = time.perf_counter() - t_scene_start
 
         passed_count = sum(1 for c in candidates if c.passed_stage1)
@@ -433,6 +434,11 @@ class Pipeline:
 
         # ── Rank results ──
         ranked = self._rank(candidates, dup_groups, selection_profile)
+        for item in ranked:
+            item.detail_candidate = str(item.photo_id) in detail_candidate_ranks_by_id
+            item.detail_candidate_rank = int(
+                detail_candidate_ranks_by_id.get(str(item.photo_id), 0)
+            )
         recommendation_threshold = self._scene_recommendation_threshold(ranked, job)
         annotate_cluster_ranks(
             ranked,

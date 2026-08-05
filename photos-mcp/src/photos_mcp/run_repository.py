@@ -358,7 +358,7 @@ class RunRepository:
         with self._lock:
             cursor = self._conn.execute(
                 """UPDATE mutation_plans SET status = 'consumed', decided_at = ?
-                   WHERE token = ? AND status IN ('pending', 'approved') AND expires_at > ?""",
+                   WHERE token = ? AND status = 'approved' AND expires_at > ?""",
                 (time.time(), token, time.time()),
             )
             self._conn.commit()
@@ -423,5 +423,14 @@ class RunRepository:
             row = self._conn.execute(
                 "SELECT receipt_json FROM mutation_receipts WHERE idempotency_key = ?",
                 (idempotency_key,),
+            ).fetchone()
+        return _decode(row["receipt_json"], {}) if row is not None else None
+
+    def get_mutation_receipt_by_id(self, receipt_id: str) -> dict[str, Any] | None:
+        """Return a receipt by its public retry identifier."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT receipt_json FROM mutation_receipts WHERE receipt_id = ?",
+                (str(receipt_id),),
             ).fetchone()
         return _decode(row["receipt_json"], {}) if row is not None else None

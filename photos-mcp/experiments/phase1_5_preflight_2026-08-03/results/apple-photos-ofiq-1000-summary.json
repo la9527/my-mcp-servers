@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "privacy": {
+    "contains_photo_ids": false,
+    "contains_paths": false,
+    "contains_individual_scores": false,
+    "private_input_required": true
+  },
+  "engine": {
+    "name": "OFIQ",
+    "version": "1.2.0",
+    "execution": "official OFIQSampleApp batch CLI"
+  },
+  "input": {
+    "image_count": 1000,
+    "evaluable_face_image_count": 294,
+    "without_evaluable_face_count": 706
+  },
+  "unified_quality_score": {
+    "count": 294,
+    "min": 0.0,
+    "mean": 24.6531,
+    "median": 18.0,
+    "p95": 73.0,
+    "max": 91.0
+  },
+  "single_face_present_score": {
+    "count": 294,
+    "min": 0.0,
+    "mean": 75.7041,
+    "median": 100.0,
+    "p95": 100.0,
+    "max": 100.0
+  },
+  "assessment_time_ms": {
+    "count": 1000,
+    "min": 11.0,
+    "mean": 150.874,
+    "median": 12.0,
+    "p95": 490.0,
+    "max": 568.0
+  },
+  "process": {
+    "wall_seconds": 154.76,
+    "initialization_ms": 2182.0,
+    "max_rss_bytes": 2111111168,
+    "max_rss_mib": 2013.31,
+    "effective_images_per_second": 6.4616
+  },
+  "interpretation": {
+    "score_scope": "ISO/IEC 29794-5 biometric face-image quality; values are not aesthetic or whole-photo quality scores.",
+    "negative_scalar_handling": "OFIQ negative scalar values are unavailable/not-applicable and are excluded from metric distributions."
+  }
+}
