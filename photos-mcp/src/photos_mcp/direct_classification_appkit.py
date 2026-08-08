@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, timedelta
+from pathlib import Path
 from threading import Event, Thread
 from typing import Any
 
@@ -120,6 +121,7 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         if self._embedded_view is None:
             root = self.window().contentView()
             self.window().setContentView_(NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0)))
+            self.window().orderOut_(None)
             root.setFrame_(NSMakeRect(0.0, 0.0, _WINDOW_WIDTH, _WINDOW_HEIGHT))
             root.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
             self._embedded_view = root
@@ -149,22 +151,41 @@ class PhotosMcpDirectClassificationController(NSWindowController):
             626.0,
             430.0,
             20.0,
-            "Apple 사진에서 분류할 범위를 선택하세요.",
+            "Apple 사진을 선택하거나 로컬 폴더의 사진을 직접 고르세요.",
             secondary=True,
             size=12.2,
         )
 
-        source_card = self._add_card(root, 588.0, 632.0, 242.0, 44.0, accent="success")
-        self._add_status_dot(source_card, 16.0, 15.0, "사진 보관함 연결됨")
-        self._add_label(source_card, 38.0, 14.0, 112.0, 18.0, "사진 보관함 연결됨", bold=True, size=10.7)
+        source_card = self._add_card(root, _CONTENT_X, 552.0, 390.0, 58.0, accent="success")
+        self._add_status_dot(source_card, 18.0, 22.0, "사진 보관함 연결됨")
+        self._add_label(source_card, 44.0, 27.0, 170.0, 20.0, "Apple 사진", bold=True, size=12.0)
+        self._add_label(source_card, 44.0, 10.0, 214.0, 18.0, "사진 보관함에서 범위를 선택합니다.", secondary=True, size=9.5)
         self._album_status_label = self._add_label(
-            source_card, 150.0, 14.0, 76.0, 17.0, "준비 중", secondary=True, size=9.0
+            source_card, 278.0, 20.0, 92.0, 18.0, "준비 중", secondary=True, size=9.5
         )
         self._album_status_label.setAlignment_(2)
+        local_source_card = self._add_card(root, 436.0, 552.0, 394.0, 58.0, accent="neutral")
+        self._add_label(local_source_card, 18.0, 27.0, 166.0, 20.0, "로컬 폴더", bold=True, size=12.0)
+        self._add_label(
+            local_source_card,
+            18.0,
+            10.0,
+            244.0,
+            18.0,
+            "폴더를 탐색해 사진을 직접 선택합니다.",
+            secondary=True,
+            size=9.5,
+        )
+        self._local_folder_button = self._add_button(
+            local_source_card, 276.0, 12.0, 100.0, 34.0, "폴더 열기", "openLocalPhotoBrowser:"
+        )
+        self._local_folder_button.setFont_(app_font(13.0, "semibold"))
+        self._local_folder_button.setAccessibilityLabel_("로컬 폴더 사진 선택")
+        self._local_folder_button.setToolTip_("앱 안에서 폴더를 탐색하고 분류할 사진을 직접 선택합니다.")
 
         gap = 16.0
         column_width = (_CONTENT_WIDTH - gap) / 2.0
-        scope = self._add_card(root, _CONTENT_X, 316.0, column_width, 292.0)
+        scope = self._add_card(root, _CONTENT_X, 242.0, column_width, 292.0)
         self._add_label(scope, 20.0, 252.0, 150.0, 24.0, "분류 범위", bold=True, size=15.0)
         self._add_label(scope, 20.0, 210.0, 90.0, 18.0, "앨범", bold=True, size=10.8)
         self._album_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
@@ -204,7 +225,7 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         )
         self._set_period_controls_enabled(False)
 
-        options = self._add_card(root, _CONTENT_X + column_width + gap, 316.0, column_width, 292.0)
+        options = self._add_card(root, _CONTENT_X + column_width + gap, 242.0, column_width, 292.0)
         self._add_label(options, 20.0, 252.0, 150.0, 24.0, "작업 설정", bold=True, size=15.0)
         self._mode_control = NSSegmentedControl.alloc().initWithFrame_(NSMakeRect(20.0, 206.0, column_width - 40.0, 34.0))
         self._mode_control.setSegmentCount_(2)
@@ -248,7 +269,7 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         self._limit_popup.setAction_("scopeChanged:")
         self._configure_control(self._limit_popup, "최대 분석 수")
         options.addSubview_(self._limit_popup)
-        preview = self._add_card(root, _CONTENT_X, 146.0, _CONTENT_WIDTH, 148.0, accent="neutral")
+        preview = self._add_card(root, _CONTENT_X, 76.0, _CONTENT_WIDTH, 148.0, accent="neutral")
         self._add_label(preview, 20.0, 108.0, 120.0, 22.0, "범위 요약", bold=True, size=14.0)
         self._preview_primary = self._add_label(preview, 20.0, 70.0, 520.0, 24.0, "분류 범위를 확인해 주세요", bold=True, size=14.0)
         self._preview_secondary = self._add_label(preview, 20.0, 45.0, 600.0, 18.0, "앨범 목록을 불러오고 있습니다.", secondary=True, size=10.2)
@@ -258,15 +279,15 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         self._add_label(
             root,
             _CONTENT_X,
-            86.0,
+            58.0,
             570.0,
-            20.0,
+            16.0,
             "분류 결과는 읽기 전용이며 Apple 사진과 앨범을 변경하지 않습니다.",
             secondary=True,
             size=10.0,
         )
-        self._cancel_button = self._add_button(root, 618.0, 66.0, 92.0, 36.0, "취소", "closeWindow:")
-        self._run_button = self._add_button(root, 720.0, 66.0, 110.0, 36.0, "분류 시작", "startClassification:", primary=True)
+        self._cancel_button = self._add_button(root, 618.0, 20.0, 92.0, 36.0, "취소", "closeWindow:")
+        self._run_button = self._add_button(root, 720.0, 20.0, 110.0, 36.0, "분류 시작", "startClassification:", primary=True)
         self._run_button.setEnabled_(False)
         self._wire_focus_chain()
 
@@ -276,6 +297,41 @@ class PhotosMcpDirectClassificationController(NSWindowController):
 
     def refreshScope_(self, _sender) -> None:
         self._request_preview()
+
+    def openLocalPhotoBrowser_(self, _sender) -> None:
+        """Open the in-app local browser instead of a detached Finder picker."""
+        controller = getattr(self._menu_controller, "_local_photo_selection_controller", None)
+        if controller is not None and controller.window().isVisible():
+            controller.focusWindow()
+            self._update_local_browser_button(True)
+            return
+
+        if controller is not None:
+            controller.shutdown()
+        from photos_mcp.local_file_selection_appkit import PhotosMcpLocalPhotoSelectionController
+
+        controller = PhotosMcpLocalPhotoSelectionController.alloc().initWithMenuController_service_(
+            self._menu_controller,
+            self._service,
+        )
+        self._menu_controller._local_photo_selection_controller = controller
+        controller.showWindow_(None)
+        self._update_local_browser_button(True)
+
+    def localPhotoBrowserDidClose_(self, _sender) -> None:
+        self._update_local_browser_button(False)
+
+    @objc.python_method
+    def _update_local_browser_button(self, browser_is_open: bool) -> None:
+        title = "열린 폴더로 이동" if browser_is_open else "폴더 열기"
+        tooltip = (
+            "열려 있는 로컬 사진 브라우저로 이동합니다."
+            if browser_is_open
+            else "앱 안에서 폴더를 탐색하고 분류할 사진을 직접 선택합니다."
+        )
+        self._local_folder_button.setTitle_(title)
+        self._local_folder_button.setAccessibilityLabel_("로컬 사진 브라우저 열기")
+        self._local_folder_button.setToolTip_(tooltip)
 
     def useRecentPeriod_(self, _sender) -> None:
         today = date.today()

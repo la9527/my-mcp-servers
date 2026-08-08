@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import base64
+import io
 import json
 import sys
 import types
@@ -305,6 +307,71 @@ def test_gcs_loader_builds_pipeline_ready_images_without_local_files(monkeypatch
     assert photos[0]["photo_id"] == "photos/keep.jpg"
     assert photos[0]["source_photo_path"] == "gs://sample-bucket/photos/keep.jpg"
     assert photos[0]["image_b64"]
+
+
+def test_local_loader_processes_only_explicit_selected_paths(tmp_path) -> None:
+    from PIL import Image
+
+    prepare_vendor_runtime("photo-ranker")
+    sources = importlib.import_module("photos_mcp_vendor_photo_ranker.sources")
+    root = tmp_path / "photos"
+    root.mkdir()
+    selected = root / "selected.jpg"
+    skipped = root / "skipped.jpg"
+    Image.new("RGB", (12, 12), "green").save(selected)
+    Image.new("RGB", (12, 12), "red").save(skipped)
+
+    photos = sources.load_photos(
+        "local",
+        str(root),
+        limit=10,
+        selected_photo_ids=[str(selected)],
+    )
+
+    assert [photo["photo_id"] for photo in photos] == [str(selected.resolve())]
+    assert str(skipped) not in [photo["photo_id"] for photo in photos]
+
+
+def test_local_loader_converts_sony_arw_to_analysis_jpeg(tmp_path) -> None:
+    from PIL import Image
+
+    prepare_vendor_runtime("photo-ranker")
+    sources = importlib.import_module("photos_mcp_vendor_photo_ranker.sources")
+    root = tmp_path / "photos"
+    root.mkdir()
+    raw = root / "DSC00001.ARW"
+    Image.new("RGB", (320, 180), "navy").save(raw, format="PNG")
+
+    photos = sources.load_photos(
+        "local",
+        str(root),
+        limit=1,
+        selected_photo_ids=[str(raw)],
+    )
+
+    assert [photo["photo_id"] for photo in photos] == [str(raw.resolve())]
+    with Image.open(io.BytesIO(base64.b64decode(photos[0]["image_b64"]))) as preview:
+        assert preview.format == "JPEG"
+        assert preview.size == (320, 180)
+
+
+@pytest.mark.asyncio
+async def test_job_status_hides_explicit_local_selection_paths(monkeypatch, tmp_path) -> None:
+    server = _load_server_module()
+    db = server.JobDB(tmp_path / "jobs.db")
+    queue = server.JobQueue()
+    job = queue.create_job("local", str(tmp_path), job_id="selection-private")
+    job.request_options = {"selected_photo_ids": [str(tmp_path / "private.jpg")]}
+    db.save_job(job)
+
+    monkeypatch.setattr(server, "_get_job_db", lambda: db)
+    monkeypatch.setattr(server, "_get_job_queue", lambda: queue)
+
+    payload = json.loads(await server.get_job_status("selection-private"))
+
+    assert payload["request_options"]["selected_photo_count"] == 1
+    assert "selected_photo_ids" not in payload["request_options"]
+    assert "private.jpg" not in json.dumps(payload, ensure_ascii=False)
 
 
 @pytest.mark.asyncio

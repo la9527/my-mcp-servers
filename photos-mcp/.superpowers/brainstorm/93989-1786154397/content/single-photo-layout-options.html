@@ -1,0 +1,73 @@
+<style>
+  .design-stack { display:grid; gap:24px; }
+  .design-card { border:1px solid #c9c9c7; border-radius:8px; overflow:hidden; background:#f2f2f0; cursor:pointer; }
+  .design-card.selected { outline:3px solid #3977d6; outline-offset:2px; }
+  .meta { padding:14px 16px; background:#fff; border-top:1px solid #d2d2cf; }
+  .meta h3 { margin:0 0 5px; font-size:17px; }
+  .meta p { margin:0; color:#62625f; font-size:13px; }
+  .tag { margin-left:7px; padding:2px 7px; border-radius:4px; background:#e7f0ff; color:#245ca9; font-size:11px; }
+  .window { height:350px; display:grid; grid-template-columns:22% 52% 26%; background:#ececea; color:#30302e; font:12px -apple-system,BlinkMacSystemFont,sans-serif; }
+  .pane { min-width:0; position:relative; background:#f6f6f4; }
+  .pane + .pane { border-left:1px solid #9d9d99; }
+  .head { height:62px; padding:10px 12px; box-sizing:border-box; border-bottom:1px solid #b4b4b0; background:#efefed; }
+  .row { display:flex; align-items:center; gap:7px; height:27px; }
+  .title { font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .spacer { flex:1; }
+  .btn { height:23px; min-width:23px; padding:0 6px; display:flex; align-items:center; justify-content:center; border:1px solid #b5b5b1; border-radius:5px; background:#dededb; box-sizing:border-box; font-weight:600; }
+  .search { width:112px; height:23px; padding:0 7px; display:flex; align-items:center; border:1px solid #b5b5b1; border-radius:5px; background:#fff; color:#858580; box-sizing:border-box; }
+  .seg { display:flex; border:1px solid #b4b4b0; border-radius:5px; overflow:hidden; }
+  .seg span { padding:4px 8px; background:#fff; border-right:1px solid #b4b4b0; font-size:10px; }
+  .seg span:last-child { border:0; }
+  .seg .on { color:#fff; background:#5479ad; }
+  .tree { padding:9px; line-height:2; }
+  .group { color:#777; font-size:9px; font-weight:700; }
+  .active { padding-left:7px; background:#d8e7fb; border-radius:4px; }
+  .inspector { padding:11px 13px; }
+  .preview { height:90px; margin:8px 0; border-radius:5px; background:linear-gradient(135deg,#b9ced2,#e3d8c8); }
+  .line { height:7px; margin:6px 0; border-radius:3px; background:#cececa; }
+  .stage { position:absolute; inset:62px 0 38px; display:flex; align-items:center; justify-content:center; overflow:hidden; background:#282927; }
+  .photo { position:absolute; inset:18px 38px; border-radius:5px; background:linear-gradient(150deg,#c2d9cc 0 24%,#8fb2c2 25% 48%,#e2ccb4 49% 72%,#a0aaa0 73%); box-shadow:0 4px 16px rgba(0,0,0,.35); }
+  .arrow { position:absolute; top:50%; transform:translateY(-50%); width:30px; height:42px; border-radius:7px; background:rgba(25,25,24,.72); color:#fff; display:flex; align-items:center; justify-content:center; font-size:25px; z-index:2; }
+  .arrow.left { left:8px; } .arrow.right { right:8px; }
+  .check { position:absolute; right:48px; top:10px; z-index:3; padding:6px 9px; border-radius:6px; color:#fff; background:rgba(24,24,23,.78); font-weight:700; }
+  .counter { position:absolute; left:50%; bottom:8px; transform:translateX(-50%); z-index:3; padding:4px 8px; border-radius:5px; color:#fff; background:rgba(24,24,23,.75); font-size:10px; }
+  .footer { position:absolute; left:0; right:0; bottom:0; height:38px; display:flex; align-items:center; padding:0 12px; border-top:1px solid #b4b4b0; background:#efefed; box-sizing:border-box; }
+  .filmstrip { position:absolute; left:0; right:0; bottom:38px; height:62px; padding:6px 34px; display:flex; justify-content:center; gap:7px; box-sizing:border-box; background:#3b3c3a; border-top:1px solid #73736f; }
+  .filmstrip i { width:48px; background:linear-gradient(135deg,#bed0d5,#d6c6b4); border-radius:3px; border:1px solid #777; }
+  .filmstrip i.on { outline:2px solid #4c9aff; }
+  .stage.with-strip { bottom:100px; }
+  .drawer { position:absolute; left:16px; right:16px; bottom:50px; height:56px; border:1px solid #aaa; border-radius:6px; background:#f1f1ee; display:flex; align-items:center; gap:7px; padding:7px; box-sizing:border-box; z-index:4; }
+  .drawer i { width:45px; height:40px; background:linear-gradient(135deg,#bed0d5,#d6c6b4); border-radius:3px; }
+  .note { padding:12px 14px; border:1px solid #d1d1ce; border-radius:7px; background:#fff; color:#555; font-size:12px; }
+</style>
+
+<h2>B안 보완: 명확한 pane 경계와 한 장 크게 보기</h2>
+<p class="subtitle">모든 안은 1px 연속 구분선, 기존 격자 선택, focus와 분류 대상 선택의 독립성을 유지합니다.</p>
+
+<div class="design-stack">
+  <div class="design-card" data-choice="b1-mode-switch" onclick="toggleSelect(this)">
+    <div class="window">
+      <section class="pane"><div class="head"><div class="row"><span class="title">폴더</span><span class="spacer"></span><span class="btn">＋</span></div></div><div class="tree"><div class="group">즐겨찾기</div><div>사진</div><div class="active">데스크탑</div><div>다운로드</div><div class="group">위치</div><div>Macintosh HD</div></div></section>
+      <section class="pane"><div class="head"><div class="row"><span class="btn">‹</span><span class="btn">›</span><span class="title">Desktop · 사진 3장</span><span class="spacer"></span><span class="search">⌕ 검색</span></div><div class="row"><span class="seg"><span>격자</span><span class="on">한 장</span></span><span class="spacer"></span><span class="btn">최신순</span></div></div><div class="stage"><div class="photo"></div><span class="arrow left">‹</span><span class="arrow right">›</span><span class="check">☑ 분류 대상</span><span class="counter">2 / 3</span></div><div class="footer"><span>telegramImage.jpeg</span><span class="spacer"></span><span>선택 1장</span></div></section>
+      <section class="pane"><div class="head"><div class="row"><span class="title">보고 있는 사진</span></div></div><div class="inspector"><div class="preview"></div><b>telegramImage.jpeg</b><div class="line"></div><div class="line" style="width:55%"></div><div class="line" style="width:42%"></div></div></section>
+    </div><div class="meta"><h3>1. 격자 ↔ 한 장 모드 전환 <span class="tag">추천</span></h3><p>중앙 영역 전체를 큰 이미지에 사용합니다. 좌우 화살표로 focus만 이동하고, 우상단 checkbox로 현재 사진을 분류 대상에 추가하거나 해제합니다.</p></div>
+  </div>
+
+  <div class="design-card" data-choice="b2-filmstrip" onclick="toggleSelect(this)">
+    <div class="window">
+      <section class="pane"><div class="head"><div class="row"><span class="title">폴더</span><span class="spacer"></span><span class="btn">＋</span></div></div><div class="tree"><div class="group">즐겨찾기</div><div>사진</div><div class="active">데스크탑</div><div>다운로드</div><div class="group">위치</div><div>Macintosh HD</div></div></section>
+      <section class="pane"><div class="head"><div class="row"><span class="btn">‹</span><span class="btn">›</span><span class="title">Desktop · 사진 3장</span><span class="spacer"></span><span class="search">⌕ 검색</span></div><div class="row"><span class="seg"><span>격자</span><span class="on">한 장</span></span><span class="spacer"></span><span class="btn">최신순</span></div></div><div class="stage with-strip"><div class="photo"></div><span class="arrow left">‹</span><span class="arrow right">›</span><span class="check">☑ 분류 대상</span></div><div class="filmstrip"><i></i><i class="on"></i><i></i></div><div class="footer"><span>2 / 3 · telegramImage.jpeg</span><span class="spacer"></span><span>선택 1장</span></div></section>
+      <section class="pane"><div class="head"><div class="row"><span class="title">보고 있는 사진</span></div></div><div class="inspector"><div class="preview"></div><b>telegramImage.jpeg</b><div class="line"></div><div class="line" style="width:55%"></div></div></section>
+    </div><div class="meta"><h3>2. 한 장 보기 + 고정 filmstrip</h3><p>현재 위치와 주변 사진을 동시에 확인하기 쉽습니다. 대신 중앙 이미지 높이가 줄고, 기존 격자와 기능이 중복됩니다.</p></div>
+  </div>
+
+  <div class="design-card" data-choice="b3-overlay-drawer" onclick="toggleSelect(this)">
+    <div class="window">
+      <section class="pane"><div class="head"><div class="row"><span class="title">폴더</span><span class="spacer"></span><span class="btn">＋</span></div></div><div class="tree"><div class="group">즐겨찾기</div><div>사진</div><div class="active">데스크탑</div><div>다운로드</div><div class="group">위치</div><div>Macintosh HD</div></div></section>
+      <section class="pane"><div class="head"><div class="row"><span class="btn">‹</span><span class="btn">›</span><span class="title">Desktop · 사진 3장</span><span class="spacer"></span><span class="search">⌕ 검색</span></div><div class="row"><span class="seg"><span>격자</span><span class="on">한 장</span></span><span class="spacer"></span><span class="btn">최신순</span></div></div><div class="stage"><div class="photo"></div><span class="arrow left">‹</span><span class="arrow right">›</span><span class="check">☑ 분류 대상</span><div class="drawer"><i></i><i></i><i></i><i></i><span class="spacer"></span><span class="btn">닫기</span></div></div><div class="footer"><span>썸네일 보기 ▴</span><span class="spacer"></span><span>2 / 3</span></div></section>
+      <section class="pane"><div class="head"><div class="row"><span class="title">보고 있는 사진</span></div></div><div class="inspector"><div class="preview"></div><b>telegramImage.jpeg</b><div class="line"></div><div class="line" style="width:55%"></div></div></section>
+    </div><div class="meta"><h3>3. 필요할 때 여는 thumbnail drawer</h3><p>큰 이미지 면적과 빠른 탐색을 절충합니다. 하지만 drawer 상태와 닫기 동작이 추가되어 사용 구조가 가장 복잡합니다.</p></div>
+  </div>
+</div>
+
+<div class="note"><strong>추천 동작:</strong> 격자에서 thumbnail 본문을 double-click하면 한 장 보기로 전환합니다. checkbox click은 모드를 바꾸지 않습니다. 한 장 보기의 좌우 화살표와 ←/→ 키는 검색·정렬된 현재 결과 순서로 이동합니다. Esc 또는 `격자`를 누르면 이전 scroll 위치와 focus를 보존한 채 돌아갑니다.</div>

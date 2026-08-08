@@ -19,6 +19,7 @@
 - `11-result-reselection-and-apple-album-save-2026-08-05.md`: 분석 결과를 다시 고른 뒤 기존 또는 새 Apple 사진 앨범에 안전하게 보관하는 UX·write-back 계획
 - `12-selection-and-dual-destination-original-export-2026-08-05.md`: 전체 선택·해제, Apple 사진 앨범 추가, 분류별 원본 복사, 파일명·XMP 메타데이터·부분 실패 재개를 하나의 내보내기 흐름으로 정리한 확장 계획
 - `13-local-person-identification-and-human-confirmation-2026-08-05.md`: 얼굴을 로컬에서 묶어 인물 후보를 만들고 사용자가 이름을 최종 확인하는 UI, 암호화 인물 사전, 모델 검증·임계값 보정 계획
+- `14-local-folder-direct-classification-2026-08-07.md`: Finder 선택창 없이 앱 내 3분할 AppKit 화면에서 로컬 폴더와 사진을 탐색하고, 축소 썸네일로 정확히 선택한 사진만 읽기 전용으로 분류하는 계획과 공통 작업 계약
 - `../../experiments/phase1_5_preflight_2026-08-03/`: Phase 1.5 구현 전의 macOS Vision 런타임·거리 방식·후보 계측 사전 실험과 결론
 
 ## 읽는 순서
@@ -36,6 +37,7 @@
 11. `11-result-reselection-and-apple-album-save-2026-08-05.md`
 12. `12-selection-and-dual-destination-original-export-2026-08-05.md`
 13. `13-local-person-identification-and-human-confirmation-2026-08-05.md`
-14. top-level `../01-architecture.md`, `../11-feature-map.md`, `../15-refactor-direction.md`
+14. `14-local-folder-direct-classification-2026-08-07.md`
+15. top-level `../01-architecture.md`, `../11-feature-map.md`, `../15-refactor-direction.md`
 
 설계 변경 배경과 목표는 redesign 문서를 먼저 보고, 실제 코드/검증 순서는 implementation 문서를 기준으로 읽는 편이 맞다.

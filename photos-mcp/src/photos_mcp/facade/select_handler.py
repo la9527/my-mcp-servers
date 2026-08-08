@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from photos_mcp.facade.action_options import ActionValidationError, validate_action_options
@@ -49,6 +50,7 @@ async def handle_select(
             date_to=str(opts.get("date_to") or ""),
             limit=int(opts.get("limit") or 50),
             selection_profile=str(opts.get("selection_profile") or "general"),
+            selected_photo_ids_json=json.dumps(list(opts.get("selected_photo_ids") or []), ensure_ascii=False),
         )
     else:
         payload = await photos_run(
@@ -65,6 +67,7 @@ async def handle_select(
             exclude_screenshots=bool(opts.get("exclude_screenshots")),
             background=bool(opts.get("background")),
             writeback_mode="review",
+            selected_photo_ids_json=json.dumps(list(opts.get("selected_photo_ids") or []), ensure_ascii=False),
         )
         for key in ("target_album_name", "album_result", "touched_album_names", "classification_album_created"):
             payload.pop(key, None)

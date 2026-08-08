@@ -15,10 +15,13 @@ except ImportError:
 
 from ..models import Photo, PhotoMetadata
 from .image_utils import open_image_path, thumbnail_to_base64
+from photos_mcp.raw_image import RAW_IMAGE_EXTENSIONS, raw_image_dimensions
 
 logger = logging.getLogger(__name__)
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".tiff", ".bmp"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".tiff", ".bmp"} | set(
+    RAW_IMAGE_EXTENSIONS
+)
 
 
 class LocalFolderSource:
@@ -52,8 +55,11 @@ class LocalFolderSource:
                 continue
 
             try:
-                img = Image.open(path)
-                w, h = img.size
+                if path.suffix.lower() in RAW_IMAGE_EXTENSIONS:
+                    w, h = raw_image_dimensions(path)
+                else:
+                    img = Image.open(path)
+                    w, h = img.size
             except Exception:
                 w, h = 0, 0
 
@@ -83,8 +89,11 @@ class LocalFolderSource:
         from PIL import Image
         from PIL.ExifTags import TAGS
 
-        image = Image.open(path)
-        exif_data = image.getexif()
+        if path.suffix.lower() in RAW_IMAGE_EXTENSIONS:
+            exif_data = {}
+        else:
+            image = Image.open(path)
+            exif_data = image.getexif()
 
         exif_dict = {}
         for tag_id, value in exif_data.items():
@@ -108,7 +117,7 @@ class LocalFolderSource:
         if path is None:
             return None
 
-        image = open_image_path(path)
+        image = open_image_path(path, max_size)
         return thumbnail_to_base64(image, max_size)
 
     def resolve_photo_path(self, photo_id: str) -> Path | None:

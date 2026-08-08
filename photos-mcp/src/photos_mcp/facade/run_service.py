@@ -594,6 +594,7 @@ async def photos_run(
     intent: str = "classify",
     source: str = "apple",
     source_path: str = "",
+    selected_photo_ids_json: str = "[]",
     photo_id: str = "",
     path_or_bucket: str = "",
     album: str = "",
@@ -740,6 +741,7 @@ async def photos_run(
             date_to=date_to,
             limit=limit,
             selection_profile=selection_profile,
+            selected_photo_ids_json=selected_photo_ids_json,
             run_id=operation_run_id,
         )
         wrapped = wrap_run_payload(payload, intent="classify")
@@ -762,6 +764,7 @@ async def photos_run(
                 selection_mode="select_best",
                 exclude_screenshots=exclude_screenshots,
                 quality_top_percent=quality_top_percent,
+                selected_photo_ids_json=selected_photo_ids_json,
                 run_id=operation_run_id,
             )
             wrapped = wrap_run_payload(payload, intent="curate")

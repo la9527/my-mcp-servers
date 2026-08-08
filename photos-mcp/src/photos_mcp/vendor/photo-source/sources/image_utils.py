@@ -8,6 +8,8 @@ from pathlib import Path
 
 from PIL import Image, ImageFile, ImageOps
 
+from photos_mcp.raw_image import RAW_IMAGE_EXTENSIONS, open_raw_preview
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 try:
@@ -16,7 +18,9 @@ except AttributeError:  # Pillow < 10
     RESAMPLE_LANCZOS = Image.LANCZOS
 
 
-def open_image_path(path: str | Path) -> Image.Image:
+def open_image_path(path: str | Path, max_size: int = 2048) -> Image.Image:
+    if Path(path).suffix.lower() in RAW_IMAGE_EXTENSIONS:
+        return open_raw_preview(path, max_size)
     image = Image.open(path)
     image.load()
     return normalize_image(image)

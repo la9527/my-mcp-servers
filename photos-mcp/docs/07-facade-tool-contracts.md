@@ -102,8 +102,8 @@ Actions:
 | action | 설명 | 주요 options |
 | --- | --- | --- |
 | `analyze_photo` | 단건 photo 분석 | `source`, `photo_id`, `source_path`, `wait_for_local` |
-| `classify_range` | 범위 classify job 시작 | `source`, `source_path`, `album`, `date_from`, `date_to`, `limit`, `selection_profile`, `exclude_screenshots`, `wait_for_local` |
-| `select_best` | 잘 나온 사진 selected set 생성 | `source`, `source_path`, `album`, `date_from`, `date_to`, `limit`, `selection_profile`, `exclude_screenshots`, `wait_for_local` |
+| `classify_range` | 범위 classify job 시작 | `source`, `source_path`, `selected_photo_ids`, `album`, `date_from`, `date_to`, `limit`, `selection_profile`, `exclude_screenshots`, `wait_for_local` |
+| `select_best` | 잘 나온 사진 selected set 생성 | `source`, `source_path`, `selected_photo_ids`, `album`, `date_from`, `date_to`, `limit`, `selection_profile`, `exclude_screenshots`, `wait_for_local` |
 | `select_best_person` | 특정인 중심 selected set 생성 | `source`, `person`, `album`, `date_from`, `date_to`, `limit`, `selection_profile`, `exclude_screenshots`, `wait_for_local` |
 
 금지되는 option 예:
@@ -128,6 +128,8 @@ photos_select(
     }
 )
 ```
+
+로컬 폴더 탐색 화면은 폴더 전체가 아닌 사용자가 고른 사진만 실행할 때 `selected_photo_ids`를 함께 전달한다. 이 값은 `source="local"`에서만 허용되며, 각 경로는 `source_path` 아래의 실제 이미지 파일이어야 하고 선택 수는 `limit`을 넘을 수 없다. 경로 목록은 로컬 작업 DB에만 보존되며 job status와 summary 응답에는 개별 경로 대신 선택 수만 노출된다.
 
 성공 응답은 `run_id` 또는 `job_id`, `selected_count`, `status` 를 포함할 수 있다. 이후 결과는 `photos_query(action="selected")`, `photos_query(action="result_summary")`, `photos_query(action="result_detail")` 로 조회한다.
 

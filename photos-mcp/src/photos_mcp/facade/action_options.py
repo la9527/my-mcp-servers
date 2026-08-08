@@ -119,13 +119,13 @@ _register(ActionSpec(
 _register(ActionSpec(
     tool="photos_select",
     action="classify_range",
-    allowed=COMMON_SCOPE | _set("selection_profile"),
+    allowed=COMMON_SCOPE | _set("selection_profile", "selected_photo_ids"),
     defaults={"source": "apple", "source_path": "", "album": "", "person": "", "date_from": "", "date_to": "", "limit": 50, "selection_profile": "general"},
 ))
 _register(ActionSpec(
     tool="photos_select",
     action="select_best",
-    allowed=COMMON_SCOPE | _set("selection_profile", "exclude_screenshots", "background") | WAIT_OPTIONS,
+    allowed=COMMON_SCOPE | _set("selection_profile", "exclude_screenshots", "background", "selected_photo_ids") | WAIT_OPTIONS,
     forbidden=WRITE_FORBIDDEN,
     defaults={"source": "apple", "source_path": "", "album": "", "person": "", "date_from": "", "date_to": "", "limit": 50, "selection_profile": "general", "exclude_screenshots": True, "background": False, "wait_for_local": False, "wait_timeout_seconds": 120.0, "wait_poll_interval_seconds": 3.0},
 ))
@@ -404,6 +404,20 @@ def validate_action_options(tool: str, action: str, options: Any) -> ValidatedAc
 
     normalized_options = dict(spec.defaults)
     normalized_options.update(raw_options)
+    selected_photo_ids = normalized_options.get("selected_photo_ids")
+    if selected_photo_ids is not None and (
+        not isinstance(selected_photo_ids, list)
+        or not all(isinstance(item, str) and item.strip() for item in selected_photo_ids)
+    ):
+        raise ActionValidationError(_blocked_payload(
+            tool=tool,
+            action=normalized_action,
+            error_code="invalid_selected_photo_ids",
+            error="selected_photo_ids must be a non-empty string array when provided",
+            spec=spec,
+            invalid_options=["selected_photo_ids"],
+            raw_options=raw_options,
+        ))
     missing = sorted(key for key in spec.required if _is_missing(normalized_options.get(key)))
     if missing:
         raise ActionValidationError(_blocked_payload(

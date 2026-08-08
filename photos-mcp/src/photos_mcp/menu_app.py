@@ -1443,6 +1443,7 @@ class PhotosMcpMenuController(NSObject):
         self._environment_controller = None
         self._results_controller = None
         self._direct_classification_controller = None
+        self._local_photo_selection_controller = None
         self._timer = None
         self._startup_timer = None
         self._preflight_retry_timer = None
@@ -1491,6 +1492,8 @@ class PhotosMcpMenuController(NSObject):
             self._timer = None
         if self._direct_classification_controller is not None:
             self._direct_classification_controller.shutdown()
+        if self._local_photo_selection_controller is not None:
+            self._local_photo_selection_controller.shutdown()
 
     def rebuildMenu(self) -> None:
         snapshot = self._state_store.snapshot()

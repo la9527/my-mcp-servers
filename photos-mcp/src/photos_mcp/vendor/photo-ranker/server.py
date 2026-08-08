@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from pathlib import Path
 import shutil
 import time
 
@@ -415,8 +416,9 @@ def _build_request_options(
     selection_mode: str = "classify",
     exclude_screenshots: bool = False,
     quality_top_percent: int = 30,
+    selected_photo_ids: list[str] | None = None,
 ) -> dict[str, object]:
-    return {
+    options: dict[str, object] = {
         "selection_profile": normalize_selection_profile(selection_profile),
         "selection_mode": selection_mode,
         "exclude_screenshots": exclude_screenshots,
@@ -429,6 +431,11 @@ def _build_request_options(
             "limit": limit,
         },
     }
+    if selected_photo_ids:
+        # The list is persisted only in the local job database so a queued job
+        # keeps the exact app selection across an app restart.
+        options["selected_photo_ids"] = list(selected_photo_ids)
+    return options
 
 
 def _selection_profile_error(selection_profile: str) -> str:
@@ -440,6 +447,25 @@ def _selection_profile_error(selection_profile: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _validate_local_selected_paths(source_path: str, selected_photo_ids: list[str]) -> str | None:
+    """Keep an explicit local selection inside its user-approved root folder."""
+    try:
+        root = Path(source_path).expanduser().resolve(strict=True)
+    except OSError:
+        return "local source path is unavailable"
+    if not root.is_dir():
+        return "local source path is not a directory"
+    for raw_path in selected_photo_ids:
+        try:
+            path = Path(raw_path).expanduser().resolve(strict=True)
+            path.relative_to(root)
+        except (OSError, ValueError):
+            return "selected photo is outside the local source path or unavailable"
+        if not path.is_file():
+            return "selected photo is not a file"
+    return None
 
 
 def _looks_like_screen_capture(result: dict[str, object], source_photo_path: str) -> bool:
@@ -546,6 +572,7 @@ async def _run_classify_job(job) -> dict:
         date_from=filters.get("date_from", ""),
         date_to=filters.get("date_to", ""),
         limit=filters.get("limit", 100),
+        selected_photo_ids=list(getattr(job, "request_options", {}).get("selected_photo_ids") or []),
     )
 
     source_load_seconds = round(time.perf_counter() - source_load_started, 3)
@@ -863,6 +890,7 @@ async def start_classify_job(
     selection_mode: str = "classify",
     exclude_screenshots: bool = False,
     quality_top_percent: int = 30,
+    selected_photo_ids_json: str = "[]",
     run_id: str = "",
 ) -> str:
     """Start a background photo classification job.
@@ -885,6 +913,21 @@ async def start_classify_job(
     if selection_mode not in {"classify", "select_best"}:
         return json.dumps({"error": "Unsupported selection_mode"}, ensure_ascii=False)
 
+    try:
+        selected_photo_ids = json.loads(selected_photo_ids_json or "[]")
+    except json.JSONDecodeError:
+        return json.dumps({"error": "selected_photo_ids_json must be a JSON array"}, ensure_ascii=False)
+    if not isinstance(selected_photo_ids, list) or not all(isinstance(item, str) for item in selected_photo_ids):
+        return json.dumps({"error": "selected_photo_ids_json must contain string paths"}, ensure_ascii=False)
+    if selected_photo_ids and source != "local":
+        return json.dumps({"error": "selected_photo_ids are supported for local source only"}, ensure_ascii=False)
+    if len(selected_photo_ids) > limit:
+        return json.dumps({"error": "selected photo count exceeds limit"}, ensure_ascii=False)
+    if selected_photo_ids:
+        selection_error = _validate_local_selected_paths(source_path, selected_photo_ids)
+        if selection_error:
+            return json.dumps({"error": selection_error}, ensure_ascii=False)
+
     queue = _get_job_queue()
     job = queue.create_job(source, source_path, job_id=run_id)
     job._filters = {
@@ -904,6 +947,7 @@ async def start_classify_job(
         selection_mode=selection_mode,
         exclude_screenshots=exclude_screenshots,
         quality_top_percent=quality_top_percent,
+        selected_photo_ids=selected_photo_ids,
     )
 
     db = _get_job_db()
@@ -928,7 +972,18 @@ async def get_job_status(job_id: str) -> str:
     job, _ = _load_current_job(job_id)
     if not job:
         return json.dumps({"error": f"Job {job_id} not found"})
-    return json.dumps(job.to_dict())
+    return json.dumps(_safe_job_payload(job))
+
+
+def _safe_job_payload(job) -> dict:
+    """Do not expose an explicit local file selection through MCP status payloads."""
+    payload = job.to_dict()
+    request_options = dict(payload.get("request_options") or {})
+    selected_photo_ids = request_options.pop("selected_photo_ids", [])
+    if selected_photo_ids:
+        request_options["selected_photo_count"] = len(selected_photo_ids)
+    payload["request_options"] = request_options
+    return payload
 
 
 def _load_current_job(job_id: str):
@@ -964,7 +1019,7 @@ async def get_job_summary(job_id: str) -> str:
             "job_id": job.id,
             "source": job.source,
             "source_path": job.source_path,
-            "request_options": job.request_options,
+            "request_options": _safe_job_payload(job)["request_options"],
             "status": job.status.value,
             "created_at": job.created_at,
             "started_at": job.started_at,

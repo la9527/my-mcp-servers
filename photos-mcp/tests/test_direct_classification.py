@@ -171,3 +171,82 @@ async def test_execute_uses_shared_select_handler_contract() -> None:
     assert calls[0]["options"]["selection_profile"] == "person"
     assert calls[0]["options"]["exclude_screenshots"] is True
     assert calls[0]["options"]["background"] is True
+
+
+@pytest.mark.asyncio
+async def test_local_selection_is_exactly_preserved_for_shared_job(tmp_path) -> None:
+    root = tmp_path / "photos"
+    nested = root / "travel"
+    nested.mkdir(parents=True)
+    selected = nested / "selected.jpg"
+    selected.write_bytes(b"not-decoded-by-this-contract-test")
+    unselected = nested / "unselected.jpg"
+    unselected.write_bytes(b"not-decoded-by-this-contract-test")
+    calls = []
+
+    async def fake_select_handler(**kwargs):
+        calls.append(kwargs)
+        return {"status": "pending", "job_id": "local-1"}
+
+    service = DirectClassificationService(
+        state_store=None,
+        source_port=FakePhotoSource(),
+        select_handler=fake_select_handler,
+    )
+    command = ClassificationCommand(
+        source="local",
+        source_path=str(root),
+        selected_photo_ids=(str(selected),),
+        limit=10,
+    )
+
+    preview = await service.preview(command)
+    await service.execute(command)
+
+    assert preview.candidate_count == 1
+    assert preview.run_count == 1
+    assert preview.download_required_count == 0
+    assert calls[0]["options"]["source"] == "local"
+    assert calls[0]["options"]["source_path"] == str(root)
+    assert calls[0]["options"]["selected_photo_ids"] == [str(selected)]
+    assert str(unselected) not in calls[0]["options"]["selected_photo_ids"]
+
+
+def test_local_selection_rejects_outside_root_and_limit(tmp_path) -> None:
+    root = tmp_path / "photos"
+    root.mkdir()
+    inside = root / "inside.jpg"
+    inside.write_bytes(b"x")
+    second_inside = root / "second.jpg"
+    second_inside.write_bytes(b"x")
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(b"x")
+
+    with pytest.raises(ClassificationValidationError, match="지정한 폴더"):
+        ClassificationCommand(
+            source="local",
+            source_path=str(root),
+            selected_photo_ids=(str(outside),),
+        ).validate()
+    with pytest.raises(ClassificationValidationError, match="최대 분석 수"):
+        ClassificationCommand(
+            source="local",
+            source_path=str(root),
+            selected_photo_ids=(str(inside), str(second_inside)),
+            limit=1,
+        ).validate()
+
+
+def test_local_selection_accepts_sony_arw_files(tmp_path) -> None:
+    root = tmp_path / "photos"
+    root.mkdir()
+    raw = root / "DSC00001.ARW"
+    raw.write_bytes(b"contract-only-raw")
+
+    command = ClassificationCommand(
+        source="local",
+        source_path=str(root),
+        selected_photo_ids=(str(raw),),
+    )
+
+    assert command.validate() == command

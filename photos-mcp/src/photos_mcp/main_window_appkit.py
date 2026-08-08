@@ -353,6 +353,7 @@ class PhotosMcpMainWindowController(NSWindowController):
         document.addSubview_(self._direct_view)
         scroll.setDocumentView_(document)
         parent.addSubview_(scroll)
+        direct.window().close()
 
     @objc.python_method
     def _build_jobs(self, parent: Any, width: float, height: float) -> None:

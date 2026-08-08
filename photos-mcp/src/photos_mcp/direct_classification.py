@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict, dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from photos_mcp.facade.select_handler import handle_select
 from photos_mcp.photo_source_port import PhotoSourcePort, VendorPhotoSourcePort
+from photos_mcp.raw_image import RAW_IMAGE_EXTENSIONS
 from photos_mcp.state import PhotosMcpStateStore
 
 
@@ -16,6 +18,19 @@ DEFAULT_SCOPE_SCAN_LIMIT = 4000
 MAX_CLASSIFICATION_LIMIT = 1000
 ALLOWED_MODES = {"classify", "select_best"}
 ALLOWED_SELECTION_PROFILES = {"general", "person", "landscape"}
+ALLOWED_SOURCES = {"apple", "local"}
+LOCAL_IMAGE_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".heic",
+    ".heif",
+    ".webp",
+    ".tif",
+    ".tiff",
+    ".bmp",
+    ".gif",
+} | set(RAW_IMAGE_EXTENSIONS)
 
 
 class ClassificationValidationError(ValueError):
@@ -25,6 +40,7 @@ class ClassificationValidationError(ValueError):
 @dataclass(frozen=True)
 class ClassificationCommand:
     source: str = "apple"
+    source_path: str = ""
     album: str = ""
     date_from: str = ""
     date_to: str = ""
@@ -32,10 +48,11 @@ class ClassificationCommand:
     selection_profile: str = "general"
     exclude_screenshots: bool = True
     limit: int = 50
+    selected_photo_ids: tuple[str, ...] = ()
 
     def validate(self) -> "ClassificationCommand":
-        if self.source != "apple":
-            raise ClassificationValidationError("직접 분류는 현재 Apple 사진만 지원합니다.")
+        if self.source not in ALLOWED_SOURCES:
+            raise ClassificationValidationError("지원하지 않는 사진 소스입니다.")
         if self.mode not in ALLOWED_MODES:
             raise ClassificationValidationError("지원하지 않는 작업 방식입니다.")
         if self.selection_profile not in ALLOWED_SELECTION_PROFILES:
@@ -53,7 +70,31 @@ class ClassificationCommand:
             raise ClassificationValidationError("기간을 지정할 때는 시작일과 종료일을 모두 입력해 주세요.")
         if start is not None and end is not None and start > end:
             raise ClassificationValidationError("시작일은 종료일보다 늦을 수 없습니다.")
+        if self.source == "local":
+            self._validate_local_scope()
+            if self.album or self.date_from or self.date_to:
+                raise ClassificationValidationError("로컬 폴더 분류에서는 앨범과 기간을 함께 사용할 수 없습니다.")
         return self
+
+    def _validate_local_scope(self) -> None:
+        if not self.source_path.strip():
+            raise ClassificationValidationError("로컬 사진 폴더를 선택해 주세요.")
+        root = Path(self.source_path).expanduser().resolve()
+        if not root.is_dir():
+            raise ClassificationValidationError("선택한 로컬 사진 폴더를 찾을 수 없습니다.")
+        selected = tuple(str(item).strip() for item in self.selected_photo_ids if str(item).strip())
+        if len(selected) != len(set(selected)):
+            raise ClassificationValidationError("같은 사진이 중복 선택되었습니다.")
+        if len(selected) > self.limit:
+            raise ClassificationValidationError("선택한 사진 수가 최대 분석 수보다 많습니다.")
+        for photo_id in selected:
+            path = Path(photo_id).expanduser().resolve()
+            if not path.is_file() or path.suffix.lower() not in LOCAL_IMAGE_EXTENSIONS:
+                raise ClassificationValidationError("선택한 항목에 지원하지 않는 이미지가 포함되어 있습니다.")
+            try:
+                path.relative_to(root)
+            except ValueError as exc:
+                raise ClassificationValidationError("선택한 사진은 지정한 폴더 안에 있어야 합니다.") from exc
 
     @property
     def action(self) -> str:
@@ -63,12 +104,15 @@ class ClassificationCommand:
         self.validate()
         options: dict[str, Any] = {
             "source": self.source,
+            "source_path": self.source_path,
             "album": self.album,
             "date_from": self.date_from,
             "date_to": self.date_to,
             "limit": self.limit,
             "selection_profile": self.selection_profile,
         }
+        if self.selected_photo_ids:
+            options["selected_photo_ids"] = list(self.selected_photo_ids)
         if self.action == "select_best":
             options["exclude_screenshots"] = self.exclude_screenshots
             options["background"] = True
@@ -153,15 +197,32 @@ class DirectClassificationService:
 
     async def preview(self, command: ClassificationCommand) -> ClassificationScopePreview:
         command.validate()
+        if command.source == "local" and command.selected_photo_ids:
+            selected_count = len(command.selected_photo_ids)
+            return ClassificationScopePreview(
+                status="ready",
+                candidate_count=selected_count,
+                analyze_ready_count=selected_count,
+                download_required_count=0,
+                requested_limit=command.limit,
+                run_count=selected_count,
+                scan_limit=selected_count,
+                message="선택한 로컬 사진만 읽기 전용으로 분석합니다.",
+            )
         scan_limit = min(max(command.limit * 4, 100), self._scope_scan_limit)
+        filters: dict[str, Any] = {
+            "album": command.album,
+            "date_from": command.date_from,
+            "date_to": command.date_to,
+            "limit": scan_limit,
+        }
+        if command.source == "local":
+            filters["path_or_bucket"] = command.source_path
         try:
             items = await asyncio.wait_for(
                 self._source_port.list_photos(
                     command.source,
-                    album=command.album,
-                    date_from=command.date_from,
-                    date_to=command.date_to,
-                    limit=scan_limit,
+                    **filters,
                 ),
                 timeout=30.0,
             )
@@ -186,7 +247,11 @@ class DirectClassificationService:
         ready_count = sum(1 for item in photo_items if bool(item.get("path")))
         download_count = max(0, candidate_count - ready_count)
         count_is_lower_bound = candidate_count >= scan_limit
-        broad_scope = not command.album and not command.date_from and not command.date_to
+        broad_scope = (
+            not command.album and not command.date_from and not command.date_to
+            if command.source == "apple"
+            else True
+        )
         requires_confirmation = broad_scope or count_is_lower_bound or candidate_count > command.limit
         if candidate_count == 0:
             status = "empty"

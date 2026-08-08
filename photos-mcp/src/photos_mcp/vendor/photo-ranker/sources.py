@@ -19,6 +19,7 @@ from pathlib import Path
 from apple_terminal_helper import run_in_terminal
 from photos_mcp.apple_photo_asset import preferred_analysis_path, preferred_original_path
 from photos_mcp.apple_photos_runtime import get_apple_photos_db
+from photos_mcp.raw_image import RAW_IMAGE_EXTENSIONS, raw_preview_jpeg_bytes
 from photos_mcp.runtime_bootstrap import default_terminal_python
 
 try:
@@ -31,6 +32,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".tiff", ".bmp"}
+LOCAL_IMAGE_EXTENSIONS = IMAGE_EXTENSIONS | set(RAW_IMAGE_EXTENSIONS)
 _APPLE_DOWNLOAD_CACHE_DIR: Path | None = None
 _APPLE_DOWNLOADED_PATHS: dict[str, str] = {}
 _APPLE_DB = None
@@ -135,6 +137,7 @@ def load_photos(
     date_to: str = "",
     limit: int = 100,
     max_size: int = DEFAULT_ANALYSIS_MAX_SIZE,
+    selected_photo_ids: list[str] | None = None,
 ) -> list[dict]:
     """Load photos from the given source as pipeline-ready dicts.
 
@@ -142,7 +145,12 @@ def load_photos(
         list of {"photo_id": str, "image_b64": str}
     """
     if source == "local":
-        return _load_local(source_path, limit=limit, max_size=max_size)
+        return _load_local(
+            source_path,
+            limit=limit,
+            max_size=max_size,
+            selected_photo_ids=selected_photo_ids,
+        )
     if source == "apple":
         return _load_apple(
             album=album or source_path,
@@ -171,6 +179,7 @@ def _load_local(
     *,
     limit: int = 100,
     max_size: int = DEFAULT_ANALYSIS_MAX_SIZE,
+    selected_photo_ids: list[str] | None = None,
 ) -> list[dict]:
     """Load images from a local directory."""
     from PIL import Image
@@ -180,15 +189,34 @@ def _load_local(
         raise FileNotFoundError(f"Directory not found: {directory}")
 
     results: list[dict] = []
+    root_resolved = root.resolve()
+    if selected_photo_ids:
+        candidates: list[Path] = []
+        seen: set[Path] = set()
+        for photo_id in selected_photo_ids:
+            path = Path(str(photo_id)).expanduser().resolve()
+            try:
+                path.relative_to(root_resolved)
+            except ValueError:
+                continue
+            if path in seen or not path.is_file():
+                continue
+            seen.add(path)
+            candidates.append(path)
+    else:
+        candidates = sorted(root.rglob("*"))
 
-    for path in sorted(root.rglob("*")):
-        if path.suffix.lower() not in IMAGE_EXTENSIONS:
+    for path in candidates:
+        if path.suffix.lower() not in LOCAL_IMAGE_EXTENSIONS:
             continue
         if not path.is_file():
             continue
 
         try:
-            b64 = _image_to_b64(Image.open(path), max_size)
+            if path.suffix.lower() in RAW_IMAGE_EXTENSIONS:
+                b64 = base64.b64encode(raw_preview_jpeg_bytes(path, max_size)).decode("ascii")
+            else:
+                b64 = _image_to_b64(Image.open(path), max_size)
             results.append(
                 {
                     "photo_id": str(path),

@@ -1,0 +1,85 @@
+<style>
+  .layout-grid { display:grid; gap:22px; }
+  .layout-card { border:1px solid #c9c9c7; border-radius:8px; overflow:hidden; background:#f4f4f2; cursor:pointer; }
+  .layout-card.selected { outline:3px solid #3977d6; outline-offset:2px; }
+  .layout-meta { padding:14px 16px; background:#fff; border-top:1px solid #d7d7d4; }
+  .layout-meta h3 { margin:0 0 5px; font-size:17px; }
+  .layout-meta p { margin:0; color:#62625f; font-size:13px; }
+  .recommended { display:inline-block; margin-left:8px; padding:2px 7px; border-radius:4px; background:#e7f0ff; color:#245ca9; font-size:11px; font-weight:700; }
+  .window { height:310px; display:grid; grid-template-columns:23% 51% 26%; background:#ececea; color:#2f2f2d; font-family:-apple-system,BlinkMacSystemFont,sans-serif; }
+  .pane { min-width:0; border-right:1px solid #c7c7c4; position:relative; background:#f6f6f4; }
+  .pane:last-child { border-right:0; }
+  .pane-head { min-height:54px; padding:12px 13px 10px; border-bottom:1px solid #d0d0cd; box-sizing:border-box; }
+  .head-row { display:flex; align-items:center; gap:7px; min-height:28px; }
+  .head-row + .head-row { margin-top:7px; }
+  .title { font-size:13px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .spacer { flex:1; }
+  .icon { width:25px; height:25px; border:1px solid #b8b8b5; border-radius:5px; display:flex; align-items:center; justify-content:center; background:#e5e5e2; font-weight:700; font-size:14px; box-sizing:border-box; }
+  .add { width:auto; padding:0 8px; font-size:11px; }
+  .search { height:25px; width:138px; border:1px solid #b8b8b5; border-radius:6px; background:#fff; color:#8a8a86; display:flex; align-items:center; padding:0 8px; box-sizing:border-box; font-size:11px; }
+  .control { height:23px; border:1px solid #c0c0bd; border-radius:5px; background:#fff; padding:0 7px; display:flex; align-items:center; font-size:10px; white-space:nowrap; }
+  .tree { padding:11px 9px; font-size:11px; line-height:1.9; }
+  .tree .group { color:#777772; font-size:9px; font-weight:700; margin-top:5px; }
+  .tree .active { background:#d8e7fb; border-radius:5px; padding-left:7px; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; padding:11px; }
+  .thumb { aspect-ratio:1.15; background:linear-gradient(140deg,#b8c7cf,#e2d4c6); border-radius:4px; border:1px solid #aaa; }
+  .inspector { padding:12px; }
+  .preview { height:100px; background:#d8d8d4; border-radius:5px; margin:10px 0; }
+  .lines div { height:7px; margin:6px 0; border-radius:3px; background:#d0d0cc; }
+  .note { margin:10px 14px 14px; padding:10px 12px; border-radius:6px; background:#fff; border:1px solid #d4d4d1; font-size:12px; color:#555; }
+</style>
+
+<h2>로컬 사진 브라우저 상단 control 재배치</h2>
+<p class="subtitle">전역 toolbar를 없애고 기능이 영향을 주는 pane 안으로 이동합니다. 각 안을 클릭해 선택할 수 있습니다.</p>
+
+<div class="layout-grid">
+  <div class="layout-card" data-choice="a-sidebar-owned" onclick="toggleSelect(this)">
+    <div class="window">
+      <section class="pane">
+        <div class="pane-head">
+          <div class="head-row"><span class="title">폴더</span><span class="spacer"></span><span class="icon">‹</span><span class="icon">›</span></div>
+          <div class="head-row"><span class="icon add">＋ 위치</span></div>
+        </div>
+        <div class="tree"><div class="group">즐겨찾기</div><div>사진</div><div class="active">데스크탑</div><div>다운로드</div><div class="group">위치</div><div>Macintosh HD</div></div>
+      </section>
+      <section class="pane">
+        <div class="pane-head"><div class="head-row"><span class="title">Desktop · 사진 3장</span><span class="spacer"></span><span class="search">⌕ 검색</span></div><div class="head-row"><span class="control">하위 폴더 포함</span><span class="spacer"></span><span class="control">최신순</span><span class="control">− ＋</span></div></div>
+        <div class="grid"><div class="thumb"></div><div class="thumb"></div><div class="thumb"></div></div>
+      </section>
+      <section class="pane"><div class="pane-head"><div class="head-row"><span class="title">보고 있는 사진</span></div></div><div class="inspector"><div class="preview"></div><div class="lines"><div></div><div style="width:70%"></div><div style="width:45%"></div></div></div></section>
+    </div>
+    <div class="layout-meta"><h3>A. Sidebar 소유형</h3><p>폴더 관련 control을 모두 sidebar에 둡니다. 기능 구분은 가장 명확하지만 좁은 sidebar가 두 줄로 늘어납니다.</p></div>
+  </div>
+
+  <div class="layout-card" data-choice="b-finder-hybrid" onclick="toggleSelect(this)">
+    <div class="window">
+      <section class="pane">
+        <div class="pane-head"><div class="head-row"><span class="title">폴더</span><span class="spacer"></span><span class="icon" title="위치 추가">＋</span></div></div>
+        <div class="tree"><div class="group">즐겨찾기</div><div>사진</div><div class="active">데스크탑</div><div>다운로드</div><div class="group">위치</div><div>Macintosh HD</div></div>
+      </section>
+      <section class="pane">
+        <div class="pane-head"><div class="head-row"><span class="icon">‹</span><span class="icon">›</span><span class="title">Desktop · 사진 3장</span><span class="spacer"></span><span class="search">⌕ 검색</span></div><div class="head-row"><span class="control">하위 폴더 포함</span><span class="spacer"></span><span class="control">최신순</span><span class="control">− ＋</span></div></div>
+        <div class="grid"><div class="thumb"></div><div class="thumb"></div><div class="thumb"></div></div>
+      </section>
+      <section class="pane"><div class="pane-head"><div class="head-row"><span class="title">보고 있는 사진</span></div></div><div class="inspector"><div class="preview"></div><div class="lines"><div></div><div style="width:70%"></div><div style="width:45%"></div></div></div></section>
+    </div>
+    <div class="layout-meta"><h3>B. Finder형 혼합 <span class="recommended">추천</span></h3><p>위치 추가는 folder source에, 이전/다음·현재 폴더·검색은 사진 탐색 header에 둡니다. 사용 흐름과 macOS 관습이 가장 잘 맞습니다.</p></div>
+  </div>
+
+  <div class="layout-card" data-choice="c-center-command" onclick="toggleSelect(this)">
+    <div class="window">
+      <section class="pane">
+        <div class="pane-head"><div class="head-row"><span class="title">폴더</span></div></div>
+        <div class="tree"><div class="group">즐겨찾기</div><div>사진</div><div class="active">데스크탑</div><div>다운로드</div><div class="group">위치</div><div>Macintosh HD</div></div>
+      </section>
+      <section class="pane">
+        <div class="pane-head"><div class="head-row"><span class="icon">‹</span><span class="icon">›</span><span class="icon add">＋ 위치</span><span class="spacer"></span><span class="search">⌕ 검색</span></div><div class="head-row"><span class="title">Desktop · 사진 3장</span><span class="spacer"></span><span class="control">최신순</span><span class="control">− ＋</span></div></div>
+        <div class="grid"><div class="thumb"></div><div class="thumb"></div><div class="thumb"></div></div>
+      </section>
+      <section class="pane"><div class="pane-head"><div class="head-row"><span class="title">보고 있는 사진</span></div></div><div class="inspector"><div class="preview"></div><div class="lines"><div></div><div style="width:70%"></div><div style="width:45%"></div></div></div></section>
+    </div>
+    <div class="layout-meta"><h3>C. 중앙 command형</h3><p>모든 탐색 control을 중앙에 집중합니다. 빠르게 찾기 쉽지만 위치 추가가 folder source와 시각적으로 분리됩니다.</p></div>
+  </div>
+</div>
+
+<div class="note"><strong>공통:</strong> 56pt 전역 toolbar를 제거해 세 pane이 title bar 아래부터 시작합니다. 최소 폭에서는 중앙 header만 두 줄로 유지하며 Inspector는 변경하지 않습니다.</div>
