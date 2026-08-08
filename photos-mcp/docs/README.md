@@ -1,116 +1,116 @@
-# photos-mcp docs
+# Photos MCP 문서
 
-이 디렉터리는 `photos-mcp` 를 처음 이해하는 사람과 실제로 수정/운영하는 사람 모두를 위한 문서 모음이다. 문서는 입문, 구조 이해, tool 사용, 운영 reference 의 네 층으로 나눠 둔다.
+> 상태: 현행 문서 인덱스
+>
+> 검증 기준: `src/photos_mcp`, `scripts`, `tests`, `pyproject.toml`
+> 최종 구조 검토: 2026-08-09
 
-## 먼저 알아둘 점
+이 문서는 Photos MCP의 공식 문서 진입점이다. 현재 기능은 실제 코드와 자동 테스트를 기준으로 설명하며, 과거 문서는 [archive](99-archive/README.md)에만 보존한다.
 
-- source of truth 는 `src/` 아래 코드다.
-- `build/`, `build-framework-standalone/`, `dist/`, `dist-framework-standalone/`, `*.egg-info/` 는 생성 산출물이다.
-- 실제 실행 구조는 `PhotosMcp.app` 이 menu bar app 으로 떠 있으면서 내부에서 localhost `streamable HTTP` MCP daemon 을 여는 방식이다.
-- `nanobot` 은 `stdio` child launch 가 아니라 `http://127.0.0.1:18791/mcp` 에 붙는 MCP client 역할만 맡는다.
+## 독자별 시작점
 
-## 처음 보는 사람에게 추천하는 읽기 순서
+| 목적 | 먼저 읽을 문서 |
+| --- | --- |
+| 앱을 처음 설치하고 실행 | [설치와 실행](01-getting-started/02-installation.md) |
+| 사진을 실제로 분류 | [첫 실행](01-getting-started/03-first-run.md) |
+| Apple 사진 사용 | [Apple 사진 분류](02-user-guide/02-apple-photos-classification.md) |
+| 로컬 폴더와 RAW 파일 사용 | [로컬 폴더 분류](02-user-guide/03-local-folder-classification.md) |
+| Nanobot 또는 다른 MCP client 연결 | [MCP 개요](03-integration/README.md) |
+| 전체 내부 구조 이해 | [시스템 개요](04-architecture/README.md) |
+| 빌드와 설치본 검증 | [빌드와 배포](05-operations/02-build-and-release.md) |
+| 장애 원인 확인 | [문제 해결](05-operations/04-troubleshooting.md) |
+| AppKit 화면 수정 | [디자인 시스템](07-design-system/README.md) |
 
-1. `../README.md`
-2. `01-architecture.md`
-3. `02-photo-source.md`
-4. `03-photo-ranker.md`
-5. `04-mcp-tool-catalog.md`
-6. `05-mcp-call-flows.md`
-7. `20-usage-guide.md`
-8. `07-facade-tool-contracts.md`
+## 문서 구조
 
-이 순서면 `photos-mcp` 가 무엇인지, 왜 `photo-source` 와 `photo-ranker` 가 필요한지, 실제 호출이 어떻게 흘러가는지까지 한 번에 따라갈 수 있다.
+- `01-getting-started`: 제품 개요, 설치, 첫 실행
+- `02-user-guide`: 앱 화면과 사용자 작업 흐름
+- `03-integration`: MCP, Nanobot, VLM 연결 계약
+- `04-architecture`: 런타임, 데이터 흐름, 저장소, 안전 경계
+- `05-operations`: 설정, 빌드, 상태 확인, 장애 대응
+- `06-development`: 저장소 구조, 테스트, 문서 관리 원칙
+- `07-design-system`: AppKit 디자인·컴포넌트·접근성 기준
+- `08-reports`: 재현 가능한 검증 및 벤치마크 결과
+- `09-roadmap`: 아직 구현되지 않은 활성 계획만 관리
+- `99-archive`: 이전 문서 보존 영역. 현행 계약으로 인용하지 않는다.
 
-## 문서 맵
+## 전체 문서 목록
 
-### 입문 / 개요
+### 시작
 
-- `../README.md`: 제품 개요, 빠른 성공 기준, 전체 문서 진입점
-- `01-architecture.md`: 전체 처리 구조, 앱/daemon/vendor/state 관계, 대표 데이터 흐름
+- [제품 개요](01-getting-started/README.md)
+- [설치와 실행](01-getting-started/02-installation.md)
+- [첫 실행](01-getting-started/03-first-run.md)
 
-### 서브시스템 설명
+### 사용자 가이드
 
-- `02-photo-source.md`: 사진 조회 계층, 지원 소스, 주요 tool, helper 동작
-- `03-photo-ranker.md`: 분석/분류 계층, jobs, review, write-back, end-to-end workflow
+- [앱 화면 안내](02-user-guide/README.md)
+- [Apple 사진 분류](02-user-guide/02-apple-photos-classification.md)
+- [로컬 폴더 분류](02-user-guide/03-local-folder-classification.md)
+- [결과 검토와 내보내기](02-user-guide/04-results-and-export.md)
+- [키보드 조작](02-user-guide/05-keyboard-shortcuts.md)
 
-### MCP 표면과 사용 흐름
+### 통합
 
-- `04-mcp-tool-catalog.md`: 현재 4개 public tool과 action별 역할 및 내부 매핑
-- `05-mcp-call-flows.md`: health, source access, classify job, organize workflow 등 성공 흐름 예시
-- `07-facade-tool-contracts.md`: 현재 4개 facade tool의 입력/출력과 승인 계약
-- `11-feature-map.md`: endpoint, UI, 테스트 범위, 제약을 요약한 기능 참조 문서
-- `18-llm-integration-sample-tests.md`: LLM client 연결 시 사용할 자연어 샘플, expected tool route, 실행 validator 와 최신 report 기준
-- `20-usage-guide.md`: 처음 호출하는 순서, Linux Qwen3.6과 안전한 쓰기 방법
+- [MCP 통합 개요](03-integration/README.md)
+- [MCP 도구 참조](03-integration/02-tool-reference.md)
+- [Nanobot 연결](03-integration/03-nanobot-integration.md)
+- [이미지 분석 런타임](03-integration/04-vision-runtime.md)
 
-이전 surface의 설계 이력은 `06-tool-surface-simplification-direction.md`, `08-legacy-to-facade-mapping.md`, `09-orchestration-layer-design.md`, `10-implementation-and-validation-plan.md`에 남아 있다. 이 문서의 옛 도구명은 현재 사용법이 아니라 전환 당시 기록이다.
+### 아키텍처
 
-### 운영 / 구현 reference
+- [시스템 아키텍처](04-architecture/README.md)
+- [런타임 생명주기](04-architecture/02-runtime-lifecycle.md)
+- [요청과 작업 흐름](04-architecture/03-request-and-job-flow.md)
+- [저장소와 데이터 모델](04-architecture/04-storage-model.md)
+- [보안과 개인정보](04-architecture/05-security-and-privacy.md)
 
-- `12-runtime-lifecycle.md`: bootstrap, single-instance, daemon/state/preflight, terminal helper 계약 상세
-- `13-build-and-validation.md`: py2app packaging contract, framework standalone build, smoke/test 검증 흐름
-- `14-debugging-guide.md`: 디버깅 순서, generated artifact 구분, 자주 막히는 지점
-- `15-refactor-direction.md`: 현재 아키텍처의 근본 문제와 단계별 코드 재정리 방향
-- `16-vendor-import-inventory.md`: phase-1 기준 top-level vendor import 목록과 전환 순서
-- `17-live-validation-checklist.md`: live endpoint, facade tool, intent/action 별 실검증 체크리스트와 기록 템플릿
-- `18-llm-integration-sample-tests.md`: LLM client 연결 시 실제로 호출해 볼 샘플과 sample validator 문서
-- `19-linux-vlm-benchmark-2026-08-01.md`: Linux llama.cpp 멀티모달 모델의 동일 사진 집합 비교, 운영 모델 판정과 재현 절차
-- `20-usage-guide.md`: Linux Qwen3.6 기본 VLM, `guide` action, 조회·분석과 2단계 쓰기 승인 사용법
+### 운영과 개발
 
-### planning
+- [설정](05-operations/README.md)
+- [빌드와 배포](05-operations/02-build-and-release.md)
+- [상태와 모니터링](05-operations/03-health-and-monitoring.md)
+- [문제 해결](05-operations/04-troubleshooting.md)
+- [저장소 구조](06-development/README.md)
+- [테스트](06-development/02-testing.md)
+- [문서 관리 원칙](06-development/03-documentation-policy.md)
 
-- `planning/README.md`: `PhotosMcp` 전용 planning 문서 인덱스와 읽기 순서
-- `planning/01-streamable-http-daemon-redesign-phase1.md`: localhost `streamable HTTP` daemon 구조 재정의 문서
-- `planning/02-streamable-http-daemon-implementation-phase1.md`: 위 구조 변경의 phase-1 구현 계획
-- `planning/03-mcp-public-tool-surface-redesign-phase1.md`: 현재 4개 group tool로 전환한 설계와 완료 기록
-- `planning/04-functional-improvement-roadmap-2026-08-01.md`: 작업 영속성, 안전한 쓰기, VLM과 품질 평가 개선 로드맵
+### UI, 보고서, 계획
 
-## 어떤 문서를 언제 보면 되는가
+- [AppKit 디자인 시스템](07-design-system/README.md)
+- [검증 보고서](08-reports/README.md)
+- [로드맵](09-roadmap/README.md)
+- [이전 문서 보관소](99-archive/README.md)
 
-### 기능을 이해하고 싶을 때
+## 제품 경계
 
-- `01-architecture.md`
-- `02-photo-source.md`
-- `03-photo-ranker.md`
-- `05-mcp-call-flows.md`
-- `06-tool-surface-simplification-direction.md`
-- `07-facade-tool-contracts.md`
-- `08-legacy-to-facade-mapping.md`
-- `09-orchestration-layer-design.md`
-- `10-implementation-and-validation-plan.md`
+Photos MCP는 다음 두 표면을 제공한다.
 
-### MCP client 연결이나 tool 사용법을 보고 싶을 때
+1. 사용자가 직접 조작하는 macOS AppKit 앱
+2. `http://127.0.0.1:18791/mcp`에 노출되는 Streamable HTTP MCP server
 
-- `04-mcp-tool-catalog.md`
-- `05-mcp-call-flows.md`
-- `11-feature-map.md`
-- `18-llm-integration-sample-tests.md`
-- `20-usage-guide.md`
+MCP public tool은 다음 네 개다.
 
-### 소스 수정 전에 현재 제약과 구조를 파악하고 싶을 때
+- `photos_query`: 조회, 상태, 가이드, 결과 확인
+- `photos_select`: 분석과 사진 선택
+- `photos_write`: 앨범 및 파일 내보내기
+- `photos_workflow`: 여러 단계를 묶은 장기 작업
 
-- `12-runtime-lifecycle.md`
-- `13-build-and-validation.md`
-- `14-debugging-guide.md`
-- `15-refactor-direction.md`
+쓰기 작업은 분석과 분리되며 승인 계획을 거친다. 자세한 계약은 [MCP 도구 참조](03-integration/02-tool-reference.md)를 따른다.
 
-## 현재 작업 기준
+## 문서 신뢰 규칙
 
-기존 packaging과 namespace 리팩터링은 `15-refactor-direction.md`에 완료 기록이 있다. 새 기능은 `planning/04-functional-improvement-roadmap-2026-08-01.md`의 우선순위를 기준으로 진행하고 완료 상태와 검증 결과를 함께 갱신한다.
+- 동작 설명은 코드 경로와 테스트 근거를 함께 적는다.
+- 구현되지 않은 내용은 현행 문서에 섞지 않고 `roadmap/active`에 둔다.
+- 실행 결과는 `reports`에 두며 일반 사용법과 섞지 않는다.
+- `archive` 문서는 역사 기록일 뿐 현재 사용법이 아니다.
+- MCP action 목록은 `src/photos_mcp/facade/action_options.py`와 일치해야 한다.
 
-## 빠른 코드 맵
+## 빠른 상태 확인
 
-- `PhotosMcp.py`: app bundle / source 실행 공용 bootstrap
-- `src/photos_mcp/main.py`: CLI 모드와 app main entrypoint
-- `src/photos_mcp/config.py`: app/runtime/endpoint 기본값과 env override
-- `src/photos_mcp/runtime_paths.py`: `~/.photos-mcp` home, runtime/cache/logs 기본 경로와 하위 cache path 계약
-- `src/photos_mcp/server.py`: 4개 facade FastMCP tool, `/health`, 쓰기 승인 경계
-- `src/photos_mcp/vision_runtime.py`: Linux Qwen3.6 기본 VLM과 실행 정책
-- `src/photos_mcp/mutation_approval.py`: write/workflow plan과 일회성 승인 token
-- `src/photos_mcp/daemon.py`: uvicorn 기반 HTTP daemon controller
-- `src/photos_mcp/menu_app.py`: menu bar popover UI
-- `src/photos_mcp/state.py`: daemon 상태, preflight 상태, job snapshot store
-- `src/photos_mcp/preflight.py`: Photos library read / automation readiness check
-- `src/photos_mcp/vendor_loader.py`: `photo-source`, `photo-ranker` vendored runtime loader
-- `src/photos_mcp/packaging.py`: py2app resource staging / bundle naming / build option
-- `scripts/build_framework_standalone.sh`: framework Python 기반 standalone bundle build
+```bash
+curl -fsS http://127.0.0.1:18791/health
+curl -fsS http://127.0.0.1:18791/health/capabilities
+```
+
+정상 판단은 단순히 프로세스가 존재하는지가 아니라 `daemon_status`가 `ready` 또는 작업 중인 `busy`인지, 필요한 capability가 준비됐는지를 함께 확인한다.

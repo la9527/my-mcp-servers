@@ -1,189 +1,76 @@
-# photos-mcp
+# Photos MCP
 
-`photos-mcp` 는 macOS 에서 Apple Photos 중심의 사진 조회, 분석, 분류, 정리 작업을 하나의 MCP server 로 제공하는 독립 실행형 앱이다. 내부적으로는 `photo-source` 와 `photo-ranker` 를 vendor tree 로 포함하고, 외부에는 `PhotosMcp.app` 하나와 `http://127.0.0.1:18791/mcp` 하나만 노출한다.
+Photos MCP는 Apple 사진과 로컬 이미지 폴더를 조회·분석·선별하고, 사용자가 승인한 결과를 앨범 또는 디렉토리로 내보내는 macOS AppKit 앱이다. 같은 기능을 `http://127.0.0.1:18791/mcp`의 Streamable HTTP MCP server로 제공한다.
 
-핵심 포인트는 단순하다.
+## 주요 기능
 
-- 사용자는 `PhotosMcp.app` 을 실행한다.
-- 앱은 localhost 에 MCP daemon 을 연다.
-- MCP client 는 `photos-mcp` 하나에만 붙는다.
-- 내부에서는 조회 계층 `photo-source` 와 분석/분류 계층 `photo-ranker` 가 호출된다.
+- Apple 사진의 앨범·인물·기간 기반 분류
+- 앱 내부 폴더 트리에서 로컬 JPEG, PNG, HEIC, SONY ARW 등 선택
+- 품질, 장면, 얼굴 신호를 이용한 우수 사진 추천
+- 3~6열 반응형 결과 갤러리와 확대 가능한 사진 뷰어
+- Apple 사진 앨범과 분류별 로컬 원본 내보내기
+- 변경 계획과 승인 토큰을 사용하는 안전한 쓰기
+- Linux OpenAI 호환 VLM과 Mac 로컬 MLX 런타임 선택
+- Nanobot을 포함한 MCP client 연결
 
-## 이 프로젝트로 할 수 있는 일
+## 빠른 시작
 
-- Apple Photos, local folder, Google Photos, GCS 에서 사진 목록을 읽는다.
-- 사진 메타데이터와 thumbnail 을 가져온다.
-- 품질 점수, 얼굴, 장면, 이벤트, 중복, best shot 분석을 수행한다.
-- background classify job 을 시작하고 상태와 결과를 조회한다.
-- 검토용 review metadata 를 만들고 선택 결과를 내보낸다.
-- Apple Photos album 생성, 사진 추가, 분류 결과 write-back 을 수행한다.
-- `classify_and_organize`, `curate_best_photos` 같은 end-to-end workflow 를 실행한다.
-
-현재 기본 MCP public surface 는 4개 facade tool 이다.
-
-- `photos_query`
-- `photos_select`
-- `photos_write`
-- `photos_workflow`
-
-어떤 도구와 action을 써야 할지 모르면 `photos_query(action="guide", options={"goal": "overview"})`로 시작한다. Apple Photos에서 선택한 사진이 iCloud-only이면 `photos_select(action="analyze_photo", options={"wait_for_local": true, ...})`로 background wait run을 만들고, 이후 `photos_query(action="result_summary"|"result_detail")`로 조회하거나 `photos_query(action="cancel")`로 중단한다.
-
-사진 분석 기본 VLM은 Linux 워크스테이션의 `Qwen3.6-35B-A3B-Q4_K_M.gguf`다. 첫 분석 요청이 Linux 깨우기, llama.cpp 준비와 SSH 터널 연결을 자동 수행한다. 원격 전송을 금지하려면 PhotosMcp 앱을 `PHOTOS_MCP_VLM_POLICY=local_only` 환경으로 다시 실행한다.
-
-기존 `photo-source`, `photo-ranker` 의 세부 tool 은 내부 implementation detail 로 유지되며, 기본 `list_tools` 에서는 직접 노출하지 않는다.
-
-## 전체 구조를 한 문장으로 보면
-
-`PhotosMcp.app` 이 실행 주체이고, `server.py` 가 unified MCP layer 를 만들며, `vendor_loader.py` 가 `photo-source` 와 `photo-ranker` 를 적재하고, `daemon.py` 와 `state.py` 가 앱 UI와 health 상태를 유지한다.
-
-자세한 흐름은 아래 문서를 먼저 보면 된다.
-
-- 전체 구조: `docs/01-architecture.md`
-- 조회 계층: `docs/02-photo-source.md`
-- 분석/분류 계층: `docs/03-photo-ranker.md`
-- 전체 tool 목록: `docs/04-mcp-tool-catalog.md`
-- 실제 호출 흐름 예시: `docs/05-mcp-call-flows.md`
-- MCP surface 축소 방향: `docs/06-tool-surface-simplification-direction.md`
-
-## 가장 빠른 성공 기준
-
-성공 기준은 아래 3개다.
-
-1. `PhotosMcp.app` 이 정상 실행된다.
-2. `http://127.0.0.1:18791/health` 가 응답한다.
-3. MCP client에서 `photos_query(action="status")`와 `photos_query(action="guide")`가 성공한다.
-
-기본 endpoint 는 아래와 같다.
-
-- MCP endpoint: `http://127.0.0.1:18791/mcp`
-- health endpoint: `http://127.0.0.1:18791/health`
-- capabilities endpoint: `http://127.0.0.1:18791/health/capabilities`
-
-빠른 로컬 확인:
+Python 3.12 환경에서:
 
 ```bash
-./.venv/bin/python -m photos_mcp.main --health
-curl -fsS http://127.0.0.1:18791/health
-curl -fsS http://127.0.0.1:18791/health/capabilities
+python3.12 -m venv .venv
+./.venv/bin/pip install -e '.[all,dev]'
+./.venv/bin/pytest -q
+./.venv/bin/python -m photos_mcp.main
 ```
 
-health 해석 기준:
-
-- top-level `status` 는 transport readiness 다.
-- Apple Photos 접근 가능 여부는 `/health/capabilities` 와 `preflight_checks` 를 함께 봐야 한다.
-- `ready` 또는 `busy` 면 daemon transport 는 정상으로 본다.
-
-## `photos-mcp` 가 내부에서 하는 일
-
-대표 호출 흐름은 아래와 같다.
-
-1. MCP client 가 facade tool 을 호출한다.
-2. `server.py`가 `photos_query`, `photos_select`, `photos_write`, `photos_workflow` 중 하나를 받는다.
-3. facade layer 가 필요한 vendor runtime 을 준비하고 내부 substep 을 결정한다.
-4. `photo-source` 또는 `photo-ranker` 함수가 실제 작업을 수행한다.
-5. job 관련 응답이면 facade layer가 공통 envelope로 정규화하고 vendor `jobs.db`를 함께 사용하는 `RunRepository`를 갱신한다.
-6. menu bar UI 와 health payload 가 같은 state snapshot 을 읽는다.
-
-`wait_for_local=true`인 analyze도 다른 실행과 동일한 SQLite 실행 저장소에 기록된다. app이 Apple Photos local download 가능 여부를 polling하다가 준비되면 analyze를 자동으로 이어서 수행한다.
-
-`photos_write`는 첫 호출에서 실제 photo ID와 preview 경로가 포함된 `mutation_plan`을 반환한다. 앨범 workflow는 분석만 먼저 수행한 뒤 확정 대상 계획을 만들고 `awaiting_mutation_approval`에서 멈춘다. 사용자가 메뉴 또는 MCP에서 승인한 경우에만 같은 options와 token으로 쓰며, 자동 `idempotency_key`와 `MutationReceipt`가 중복 실행을 막는다. 부분 실패나 timeout 뒤 동일 요청은 쓰기를 반복하지 않고 현재 앨범의 photo ID를 다시 읽어 완료·부분 성공·재조정 대기를 확정한다.
-
-즉, `photos-mcp` 는 단순 proxy 가 아니라 아래 역할까지 같이 맡는다.
-
-- vendor runtime bootstrap
-- 4-tool facade MCP surface 노출
-- internal workflow orchestration
-- job 응답 정규화
-- app UI 와 health state projection
-- macOS app lifecycle 관리
-
-## 문서 읽는 순서
-
-처음 보는 사용자라면 아래 순서가 가장 빠르다.
-
-1. `docs/01-architecture.md`
-2. `docs/02-photo-source.md`
-3. `docs/03-photo-ranker.md`
-4. `docs/04-mcp-tool-catalog.md`
-5. `docs/05-mcp-call-flows.md`
-6. `docs/06-tool-surface-simplification-direction.md`
-
-운영/구현 관점에서는 아래 문서가 기준이다.
-
-- 문서 인덱스: `docs/README.md`
-- runtime 상세: `docs/12-runtime-lifecycle.md`
-- build와 smoke: `docs/13-build-and-validation.md`
-- LLM 연결 샘플: `docs/18-llm-integration-sample-tests.md`
-- 기능 참조: `docs/11-feature-map.md`
-- 디버깅 순서: `docs/14-debugging-guide.md`
-- 리팩터링 방향: `docs/15-refactor-direction.md`
-- 개선된 사용법: `docs/20-usage-guide.md`
-
-## 서브시스템 요약
-
-### `photo-source`
-
-사진을 읽어 오는 계층이다.
-
-- 내부 주요 tool: `list_photos`, `get_metadata`, `get_thumbnail`, `search_photos`, `export_photos`
-- 주요 소스: `apple`, `local`, `google`, `gcs`
-- 역할: 사진 목록, 상세 메타데이터, thumbnail, 검색, export
-
-### `photo-ranker`
-
-사진을 분석하고 분류하고 정리하는 계층이다.
-
-- 내부 analysis: `score_quality`, `detect_faces`, `describe_scene`, `classify_event`, `find_duplicates`, `rank_best_shots`
-- 내부 jobs: `start_classify_job`, `get_job_status`, `get_job_summary`, `get_job_result`, `cancel_job`, `delete_job`, `clear_job_history`, `list_jobs`
-- 내부 review/write-back: `get_review_items`, `set_photo_review`, `create_album`, `add_to_album`, `organize_results`, `list_photo_albums`
-- 내부 end-to-end: `classify_and_organize`, `curate_best_photos`, `import_and_organize`
-
-## macOS 앱으로서의 동작
-
-`PhotosMcp.app`은 `~/Applications/PhotosMcp.app`에 설치되는 일반 macOS 앱이다. standalone 빌드는 기본적으로 `/Applications/PhotosMcp.app` 심볼릭 링크도 생성하므로 Finder, Spotlight, Launchpad 또는 `open -a PhotosMcp`로 쉽게 실행할 수 있다. 같은 공용 경로에 심볼릭 링크가 아닌 앱이 이미 있으면 안전을 위해 덮어쓰지 않는다. 앱은 menu bar status item UI도 제공한다.
-
-menu bar popover 에서는 아래를 다룬다.
-
-- daemon 상태와 endpoint
-- preflight 결과
-- `Start`, `Stop`, `Run Checks`, `Refresh`, `Quit`
-- active jobs 최대 2개
-- recent terminal job history
-- job cancel/delete/clear
-
-앱 자체의 runtime ownership 은 `~/.photos-mcp` 아래로 통일된다.
-
-- home: `~/.photos-mcp`
-- runtime: `~/.photos-mcp/runtime`
-- cache: `~/.photos-mcp/cache`
-- logs: `~/.photos-mcp/logs`
-
-## build 및 검증 기준
-
-대표 검증 명령:
+설치된 앱이 있으면 다음처럼 시작한다.
 
 ```bash
-./.venv/bin/python -m photos_mcp.main --health
+open -a PhotosMcp
 curl -fsS http://127.0.0.1:18791/health
-./.venv/bin/pytest tests/test_main.py tests/test_config.py tests/test_state.py tests/test_packaging.py tests/test_preflight.py tests/test_daemon.py -q
-uv run pytest -q
 ```
 
-standalone build 와 bundle smoke 는 `docs/13-build-and-validation.md` 를 기준으로 본다.
+## MCP 공개 도구
 
-## 코드 기준 빠른 맵
+| 도구 | 역할 |
+| --- | --- |
+| `photos_query` | 상태, 가이드, 탐색, 결과 조회 |
+| `photos_select` | 사진 분석과 선별 |
+| `photos_write` | 승인된 앨범·파일 쓰기 |
+| `photos_workflow` | 여러 단계를 묶은 장기 작업 |
 
-- `src/photos_mcp/server.py`: facade FastMCP server, `/health`, 4개 public tool export
-- `src/photos_mcp/facade/`: facade action 검증, 조회, 실행, 결과와 사용 가이드
-- `src/photos_mcp/vision_runtime.py`: Linux Qwen3.6 기본 VLM과 `local_only` 정책
-- `src/photos_mcp/mutation_approval.py`: 쓰기 및 workflow plan 승인 gate
-- `src/photos_mcp/vendor_loader.py`: `photo-source`, `photo-ranker` runtime loader
-- `src/photos_mcp/daemon.py`: uvicorn daemon controller
-- `src/photos_mcp/menu_app.py`: menu bar app UI
-- `src/photos_mcp/state.py`: daemon/preflight/job snapshot store
-- `src/photos_mcp/job_state.py`: `photo-ranker` DB/queue adapter
-- `src/photos_mcp/runtime_bootstrap.py`: source/bundle 공용 bootstrap
-- `src/photos_mcp/vendor/photo-source/`: 사진 조회 계층
-- `src/photos_mcp/vendor/photo-ranker/`: 분석/분류/정리 계층
+어떤 action을 사용할지 모르면 다음 호출부터 시작한다.
 
-현재 문서의 자세한 분류와 읽는 순서는 `docs/README.md` 에 정리해 두었다.
+```text
+photos_query(action="guide", options={"goal":"overview"})
+```
+
+## 앱 빌드
+
+```bash
+./scripts/build_framework_standalone.sh
+```
+
+스크립트는 `~/Applications/PhotosMcp.app` 설치, codesign 검증, runtime·vendor smoke까지 수행한다.
+
+## 문서
+
+- [문서 전체 인덱스](docs/README.md)
+- [설치와 실행](docs/01-getting-started/02-installation.md)
+- [사용자 화면](docs/02-user-guide/README.md)
+- [MCP 통합](docs/03-integration/README.md)
+- [시스템 구조](docs/04-architecture/README.md)
+- [운영과 문제 해결](docs/05-operations/04-troubleshooting.md)
+- [디자인 시스템](docs/07-design-system/README.md)
+
+문서는 현재 `src/photos_mcp`, `scripts`, `tests`를 기준으로 독립 작성되며 이전 문서는 현행 계약에서 제외한다.
+
+## 검증
+
+```bash
+./.venv/bin/python scripts/validate_docs.py
+./.venv/bin/pytest -q
+```
+
+실제 Apple 사진 권한, iCloud 원본 준비, Linux VLM 연결은 설치본에서 별도로 확인해야 한다.

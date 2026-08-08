@@ -6,7 +6,7 @@ import re
 from photos_mcp.facade.action_options import ACTION_SPECS
 
 
-CATALOG_PATH = Path(__file__).resolve().parents[1] / "docs" / "04-mcp-tool-catalog.md"
+CATALOG_PATH = Path(__file__).resolve().parents[1] / "docs" / "03-integration" / "02-tool-reference.md"
 CONTRACT_PATTERN = re.compile(r"\|\s*`(photos_(?:query|select|write|workflow))`\s*\|\s*`([a-z0-9_]+)`\s*\|")
 
 
