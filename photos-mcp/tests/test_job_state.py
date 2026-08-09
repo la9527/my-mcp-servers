@@ -14,6 +14,8 @@ class _Status:
 class _Job:
     id: str
     status: _Status
+    request_options: dict | None = None
+    result_summary: dict | None = None
 
     def to_dict(self) -> dict:
         return {"id": self.id, "status": self.status.value, "source": "apple"}
@@ -206,3 +208,64 @@ def test_photo_ranker_job_store_returns_sanitized_review_items() -> None:
     assert payload["items"][0]["preview_path"] == "/private/previews/photo-1.jpg"
     assert payload["items"][0]["selected"] is True
     assert "source_photo_path" not in payload["items"][0]
+
+
+def test_review_result_reports_full_total_and_loads_up_to_product_cap() -> None:
+    db = _DB([_Job("done", _Status("completed"))])
+    db.results["done"] = [{"photo_id": f"photo-{index}"} for index in range(150)]
+    store = PhotoRankerJobStore(_Module(db, _Queue([])))
+
+    payload = store.get_review_result("done", top_n=1000)
+
+    assert payload["result_count"] == 150
+    assert payload["loaded_count"] == 150
+    assert len(payload["items"]) == 150
+
+
+def test_completed_classify_job_backfills_relative_scene_recommendations() -> None:
+    job = _Job("done", _Status("completed"), request_options={"selection_mode": "classify"})
+    db = _DB([job])
+    db.results["done"] = [
+        {
+            "photo_id": "best",
+            "scene_cluster_id": "scene-1",
+            "scene_cluster_size": 3,
+            "cluster_rank": 1,
+            "total_score": 69,
+            "recommended_in_cluster": False,
+        },
+        {
+            "photo_id": "second",
+            "scene_cluster_id": "scene-1",
+            "scene_cluster_size": 3,
+            "cluster_rank": 2,
+            "total_score": 68,
+            "recommended_in_cluster": False,
+        },
+        {
+            "photo_id": "third",
+            "scene_cluster_id": "scene-1",
+            "scene_cluster_size": 3,
+            "cluster_rank": 3,
+            "total_score": 67,
+            "recommended_in_cluster": False,
+        },
+        {
+            "photo_id": "single",
+            "scene_cluster_id": "scene-2",
+            "scene_cluster_size": 1,
+            "cluster_rank": 1,
+            "total_score": 95,
+            "recommended_in_cluster": False,
+        },
+    ]
+    store = PhotoRankerJobStore(_Module(db, _Queue([])))
+
+    payload = store.get_review_result("done")
+
+    assert [item["photo_id"] for item in payload["items"] if item["recommended_in_cluster"]] == [
+        "best",
+        "second",
+    ]
+    assert job.result_summary["scene_recommendation_policy"] == "relative_scene_top_2"
+    assert job.result_summary["scene_recommended_count"] == 2

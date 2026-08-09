@@ -467,7 +467,16 @@ class Pipeline:
                 "scene_recommended_count": sum(
                     1 for item in ranked if item.recommended_in_cluster
                 ),
-                "scene_recommendation_min_score": round(recommendation_threshold, 2),
+                "scene_recommendation_policy": (
+                    "relative_scene_top_2"
+                    if recommendation_threshold is None
+                    else "absolute_quality_percentile"
+                ),
+                "scene_recommendation_min_score": (
+                    round(recommendation_threshold, 2)
+                    if recommendation_threshold is not None
+                    else None
+                ),
                 "ranked_count": len(ranked),
                 "vlm_runtime": {
                     **vlm_runtime_metadata,
@@ -501,13 +510,13 @@ class Pipeline:
         self,
         ranked_items: list[RankedPhoto],
         job: Job | None,
-    ) -> float:
-        """Align scene recommendations with select-best percentile policy."""
+    ) -> float | None:
+        """Use relative recommendations for classification and percentiles for curation."""
         if not ranked_items or job is None:
             return self.config.scene_recommendation_min_score
         options = getattr(job, "request_options", {}) or {}
         if str(options.get("selection_mode") or "classify") != "select_best":
-            return self.config.scene_recommendation_min_score
+            return None
         try:
             top_percent = max(1, min(int(options.get("quality_top_percent") or 30), 100))
         except (TypeError, ValueError):

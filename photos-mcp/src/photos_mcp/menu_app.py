@@ -1606,7 +1606,15 @@ class PhotosMcpMenuController(NSObject):
         job_id = self._sender_identifier(sender)
         if not job_id:
             return
-        payload = self._daemon_controller.get_job_review_result(job_id, top_n=100)
+        # The product supports up to 1,000 photos per direct classification.
+        # Do not silently turn a completed 500-photo job into a 100-item view.
+        payload = self._daemon_controller.get_job_review_result(job_id, top_n=1000)
+        logger.info(
+            "opening result gallery job_id=%s total=%s loaded=%s",
+            job_id,
+            payload.get("result_count", 0),
+            payload.get("loaded_count", len(payload.get("items") or [])),
+        )
         if payload.get("error"):
             alert = NSAlert.alloc().init()
             alert.setMessageText_("사진 결과를 불러오지 못했습니다")

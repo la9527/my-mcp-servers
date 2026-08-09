@@ -205,6 +205,33 @@ def test_cluster_annotation_requires_the_second_photo_to_pass_the_score_floor() 
     assert [item.photo_id for item in items if item.recommended_in_cluster] == ["best"]
 
 
+def test_relative_cluster_policy_recommends_only_multi_photo_scene_leaders() -> None:
+    module = _load_module()
+    items = [
+        SimpleNamespace(photo_id="best", total_score=69, technical_score=60),
+        SimpleNamespace(photo_id="second", total_score=68, technical_score=59),
+        SimpleNamespace(photo_id="single", total_score=95, technical_score=90),
+    ]
+    clusters = [
+        module.SceneCluster("scene", ("best", "second")),
+        module.SceneCluster("single", ("single",)),
+    ]
+    features = {
+        "best": np.array([1.0, 0.0, 0.0]),
+        "second": np.array([0.8, 0.6, 0.0]),
+        "single": np.array([0.0, 0.0, 1.0]),
+    }
+
+    module.annotate_cluster_ranks(
+        items,
+        clusters,
+        visual_features=features,
+        recommendation_min_score=None,
+    )
+
+    assert [item.photo_id for item in items if item.recommended_in_cluster] == ["best", "second"]
+
+
 def test_capture_time_z_suffix_remains_supported() -> None:
     module = _load_module()
 

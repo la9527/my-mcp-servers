@@ -339,7 +339,7 @@ def annotate_cluster_ranks(
     clusters: Iterable[SceneCluster],
     *,
     visual_features: dict[str, np.ndarray | None],
-    recommendation_min_score: float = 80.0,
+    recommendation_min_score: float | None = 80.0,
     second_min_visual_distance: float = 0.008,
     second_max_score_gap: float = 18.0,
 ) -> None:
@@ -358,12 +358,25 @@ def annotate_cluster_ranks(
 
         winner = members[0]
         recommended_ids: list[str] = []
-        if float(getattr(winner, "total_score", 0.0)) >= recommendation_min_score:
+        # A ``None`` score floor enables the relative recommendation policy
+        # used by normal classification: only compare photos that belong to
+        # the same multi-photo scene, rather than requiring a global score
+        # that is not comparable across family, event, and scenery photos.
+        relative_policy = recommendation_min_score is None
+        winner_passes = relative_policy and len(members) > 1
+        if not relative_policy:
+            winner_passes = float(getattr(winner, "total_score", 0.0)) >= float(
+                recommendation_min_score
+            )
+        if winner_passes:
             recommended_ids.append(str(winner.photo_id))
 
         if recommended_ids:
             for candidate in members[1:]:
-                if float(candidate.total_score) < recommendation_min_score:
+                if (
+                    not relative_policy
+                    and float(candidate.total_score) < float(recommendation_min_score)
+                ):
                     break
                 score_gap = float(winner.total_score) - float(candidate.total_score)
                 distance = cosine_distance(

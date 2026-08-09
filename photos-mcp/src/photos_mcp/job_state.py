@@ -5,6 +5,9 @@ from typing import Any
 from photos_mcp.state import JobSnapshot, is_terminal_job_status, job_snapshot_from_payload, job_status_value
 
 
+MAX_REVIEW_RESULT_ITEMS = 1000
+
+
 def synthetic_review_result(payload: dict[str, Any], *, preview_path: str = "") -> dict[str, Any]:
     """Convert a persisted single-photo analysis into the common review shape."""
     result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
@@ -81,9 +84,11 @@ class PhotoRankerJobStore:
         """Return local review data without exposing source photo paths to the UI."""
         job = self.db.load_job(job_id) or self.queue.get_job(job_id)
         results = self.db.load_photo_results(job_id)
+        results = self._backfill_relative_scene_recommendations(job, results)
         assets = self.db.list_job_assets(job_id)
         items: list[dict[str, Any]] = []
-        for result in results[: max(1, top_n)]:
+        item_limit = max(1, min(int(top_n), MAX_REVIEW_RESULT_ITEMS))
+        for result in results[:item_limit]:
             asset = assets.get(str(result.get("photo_id") or ""), {})
             items.append(
                 {
@@ -101,10 +106,91 @@ class PhotoRankerJobStore:
             "created_at": getattr(job, "created_at", "") if job else "",
             "finished_at": getattr(job, "finished_at", "") if job else "",
             "result_summary": dict(getattr(job, "result_summary", {}) or {}) if job else {},
-            "result_count": len(items),
-            "result_available": bool(items),
+            # ``result_count`` is the completed job total, not the transport
+            # window. The gallery can load up to the product cap below.
+            "result_count": len(results),
+            "loaded_count": len(items),
+            "result_available": bool(results),
             "items": items,
         }
+
+    def _backfill_relative_scene_recommendations(
+        self, job: Any | None, results: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Apply the current classify policy to pre-policy persisted jobs.
+
+        Completed jobs from before relative recommendations stored a fixed
+        80-point decision. Reusing their persisted scene cluster ranks avoids
+        a costly VLM rerun while keeping the gallery and exports consistent.
+        """
+        if not job or not results:
+            return results
+        options = getattr(job, "request_options", {}) or {}
+        if str(options.get("selection_mode") or "classify") != "classify":
+            return results
+
+        summary = dict(getattr(job, "result_summary", {}) or {})
+        if summary.get("scene_recommendation_policy") == "relative_scene_top_2":
+            return results
+
+        by_cluster: dict[str, list[dict[str, Any]]] = {}
+        for result in results:
+            photo_id = str(result.get("photo_id") or "")
+            cluster_id = str(result.get("scene_cluster_id") or photo_id)
+            by_cluster.setdefault(cluster_id, []).append(result)
+
+        changed = False
+        recommended_count = 0
+        for members in by_cluster.values():
+            members.sort(
+                key=lambda item: (
+                    int(item.get("cluster_rank") or 1),
+                    -float(item.get("total_score") or 0.0),
+                    str(item.get("photo_id") or ""),
+                )
+            )
+            is_multi_photo_scene = max(
+                int(item.get("scene_cluster_size") or 1) for item in members
+            ) > 1
+            for index, result in enumerate(members, start=1):
+                # Keep the first two only when the scene genuinely has
+                # alternatives. The pipeline's diversity check governs new
+                # jobs; legacy jobs lack visual vectors, so rank is the stable
+                # and reproducible fallback.
+                recommended = is_multi_photo_scene and index <= 2
+                slot = index if recommended else 0
+                if (
+                    bool(result.get("recommended_in_cluster")) != recommended
+                    or int(result.get("recommendation_slot") or 0) != slot
+                ):
+                    changed = True
+                result["recommended_in_cluster"] = recommended
+                result["recommendation_slot"] = slot
+                result["selection_reason_codes"] = (
+                    ["scene_best", "relative_scene_leader"]
+                    if slot == 1
+                    else ["scene_alternative", "relative_scene_second"]
+                    if slot == 2
+                    else ["same_scene_alternative"]
+                )
+                recommended_count += int(recommended)
+
+        summary.update(
+            {
+                "scene_recommendation_policy": "relative_scene_top_2",
+                "scene_recommendation_min_score": None,
+                "scene_recommended_count": recommended_count,
+            }
+        )
+        job.result_summary = summary
+        if changed:
+            save_results = getattr(self.db, "save_photo_results", None)
+            if callable(save_results):
+                save_results(str(getattr(job, "id", "")), results)
+        save_job = getattr(self.db, "save_job", None)
+        if callable(save_job):
+            save_job(job)
+        return results
 
     def cancel_job(self, job_id: str) -> bool:
         success = self.queue.cancel_job(job_id)
