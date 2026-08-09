@@ -13,6 +13,7 @@ from Quartz import (
     CGImageSourceCreateWithURL,
     kCGImagePropertyPixelHeight,
     kCGImagePropertyPixelWidth,
+    kCGImageSourceCreateThumbnailFromImageAlways,
     kCGImageSourceCreateThumbnailFromImageIfAbsent,
     kCGImageSourceCreateThumbnailWithTransform,
     kCGImageSourceThumbnailMaxPixelSize,
@@ -35,8 +36,13 @@ def raw_image_dimensions(path: str | Path) -> tuple[int, int]:
     )
 
 
-def raw_preview_jpeg_bytes(path: str | Path, max_pixels: int = 1024) -> bytes:
-    """Return an oriented JPEG preview, preferring the RAW file's embedded preview."""
+def raw_preview_jpeg_bytes(
+    path: str | Path,
+    max_pixels: int = 1024,
+    *,
+    prefer_embedded_preview: bool = True,
+) -> bytes:
+    """Return an oriented JPEG preview from an embedded preview or RAW decode."""
 
     source = CGImageSourceCreateWithURL(NSURL.fileURLWithPath_(str(path)), None)
     if source is None:
@@ -45,7 +51,11 @@ def raw_preview_jpeg_bytes(path: str | Path, max_pixels: int = 1024) -> bytes:
         source,
         0,
         {
-            kCGImageSourceCreateThumbnailFromImageIfAbsent: True,
+            (
+                kCGImageSourceCreateThumbnailFromImageIfAbsent
+                if prefer_embedded_preview
+                else kCGImageSourceCreateThumbnailFromImageAlways
+            ): True,
             kCGImageSourceCreateThumbnailWithTransform: True,
             kCGImageSourceThumbnailMaxPixelSize: max(64, int(max_pixels)),
         },

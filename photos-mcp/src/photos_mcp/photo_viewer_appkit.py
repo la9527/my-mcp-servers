@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import objc
@@ -28,7 +29,11 @@ from Foundation import NSMakeSize, NSURL
 from Quartz import IKImageView
 
 from photos_mcp.ui_theme import app_font
-from photos_mcp.viewer_asset_service import resolve_viewer_asset
+from photos_mcp.viewer_asset_service import (
+    cached_raw_viewer_preview,
+    render_raw_viewer_preview,
+    resolve_viewer_asset,
+)
 
 
 _VIEWER_WIDTH = 1180.0
@@ -113,6 +118,12 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         self._index = 0
         self._is_fit = True
         self._info_visible = True
+        self._raw_preview_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="photos-mcp-raw-viewer",
+        )
+        self._raw_preview_generation = 0
+        self._pending_raw_previews: dict[str, tuple[int, str, str]] = {}
         window.setTitle_("사진 크게 보기")
         window.setMinSize_(NSMakeSize(720.0, 520.0))
         window.setCollectionBehavior_(NSWindowCollectionBehaviorFullScreenPrimary)
@@ -262,9 +273,12 @@ class PhotosMcpPhotoViewerController(NSWindowController):
             return
         item = self._items[self._index]
         asset = resolve_viewer_asset(item)
+        self._raw_preview_generation += 1
         if asset is None:
             self._counter_label.setStringValue_("사진을 불러올 수 없습니다")
             self._image_view.setImage_(None)
+        elif asset.requires_rendered_preview:
+            self._display_raw_asset(asset.path)
         else:
             self._image_view.setImageWithURL_(NSURL.fileURLWithPath_(str(asset.path)))
             self._counter_label.setStringValue_(
@@ -286,6 +300,47 @@ class PhotosMcpPhotoViewerController(NSWindowController):
             f"종합 {score:.0f} · 품질 {quality:.0f} · 의미 {meaningful:.0f}\n분류 · {event_type}"
         )
         self.window().setTitle_(f"사진 크게 보기 · {self._index + 1}/{len(self._items)}")
+
+    @objc.python_method
+    def _display_raw_asset(self, source_path) -> None:
+        cached_preview = cached_raw_viewer_preview(source_path)
+        if cached_preview is not None:
+            self._set_viewer_image_path(cached_preview)
+            self._counter_label.setStringValue_(f"{self._index + 1} / {len(self._items)} · 고해상도 RAW 미리보기")
+            return
+
+        self._image_view.setImage_(None)
+        self._counter_label.setStringValue_(f"{self._index + 1} / {len(self._items)} · 고해상도 RAW 미리보기를 준비하는 중입니다")
+        token = f"{self._raw_preview_generation}:{source_path}"
+        self._raw_preview_executor.submit(self._render_raw_preview_worker, token, self._raw_preview_generation, str(source_path))
+
+    @objc.python_method
+    def _render_raw_preview_worker(self, token: str, generation: int, source_path: str) -> None:
+        try:
+            rendered_path = str(render_raw_viewer_preview(source_path))
+        except Exception:
+            rendered_path = ""
+        self._pending_raw_previews[token] = (generation, source_path, rendered_path)
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("rawPreviewReady:", token, False)
+
+    def rawPreviewReady_(self, token) -> None:
+        result = self._pending_raw_previews.pop(str(token), None)
+        if result is None:
+            return
+        generation, _source_path, rendered_path = result
+        if generation != self._raw_preview_generation:
+            return
+        if not rendered_path:
+            self._counter_label.setStringValue_("고해상도 RAW 미리보기를 만들지 못했습니다")
+            return
+        self._set_viewer_image_path(rendered_path)
+        self._counter_label.setStringValue_(f"{self._index + 1} / {len(self._items)} · 고해상도 RAW 미리보기")
+
+    @objc.python_method
+    def _set_viewer_image_path(self, path) -> None:
+        self._image_view.setImageWithURL_(NSURL.fileURLWithPath_(str(path)))
+        self._is_fit = True
+        self._image_view.zoomImageToFit_(None)
 
     @objc.python_method
     def _button(self, parent: Any, title: str, action: str) -> Any:

@@ -4,7 +4,12 @@ from AppKit import NSApplication
 from PIL import Image
 
 from photos_mcp.photo_viewer_appkit import PhotosMcpPhotoViewerController
-from photos_mcp.viewer_asset_service import hydrate_viewer_source_paths, resolve_viewer_asset
+from photos_mcp.viewer_asset_service import (
+    cached_raw_viewer_preview,
+    hydrate_viewer_source_paths,
+    render_raw_viewer_preview,
+    resolve_viewer_asset,
+)
 
 
 def test_viewer_asset_prefers_source_and_falls_back_to_preview(tmp_path) -> None:
@@ -22,6 +27,28 @@ def test_viewer_asset_prefers_source_and_falls_back_to_preview(tmp_path) -> None
 
     assert resolved is not None and resolved.path == source and resolved.is_high_resolution
     assert fallback is not None and fallback.path == preview and not fallback.is_high_resolution
+
+
+def test_raw_viewer_preview_is_rendered_once_and_cached(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "source.ARW"
+    source.write_bytes(b"raw-placeholder")
+    calls: list[tuple[str, int]] = []
+
+    def fake_raw_preview(path, max_pixels, *, prefer_embedded_preview):
+        calls.append((str(path), max_pixels))
+        assert prefer_embedded_preview is False
+        return b"jpeg-preview"
+
+    monkeypatch.setattr("photos_mcp.viewer_asset_service.raw_preview_jpeg_bytes", fake_raw_preview)
+    cache_root = tmp_path / "cache"
+
+    preview = render_raw_viewer_preview(source, cache_root=cache_root)
+    cached = cached_raw_viewer_preview(source, cache_root=cache_root)
+    same_preview = render_raw_viewer_preview(source, cache_root=cache_root)
+
+    assert preview == cached == same_preview
+    assert preview.read_bytes() == b"jpeg-preview"
+    assert calls == [(str(source), 4096)]
 
 
 def test_viewer_privately_hydrates_source_path_from_local_job_artifact(tmp_path) -> None:

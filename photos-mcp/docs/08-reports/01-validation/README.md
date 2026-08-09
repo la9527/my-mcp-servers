@@ -16,3 +16,4 @@ YYYY-MM-DD-<검증-대상>.md
 - [2026-08-09 standalone 앱 빌드 및 화면 검증](03-standalone-app-build-and-ui-validation-2026-08-09.md)
 - [2026-08-09 로컬 사진 500장 E2E 검증](02-local-500-photo-e2e-2026-08-09.md)
 - [2026-08-09 결과 갤러리·상대 추천 기준 검증](04-result-gallery-relative-recommendation-2026-08-09.md)
+- [2026-08-09 RAW 전체 화면 뷰어 캐시 검증](05-raw-viewer-preview-cache-2026-08-09.md)
