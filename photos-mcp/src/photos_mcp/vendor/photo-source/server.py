@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP(
     "photo-source",
     instructions=(
-        "사진 소스 접근 서버. Apple Photos, Google Photos(Google One), "
-        "Google Cloud Storage, 로컬 폴더에서 사진을 검색, 메타데이터 조회, "
+        "사진 소스 접근 서버. Apple Photos, Google Cloud Storage, "
+        "로컬 폴더에서 사진을 검색, 메타데이터 조회, "
         "썸네일 생성할 수 있습니다."
     ),
 )
@@ -21,7 +21,6 @@ mcp = FastMCP(
 _local_source = None
 _apple_source = None
 _gcs_source = None
-_google_photos_source = None
 
 
 def _get_local_source(root_dir: str):
@@ -66,13 +65,11 @@ def _get_gcs_source(bucket: str, prefix: str = ""):
     return _gcs_source
 
 
-def _get_google_photos_source(credentials_path: str = ""):
-    from .sources.google_photos import GooglePhotosSource
-
-    global _google_photos_source
-    if _google_photos_source is None:
-        _google_photos_source = GooglePhotosSource(credentials_path)
-    return _google_photos_source
+def _google_picker_required() -> None:
+    raise ValueError(
+        "Google Photos 전체 보관함 조회는 지원하지 않습니다. "
+        "Google Photos Picker 선택 세션을 사용하세요."
+    )
 
 
 # ── MCP Tools ──────────────────────────────────────────
@@ -91,7 +88,7 @@ def list_photos(
     """사진 목록을 반환합니다.
 
     Args:
-        source: 소스 종류 — "local", "apple", "google", "gcs"
+        source: 소스 종류 — "local", "apple", "gcs"
         path_or_bucket: local이면 디렉터리 경로, gcs이면 bucket 이름
         date_from: 시작 날짜 (ISO 형식, 선택)
         date_to: 종료 날짜 (ISO 형식, 선택)
@@ -106,10 +103,10 @@ def list_photos(
         "limit": limit,
     }
 
-    if source in ("apple", "google"):
+    if source == "apple":
         if album:
             kwargs["album"] = album
-        if person and source == "apple":
+        if person:
             kwargs["person"] = person
 
     photos = src.list_photos(**kwargs)
@@ -122,7 +119,7 @@ def list_albums(source: str = "apple", limit: int = 200) -> list[dict]:
     if source == "apple":
         return _get_apple_source().list_albums(limit=limit)
     if source == "google":
-        return _get_google_photos_source().list_albums(limit=limit)
+        _google_picker_required()
     return []
 
 
@@ -135,7 +132,7 @@ def get_metadata(
     """사진의 상세 메타데이터를 반환합니다.
 
     Args:
-        source: 소스 종류 — "local", "apple", "google", "gcs"
+        source: 소스 종류 — "local", "apple", "gcs"
         photo_id: 사진 ID (local=경로, apple=UUID, gcs=blob 이름)
         path_or_bucket: local이면 디렉터리, gcs이면 bucket 이름
     """
@@ -154,7 +151,7 @@ def get_thumbnail(
     """사진의 리사이즈된 썸네일을 base64로 반환합니다.
 
     Args:
-        source: 소스 종류 — "local", "apple", "google", "gcs"
+        source: 소스 종류 — "local", "apple", "gcs"
         photo_id: 사진 ID
         path_or_bucket: local이면 디렉터리, gcs이면 bucket 이름
         max_size: 썸네일 최대 크기 (픽셀)
@@ -170,24 +167,22 @@ def search_photos(
     path_or_bucket: str = "",
     limit: int = 50,
 ) -> list[dict]:
-    """키워드로 사진을 검색합니다. (Apple Photos, Google Photos 지원)
+    """키워드로 Apple Photos 사진을 검색합니다.
 
     Args:
         query: 검색 키워드
-        source: 소스 종류 — "apple" 또는 "google"
+        source: 소스 종류 — "apple"
         path_or_bucket: 사용하지 않음
         limit: 최대 결과 수
     """
     if source == "google":
-        src = _get_google_photos_source()
-        photos = src.search_photos(query, limit)
-        return [p.to_dict() for p in photos]
+        _google_picker_required()
     elif source == "apple":
         src = _get_apple_source()
         photos = src.search_photos(query, limit)
         return [p.to_dict() for p in photos]
     else:
-        return [{"error": f"search_photos는 apple, google만 지원합니다. (받은 값: {source})"}]
+        return [{"error": f"search_photos는 apple만 지원합니다. (받은 값: {source})"}]
 
 
 @mcp.tool()
@@ -242,7 +237,7 @@ def export_photos(
     """사진을 지정 디렉터리에 내보냅니다.
 
     Args:
-        source: 소스 종류 — "local", "apple", "google", "gcs"
+        source: 소스 종류 — "local", "apple", "gcs"
         photo_ids: 내보낼 사진 ID 목록
         output_dir: 출력 디렉터리
         path_or_bucket: local이면 디렉터리, gcs이면 bucket 이름
@@ -316,9 +311,9 @@ def _resolve_source(source: str, path_or_bucket: str):
         bucket, prefix = _parse_gcs_location(path_or_bucket)
         return _get_gcs_source(bucket, prefix)
     elif source == "google":
-        return _get_google_photos_source()
+        _google_picker_required()
     else:
-        raise ValueError(f"Unknown source: {source}. Use 'local', 'apple', 'google', or 'gcs'.")
+        raise ValueError(f"Unknown source: {source}. Use 'local', 'apple', or 'gcs'.")
 
 
 if __name__ == "__main__":
