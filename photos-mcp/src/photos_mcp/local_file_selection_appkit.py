@@ -1039,13 +1039,16 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
     @objc.python_method
     def _layout_photo_document(self) -> None:
         width = max(1.0, float(self._photo_scroll.contentSize().width))
+        viewport_height = max(1.0, float(self._photo_scroll.contentSize().height))
         has_photo = bool(self._focused_photo())
         y = 0.0
-        preview_height = min(260.0, max(150.0, width * 0.72))
+        # Preserve room for the filename and key capture details at the minimum
+        # window height instead of letting the preview consume the viewport.
+        preview_height = max(120.0, min(260.0, width * 0.72, viewport_height * 0.54))
         self._inspector_image.setFrame_(NSMakeRect(0.0, y, width, preview_height))
         self._inspector_empty.setFrame_(NSMakeRect(8.0, 24.0, max(1.0, width - 16.0), 40.0))
         if not has_photo:
-            self._photo_document.setFrameSize_(NSMakeSize(width, max(100.0, float(self._photo_scroll.contentSize().height))))
+            self._photo_document.setFrameSize_(NSMakeSize(width, max(100.0, viewport_height)))
             return
         y += preview_height + 14.0
         self._file_name.setFrame_(NSMakeRect(0.0, y, width, 40.0))
@@ -1066,7 +1069,7 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
             else:
                 view.setFrame_(NSMakeRect(12.0, y, max(1.0, width - 12.0), 34.0))
                 y += 38.0
-        document_height = max(y + 12.0, float(self._photo_scroll.contentSize().height))
+        document_height = max(y + 12.0, viewport_height)
         self._photo_document.setFrameSize_(NSMakeSize(width, document_height))
 
     @objc.python_method

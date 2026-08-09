@@ -1249,8 +1249,13 @@ def test_local_photo_browser_keeps_focused_metadata_above_settings_at_minimum_he
     controller._layout_inspector()
 
     card_top = float(controller._settings_card.frame().origin.y + controller._settings_card.frame().size.height)
+    preview_height = float(controller._inspector_image.frame().size.height)
+    viewport_height = float(controller._photo_scroll.contentSize().height)
     assert float(controller._photo_scroll.frame().origin.y) >= card_top + 14.0
     assert float(controller._photo_scroll.frame().size.height) >= 120.0
+    assert preview_height == 120.0
+    assert preview_height <= viewport_height * 0.55
+    assert float(controller._file_date.frame().origin.y + controller._file_date.frame().size.height) <= viewport_height
     assert controller._selected_count.superview() == controller._settings_card
     settings_title_right = float(controller._settings_title.frame().origin.x + controller._settings_title.frame().size.width)
     selected_count_left = float(controller._selected_count.frame().origin.x)
