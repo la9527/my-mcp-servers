@@ -6,7 +6,7 @@ import inspect
 import json
 from typing import Any
 
-from photos_mcp.state import PhotosMcpStateStore, TERMINAL_JOB_STATUSES
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore, TERMINAL_JOB_STATUSES
 from photos_mcp.vendor_loader import load_vendor_server
 
 

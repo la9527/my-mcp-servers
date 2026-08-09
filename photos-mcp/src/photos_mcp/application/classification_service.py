@@ -11,8 +11,8 @@ from typing import Any, Awaitable, Callable
 
 from photos_mcp.facade.select_handler import handle_select
 from photos_mcp.photo_source_port import PhotoSourcePort, VendorPhotoSourcePort
-from photos_mcp.raw_image import RAW_IMAGE_EXTENSIONS
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.sources.local_files.raw_image import RAW_IMAGE_EXTENSIONS
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 DEFAULT_SCOPE_SCAN_LIMIT = 4000

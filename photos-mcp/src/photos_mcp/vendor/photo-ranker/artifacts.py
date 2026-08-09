@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from photos_mcp.runtime_paths import photo_ranker_runtime_root
+from photos_mcp.infrastructure.runtime.paths import photo_ranker_runtime_root
 
 DEFAULT_ARTIFACT_ROOT = photo_ranker_runtime_root() / "artifacts"
 

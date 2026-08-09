@@ -9,7 +9,7 @@ from photos_mcp.facade.library_service import photos_library
 from photos_mcp.facade.result_service import photos_result
 from photos_mcp.facade.status_service import photos_status
 from photos_mcp.facade.usage_service import photos_guide
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 async def handle_query(

@@ -7,7 +7,7 @@ from apple_terminal_helper import TerminalHelperError
 from photos_mcp.config import load_config
 from photos_mcp.application.mutation_approval import finalize_mutation_receipt
 from photos_mcp.server import build_server
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 class MockMcpClient:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from photos_mcp.run_repository import RunRepository
+from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
 
 def test_repository_shares_database_with_vendor_jobs_and_records_events(tmp_path) -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from photos_mcp.facade.action_options import ACTION_SPECS
-from photos_mcp.vision_runtime import vision_runtime_summary
+from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
 
 
 GOAL_GUIDES: dict[str, dict[str, Any]] = {

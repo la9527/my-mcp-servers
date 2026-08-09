@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from photos_mcp.runtime_paths import (
+from photos_mcp.infrastructure.runtime.paths import (
     photo_ranker_model_cache_root,
     photo_ranker_runtime_root,
     photo_ranker_vlm_cache_root,

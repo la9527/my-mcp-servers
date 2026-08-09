@@ -24,8 +24,8 @@ from photos_mcp.direct_classification import (
     LOCAL_IMAGE_EXTENSIONS,
 )
 from photos_mcp.facade.common import call_vendor
-from photos_mcp.state import PhotosMcpStateStore
-from photos_mcp.vision_runtime import vision_runtime_summary
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
+from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
 
 
 def _utc_stamp() -> str:

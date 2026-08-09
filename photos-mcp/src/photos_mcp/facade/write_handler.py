@@ -9,7 +9,7 @@ from photos_mcp.facade.action_options import ActionValidationError, validate_act
 from photos_mcp.facade.common import call_vendor
 from photos_mcp.facade.result_service import photos_result
 from photos_mcp.facade.run_service import photos_run
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 def _as_list(value: Any) -> list[Any]:

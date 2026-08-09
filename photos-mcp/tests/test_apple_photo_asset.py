@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from photos_mcp.apple_photo_asset import preferred_analysis_path, preferred_original_path
+from photos_mcp.infrastructure.sources.apple_photos.asset_resolver import preferred_analysis_path, preferred_original_path
 
 
 def test_raw_original_prefers_largest_photos_jpeg_derivative(tmp_path) -> None:

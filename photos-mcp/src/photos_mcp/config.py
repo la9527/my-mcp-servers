@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 
-from photos_mcp.runtime_paths import photos_mcp_cache_root, photos_mcp_logs_root, photos_mcp_runtime_root
+from photos_mcp.infrastructure.runtime.paths import photos_mcp_cache_root, photos_mcp_logs_root, photos_mcp_runtime_root
 
 
 DEFAULT_APP_NAME = "PhotosMcp"

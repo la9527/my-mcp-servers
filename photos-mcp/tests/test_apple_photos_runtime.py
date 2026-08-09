@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import sys
 from threading import Event, Thread
 
-from photos_mcp import apple_photos_runtime
+from photos_mcp.infrastructure.sources.apple_photos import runtime as apple_photos_runtime
 
 
 def _reset_runtime(monkeypatch) -> None:

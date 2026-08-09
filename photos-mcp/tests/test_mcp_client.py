@@ -9,7 +9,7 @@ import pytest
 from photos_mcp.facade import library_service
 from photos_mcp.config import load_config
 from photos_mcp.server import build_server
-from photos_mcp.state import PhotosMcpStateStore, preflight_check_snapshot_from_payload
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore, preflight_check_snapshot_from_payload
 
 
 class MockMcpClient:

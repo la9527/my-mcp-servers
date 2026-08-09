@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from photos_mcp.vision_runtime import resolve_vision_runtime_settings
+from photos_mcp.infrastructure.vision.runtime import resolve_vision_runtime_settings
 
 from ..models import EventType, SceneDescription
 

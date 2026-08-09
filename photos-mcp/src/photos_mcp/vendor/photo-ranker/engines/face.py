@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from photos_mcp.runtime_paths import photo_ranker_model_cache_root
+from photos_mcp.infrastructure.runtime.paths import photo_ranker_model_cache_root
 
 from ..models import FaceResult
 

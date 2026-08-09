@@ -85,9 +85,9 @@ from photos_mcp.infrastructure.sources.local_files.catalog import (
     scan_local_photos as _scan_local_photos,
 )
 from photos_mcp.infrastructure.sources.local_files.models import LocalPhoto
-from photos_mcp.local_photo_metadata import LocalPhotoMetadata, extract_local_photo_metadata
+from photos_mcp.infrastructure.sources.local_files.metadata import LocalPhotoMetadata, extract_local_photo_metadata
 from photos_mcp.interfaces.appkit.results.photo_viewer import PhotosMcpZoomImageView
-from photos_mcp.raw_image import RAW_IMAGE_EXTENSIONS
+from photos_mcp.infrastructure.sources.local_files.raw_image import RAW_IMAGE_EXTENSIONS
 from photos_mcp.interfaces.appkit.shared.theme import accent_color, app_font, panel_background_color, subtle_border_color
 
 

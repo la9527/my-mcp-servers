@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from photos_mcp.facade.action_options import ActionValidationError, validate_action_options
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 async def handle_workflow(

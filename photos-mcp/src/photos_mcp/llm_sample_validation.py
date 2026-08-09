@@ -17,7 +17,7 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from photos_mcp.logging_setup import ToolLogContext, build_dated_log_path, configure_root_logging, log_context
-from photos_mcp.runtime_paths import photos_mcp_logs_root
+from photos_mcp.infrastructure.runtime.paths import photos_mcp_logs_root
 
 
 PASS = "pass"

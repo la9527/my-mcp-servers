@@ -21,8 +21,8 @@ from photos_mcp.application.mutation_approval import (
     require_mutation_approval,
 )
 from photos_mcp.application.mutation_service import resolve_mutation_plan
-from photos_mcp.state import PhotosMcpStateStore, TERMINAL_JOB_STATUSES, job_snapshot_from_payload
-from photos_mcp.vision_runtime import vision_runtime_summary
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore, TERMINAL_JOB_STATUSES, job_snapshot_from_payload
+from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
 
 
 async def _reconcile_album_mutation(receipt: dict[str, Any]) -> dict[str, Any]:

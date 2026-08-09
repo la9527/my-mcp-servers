@@ -7,7 +7,7 @@ import pytest
 
 from photos_mcp.facade import run_service
 from photos_mcp.facade.run_service import photos_run
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 @pytest.mark.asyncio

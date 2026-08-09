@@ -4,7 +4,7 @@ import logging
 
 from photos_mcp.facade.common import call_vendor, resolve_run_id, wrap_run_payload
 from photos_mcp.logging_setup import ToolLogContext, log_context
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 logger = logging.getLogger(__name__)

@@ -9,7 +9,7 @@ from photos_mcp.application.export_service import (
     prepare_retry_originals,
     prepare_selected_export,
 )
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 @pytest.mark.asyncio

@@ -13,7 +13,7 @@ from photos_mcp.application.mutation_approval import (
     require_mutation_approval,
 )
 from photos_mcp.application.mutation_service import resolve_mutation_plan
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 ResolvePlan = Callable[..., Awaitable[dict[str, Any]]]

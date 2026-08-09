@@ -6,7 +6,7 @@ from typing import Any
 
 from photos_mcp.photo_assets import PhotoAsset
 from photos_mcp.photo_source_port import PhotoSourcePort, VendorPhotoSourcePort
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 APPLE_DOWNLOAD_HINT = (

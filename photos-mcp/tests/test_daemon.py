@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from photos_mcp.config import load_config
 from photos_mcp.daemon import PhotosMcpDaemonController
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 def _build_controller() -> PhotosMcpDaemonController:

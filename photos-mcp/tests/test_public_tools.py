@@ -10,7 +10,7 @@ import photos_mcp.facade.public_tools as public_tools
 from photos_mcp.facade.public_tools import photos_workflow, photos_write
 from photos_mcp.facade.write_handler import handle_write
 from photos_mcp.server import build_server
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 class MockMcpClient:

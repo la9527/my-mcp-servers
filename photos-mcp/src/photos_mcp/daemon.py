@@ -10,9 +10,9 @@ import time
 import uvicorn
 
 from photos_mcp.config import PhotosMcpConfig
-from photos_mcp.job_state import PhotoRankerJobStore, synthetic_review_result
+from photos_mcp.infrastructure.persistence.job_state import PhotoRankerJobStore, synthetic_review_result
 from photos_mcp.server import build_http_app, build_server
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 from photos_mcp.vendor_loader import load_vendor_server
 
 

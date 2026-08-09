@@ -47,7 +47,7 @@ from photos_mcp.interfaces.appkit.shared.theme import (
     sidebar_background_color,
     subtle_border_color,
 )
-from photos_mcp.vision_runtime import vision_runtime_summary
+from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
 
 
 _WINDOW_WIDTH = 1180.0

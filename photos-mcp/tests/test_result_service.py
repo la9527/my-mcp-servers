@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from photos_mcp.facade.result_service import photos_result
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@ from photos_mcp.application.mutation_approval import (
     clear_pending_mutation_plans,
     require_mutation_approval,
 )
-from photos_mcp.run_repository import RunRepository
+from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
 
 def setup_function() -> None:

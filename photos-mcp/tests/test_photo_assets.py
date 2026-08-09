@@ -2,7 +2,7 @@ import pytest
 
 from photos_mcp.facade.run_service import _selected_photo_probe
 from photos_mcp.photo_assets import PhotoAsset
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 def test_apple_asset_readiness_has_a_persistable_payload() -> None:

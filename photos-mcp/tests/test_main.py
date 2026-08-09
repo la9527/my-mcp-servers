@@ -12,7 +12,7 @@ import json
 from photos_mcp.config import load_config
 from photos_mcp.main import run_cli
 from photos_mcp.server import build_health_payload, build_http_app, build_server
-from photos_mcp.state import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 from photos_mcp.single_instance import AlreadyRunningError
 from photos_mcp.vendor_loader import VENDOR_ROOT, load_vendor_server, prepare_vendor_runtime, resolve_vendor_root
 

@@ -11,9 +11,9 @@ import re
 import tempfile
 from typing import Any
 
-from photos_mcp.raw_image import RAW_IMAGE_EXTENSIONS, raw_preview_jpeg_bytes
-from photos_mcp.runtime_paths import photos_mcp_cache_root
-from photos_mcp.runtime_paths import photo_ranker_runtime_root
+from photos_mcp.infrastructure.sources.local_files.raw_image import RAW_IMAGE_EXTENSIONS, raw_preview_jpeg_bytes
+from photos_mcp.infrastructure.runtime.paths import photos_mcp_cache_root
+from photos_mcp.infrastructure.runtime.paths import photo_ranker_runtime_root
 
 
 VIEWABLE_IMAGE_EXTENSIONS = {

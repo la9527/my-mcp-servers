@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 
 from photos_mcp.logging_setup import ToolLogContext, log_context
-from photos_mcp.runtime_broker_client import default_runtime_broker_client
+from photos_mcp.infrastructure.vision.broker_client import default_runtime_broker_client
 
 from . import db as db_module
 from .engines.aesthetic import score_technical_quality

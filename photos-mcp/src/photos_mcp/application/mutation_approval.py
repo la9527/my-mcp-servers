@@ -10,7 +10,7 @@ import uuid
 
 from apple_terminal_helper import TerminalHelperError
 from photos_mcp.facade.action_options import ActionValidationError, validate_action_options
-from photos_mcp.run_repository import RunRepository
+from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
 
 DEFAULT_APPROVAL_TTL_SECONDS = 900.0

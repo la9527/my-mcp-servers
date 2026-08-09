@@ -89,9 +89,9 @@ from photos_mcp.application.preflight_service import (
     run_startup_checks,
 )
 from photos_mcp.interfaces.appkit.results.controller import PhotosMcpResultsController
-from photos_mcp.state import PhotosMcpStateStore, preflight_check_snapshot_from_payload
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore, preflight_check_snapshot_from_payload
 from photos_mcp.interfaces.appkit.shared.theme import accent_color, app_font
-from photos_mcp.vision_runtime import vision_runtime_summary
+from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
 
 _APP_CONTROLLER = None
 logger = logging.getLogger(__name__)

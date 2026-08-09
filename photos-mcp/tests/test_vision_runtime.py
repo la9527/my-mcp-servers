@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from photos_mcp import vision_runtime
+from photos_mcp.infrastructure.vision import runtime as vision_runtime
 
 
 RUNTIME_ENV_NAMES = (

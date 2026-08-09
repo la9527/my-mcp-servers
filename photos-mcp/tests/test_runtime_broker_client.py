@@ -7,7 +7,7 @@ import pytest
 
 
 def _load_runtime_broker_module():
-    module = importlib.import_module("photos_mcp.runtime_broker_client")
+    module = importlib.import_module("photos_mcp.infrastructure.vision.broker_client")
     return importlib.reload(module)
 
 

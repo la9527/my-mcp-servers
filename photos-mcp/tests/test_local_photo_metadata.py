@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from photos_mcp.local_photo_metadata import normalize_imageio_metadata
+from photos_mcp.infrastructure.sources.local_files.metadata import normalize_imageio_metadata
 
 
 def _stat() -> SimpleNamespace:

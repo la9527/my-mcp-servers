@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PIL import Image, ImageFile, ImageOps
 
-from photos_mcp.raw_image import RAW_IMAGE_EXTENSIONS, open_raw_preview
+from photos_mcp.infrastructure.sources.local_files.raw_image import RAW_IMAGE_EXTENSIONS, open_raw_preview
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 

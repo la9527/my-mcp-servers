@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from photos_mcp.job_state import PhotoRankerJobStore, synthetic_review_result
+from photos_mcp.infrastructure.persistence.job_state import PhotoRankerJobStore, synthetic_review_result
 
 
 @dataclass

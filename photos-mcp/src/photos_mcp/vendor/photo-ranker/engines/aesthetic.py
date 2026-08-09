@@ -7,7 +7,7 @@ import io
 import logging
 from pathlib import Path
 
-from photos_mcp.runtime_paths import photo_ranker_model_cache_root
+from photos_mcp.infrastructure.runtime.paths import photo_ranker_model_cache_root
 
 logger = logging.getLogger(__name__)
 

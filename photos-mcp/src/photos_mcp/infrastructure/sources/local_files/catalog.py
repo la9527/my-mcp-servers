@@ -13,7 +13,7 @@ from Quartz import (
 )
 
 from photos_mcp.infrastructure.sources.local_files.models import LocalPhoto
-from photos_mcp.raw_image import RAW_IMAGE_EXTENSIONS
+from photos_mcp.infrastructure.sources.local_files.raw_image import RAW_IMAGE_EXTENSIONS
 
 
 LOCAL_IMAGE_EXTENSIONS = {

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from photos_mcp.state import (
+from photos_mcp.infrastructure.persistence.state_store import (
     PhotosMcpStateStore,
     is_active_job_status,
     is_running_job_status,

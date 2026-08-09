@@ -17,9 +17,9 @@ from datetime import datetime, time
 from pathlib import Path
 
 from apple_terminal_helper import run_in_terminal
-from photos_mcp.apple_photo_asset import preferred_analysis_path, preferred_original_path
-from photos_mcp.apple_photos_runtime import get_apple_photos_db
-from photos_mcp.raw_image import RAW_IMAGE_EXTENSIONS, raw_preview_jpeg_bytes
+from photos_mcp.infrastructure.sources.apple_photos.asset_resolver import preferred_analysis_path, preferred_original_path
+from photos_mcp.infrastructure.sources.apple_photos.runtime import get_apple_photos_db
+from photos_mcp.infrastructure.sources.local_files.raw_image import RAW_IMAGE_EXTENSIONS, raw_preview_jpeg_bytes
 from photos_mcp.runtime_bootstrap import default_terminal_python
 
 try:
