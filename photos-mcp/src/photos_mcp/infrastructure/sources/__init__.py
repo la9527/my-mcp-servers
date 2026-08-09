@@ -1,0 +1,2 @@
+"""Photo provider adapters."""
+

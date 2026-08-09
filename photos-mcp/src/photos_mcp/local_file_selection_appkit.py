@@ -66,11 +66,8 @@ from Foundation import NSIndexPath, NSIndexSet, NSMakePoint, NSMakeSize, NSSet, 
 from Quartz import (
     CGImageGetHeight,
     CGImageGetWidth,
-    CGImageSourceCopyPropertiesAtIndex,
     CGImageSourceCreateThumbnailAtIndex,
     CGImageSourceCreateWithURL,
-    kCGImagePropertyPixelHeight,
-    kCGImagePropertyPixelWidth,
     kCGImageSourceCreateThumbnailFromImageAlways,
     kCGImageSourceCreateThumbnailFromImageIfAbsent,
     kCGImageSourceCreateThumbnailWithTransform,
@@ -80,9 +77,14 @@ from Quartz import (
 from photos_mcp.direct_classification import (
     ClassificationCommand,
     DirectClassificationService,
-    LOCAL_IMAGE_EXTENSIONS,
     common_local_source_path,
 )
+from photos_mcp.infrastructure.sources.local_files.catalog import (
+    LOCAL_IMAGE_EXTENSIONS,
+    local_photo_from_path as _local_photo_from_path,
+    scan_local_photos as _scan_local_photos,
+)
+from photos_mcp.infrastructure.sources.local_files.models import LocalPhoto
 from photos_mcp.local_photo_metadata import LocalPhotoMetadata, extract_local_photo_metadata
 from photos_mcp.photo_viewer_appkit import PhotosMcpZoomImageView
 from photos_mcp.raw_image import RAW_IMAGE_EXTENSIONS
@@ -258,40 +260,6 @@ class FolderNode:
     kind: str = "folder"
 
 
-@dataclass(frozen=True)
-class LocalPhoto:
-    path: str
-    name: str
-    modified_at: float
-    size_bytes: int
-    pixel_width: int = 0
-    pixel_height: int = 0
-
-
-def _local_photo_from_path(path: str) -> LocalPhoto | None:
-    source = Path(path).expanduser()
-    try:
-        resolved = source.resolve()
-        if not resolved.is_file() or resolved.suffix.lower() not in LOCAL_IMAGE_EXTENSIONS:
-            return None
-        stat = resolved.stat()
-    except (OSError, PermissionError):
-        return None
-    width, height = _image_dimensions(str(resolved))
-    return LocalPhoto(str(resolved), resolved.name, stat.st_mtime, stat.st_size, width, height)
-
-
-def _image_dimensions(path: str) -> tuple[int, int]:
-    source = CGImageSourceCreateWithURL(NSURL.fileURLWithPath_(path), None)
-    if source is None:
-        return (0, 0)
-    properties = CGImageSourceCopyPropertiesAtIndex(source, 0, None) or {}
-    return (
-        int(properties.get(kCGImagePropertyPixelWidth, 0) or 0),
-        int(properties.get(kCGImagePropertyPixelHeight, 0) or 0),
-    )
-
-
 def _default_root_path() -> Path:
     pictures = Path.home() / "Pictures"
     return pictures if pictures.is_dir() else Path.home()
@@ -308,36 +276,6 @@ def _folder_nodes_for_path(path: Path) -> list[FolderNode]:
         FolderNode(key=f"folder:{item.resolve()}", title=item.name, path=str(item.resolve()))
         for item in sorted(children, key=lambda item: item.name.casefold())
     ]
-
-
-def _scan_local_photos(path: str, include_subfolders: bool) -> list[LocalPhoto]:
-    """Read only image metadata; image pixels are decoded later for visible cells."""
-
-    root = Path(path)
-    try:
-        candidates = root.rglob("*") if include_subfolders else root.iterdir()
-        photos = []
-        for item in candidates:
-            try:
-                if not item.is_file() or item.suffix.lower() not in LOCAL_IMAGE_EXTENSIONS:
-                    continue
-                stat = item.stat()
-            except (OSError, PermissionError):
-                continue
-            pixel_width, pixel_height = _image_dimensions(str(item))
-            photos.append(
-                LocalPhoto(
-                    path=str(item.resolve()),
-                    name=item.name,
-                    modified_at=stat.st_mtime,
-                    size_bytes=stat.st_size,
-                    pixel_width=pixel_width,
-                    pixel_height=pixel_height,
-                )
-            )
-    except (OSError, PermissionError):
-        return []
-    return sorted(photos, key=lambda photo: (-photo.modified_at, photo.name.casefold()))
 
 
 def _thumbnail_cache_key(photo: LocalPhoto, max_pixels: int) -> str:
