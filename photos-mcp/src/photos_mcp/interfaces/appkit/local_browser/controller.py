@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Event, Thread
@@ -86,8 +85,26 @@ from photos_mcp.infrastructure.sources.local_files.catalog import (
 )
 from photos_mcp.infrastructure.sources.local_files.models import LocalPhoto
 from photos_mcp.infrastructure.sources.local_files.metadata import LocalPhotoMetadata, extract_local_photo_metadata
-from photos_mcp.interfaces.appkit.results.photo_viewer import PhotosMcpZoomImageView
 from photos_mcp.infrastructure.sources.local_files.raw_image import RAW_IMAGE_EXTENSIONS
+from photos_mcp.interfaces.appkit.local_browser.folder_tree import (
+    FolderNode,
+    LargeDisclosureOutlineView,
+    configure_disclosure_button as _configure_disclosure_button,
+    default_root_path as _default_root_path,
+    folder_nodes_for_path as _folder_nodes_for_path,
+)
+from photos_mcp.interfaces.appkit.local_browser.layout import (
+    maximum_sidebar_width as _maximum_sidebar_width,
+)
+from photos_mcp.interfaces.appkit.local_browser.photo_grid import (
+    PhotoCollectionView,
+    PhotosMcpLocalPhotoItem,
+)
+from photos_mcp.interfaces.appkit.local_browser.single_photo import (
+    FlippedDocumentView,
+    LocalSinglePhotoZoomImageView,
+    SinglePhotoKeyView,
+)
 from photos_mcp.interfaces.appkit.shared.theme import accent_color, app_font, panel_background_color, subtle_border_color
 
 
@@ -116,166 +133,6 @@ _SINGLE_MAX_ZOOM = 8.0
 _SINGLE_ZOOM_STEP = 1.25
 _SINGLE_DOUBLE_CLICK_ZOOM_STEP = 2.0
 _SINGLE_ZOOM_EPSILON = 0.005
-
-
-def _configure_disclosure_button(button) -> None:
-    configuration = NSImageSymbolConfiguration.configurationWithPointSize_weight_(
-        _DISCLOSURE_ICON_SIZE,
-        NSFontWeightRegular,
-    )
-    collapsed = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
-        "chevron.right",
-        "펼치기",
-    )
-    expanded = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
-        "chevron.down",
-        "접기",
-    )
-    if collapsed is None or expanded is None:
-        return
-    collapsed = collapsed.imageWithSymbolConfiguration_(configuration)
-    expanded = expanded.imageWithSymbolConfiguration_(configuration)
-    collapsed.setTemplate_(True)
-    expanded.setTemplate_(True)
-    button.setImage_(collapsed)
-    button.setAlternateImage_(expanded)
-    button.setImageScaling_(NSImageScaleProportionallyUpOrDown)
-
-
-class LargeDisclosureOutlineView(NSOutlineView):
-    """Keep native outline behavior while matching disclosure glyphs to body text."""
-
-    def makeViewWithIdentifier_owner_(self, identifier, owner):
-        view = objc.super(LargeDisclosureOutlineView, self).makeViewWithIdentifier_owner_(identifier, owner)
-        if view is not None and str(identifier or "") == str(NSOutlineViewDisclosureButtonKey):
-            _configure_disclosure_button(view)
-        return view
-
-
-class PhotoCollectionView(NSCollectionView):
-    """Add selection toggling without replacing native grid navigation."""
-
-    def keyDown_(self, event) -> None:
-        owner = getattr(self, "_browser_owner", None)
-        if owner is not None and int(event.keyCode()) in {36, 49, 76}:
-            owner.toggleGridPhotoFromKeyboard_(self)
-            return
-        objc.super(PhotoCollectionView, self).keyDown_(event)
-
-
-class SinglePhotoKeyView(NSView):
-    """Keep single-photo navigation available from the keyboard."""
-
-    def acceptsFirstResponder(self) -> bool:
-        return True
-
-    def keyDown_(self, event) -> None:
-        owner = getattr(self, "_browser_owner", None)
-        key_code = int(event.keyCode())
-        if owner is not None and key_code == 123:
-            owner.showPreviousPhoto_(None)
-            return
-        if owner is not None and key_code == 124:
-            owner.showNextPhoto_(None)
-            return
-        if owner is not None and key_code in {36, 49, 76}:
-            owner.toggleFocusedPhotoFromKeyboard_(None)
-            return
-        if owner is not None and hasattr(event, "modifierFlags"):
-            if int(event.modifierFlags()) & NSEventModifierFlagCommand:
-                characters = str(event.charactersIgnoringModifiers() or "")
-                if characters in {"+", "="}:
-                    owner.singleZoomIn_(None)
-                    return
-                if characters == "-":
-                    owner.singleZoomOut_(None)
-                    return
-        objc.super(SinglePhotoKeyView, self).keyDown_(event)
-
-
-class LocalSinglePhotoZoomImageView(PhotosMcpZoomImageView):
-    """Reuse the result viewer gestures while preserving local-browser keys."""
-
-    def keyDown_(self, event) -> None:
-        owner = getattr(self, "_viewer_owner", None)
-        key_code = int(event.keyCode())
-        if owner is not None and key_code == 123:
-            owner.showPreviousPhoto_(None)
-            return
-        if owner is not None and key_code == 124:
-            owner.showNextPhoto_(None)
-            return
-        if owner is not None and key_code in {36, 49, 76}:
-            owner.toggleFocusedPhotoFromKeyboard_(None)
-            return
-        if owner is not None and key_code == 53:
-            owner._view_mode_control.setSelectedSegment_(0)
-            owner.viewModeChanged_(owner._view_mode_control)
-            return
-        if key_code == 34:
-            return
-        if owner is not None and hasattr(event, "modifierFlags"):
-            if int(event.modifierFlags()) & NSEventModifierFlagCommand:
-                characters = str(event.charactersIgnoringModifiers() or "")
-                if characters in {"+", "="}:
-                    owner.singleZoomIn_(None)
-                    return
-                if characters == "-":
-                    owner.singleZoomOut_(None)
-                    return
-        objc.super(LocalSinglePhotoZoomImageView, self).keyDown_(event)
-
-
-class FlippedDocumentView(NSView):
-    """Lay out scroll document content from the visible top edge."""
-
-    def isFlipped(self) -> bool:
-        return True
-
-
-def _maximum_sidebar_width(
-    total_width: float,
-    divider_width: float,
-    inspector_width: float = _INSPECTOR_MIN_WIDTH,
-) -> float:
-    available_with_minimum_center = (
-        total_width
-        - (divider_width * 2.0)
-        - _CONTENT_MIN_WIDTH
-        - max(_INSPECTOR_MIN_WIDTH, inspector_width)
-    )
-    return max(
-        _SIDEBAR_MIN_WIDTH,
-        min(total_width * _SIDEBAR_MAX_FRACTION, available_with_minimum_center),
-    )
-
-
-@dataclass(frozen=True)
-class FolderNode:
-    """A source-list group, a folder, or a temporary loading row."""
-
-    key: str
-    title: str
-    path: str = ""
-    kind: str = "folder"
-
-
-def _default_root_path() -> Path:
-    pictures = Path.home() / "Pictures"
-    return pictures if pictures.is_dir() else Path.home()
-
-
-def _folder_nodes_for_path(path: Path) -> list[FolderNode]:
-    """Return direct child folders without following inaccessible entries."""
-
-    try:
-        children = [item for item in path.iterdir() if item.is_dir() and not item.name.startswith(".")]
-    except (OSError, PermissionError):
-        return []
-    return [
-        FolderNode(key=f"folder:{item.resolve()}", title=item.name, path=str(item.resolve()))
-        for item in sorted(children, key=lambda item: item.name.casefold())
-    ]
 
 
 def _thumbnail_cache_key(photo: LocalPhoto, max_pixels: int) -> str:
@@ -308,90 +165,6 @@ def _decode_thumbnail(photo: LocalPhoto, max_pixels: int) -> Any | None:
         image,
         NSMakeSize(float(CGImageGetWidth(image)), float(CGImageGetHeight(image))),
     )
-
-
-class PhotosMcpLocalPhotoItem(NSCollectionViewItem):
-    """Reusable image-first card with independent focus and job-selection state."""
-
-    def loadView(self) -> None:
-        root = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 188.0, 142.0))
-        root.setWantsLayer_(True)
-        root.layer().setCornerRadius_(10.0)
-        root.layer().setBorderWidth_(1.0)
-        root.layer().setBorderColor_(subtle_border_color().CGColor())
-        root.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
-        self.setView_(root)
-        self._image_view = NSImageView.alloc().initWithFrame_(NSMakeRect(5.0, 5.0, 178.0, 132.0))
-        self._image_view.setImageScaling_(NSImageScaleProportionallyUpOrDown)
-        self._image_view.setImageAlignment_(0)
-        self._image_view.setAccessibilityElement_(False)
-        self._image_view.setWantsLayer_(True)
-        self._image_view.layer().setCornerRadius_(7.0)
-        self._image_view.layer().setMasksToBounds_(True)
-        root.addSubview_(self._image_view)
-        self._placeholder = NSTextField.labelWithString_("미리보기 불러오는 중")
-        self._placeholder.setFont_(app_font(10.0, "regular"))
-        self._placeholder.setTextColor_(NSColor.secondaryLabelColor())
-        self._placeholder.setAlignment_(1)
-        root.addSubview_(self._placeholder)
-        self._check_button = NSButton.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 28.0, 28.0))
-        self._check_button.setButtonType_(NSButtonTypeSwitch)
-        self._check_button.setControlSize_(NSControlSizeLarge)
-        self._check_button.setTitle_("")
-        self._check_button.setTarget_(None)
-        self._check_button.setAction_("togglePhotoCheck:")
-        self._check_button.setAccessibilityLabel_("분류 대상으로 선택")
-        self._check_button.setToolTip_("이 사진을 분류 대상에 추가하거나 해제합니다.")
-        root.addSubview_(self._check_button)
-        self._photo_path = ""
-        self._controller: Any | None = None
-
-    def prepareForReuse(self) -> None:
-        objc.super(PhotosMcpLocalPhotoItem, self).prepareForReuse()
-        self._photo_path = ""
-        self._image_view.setImage_(None)
-        self._placeholder.setHidden_(False)
-        self._check_button.setState_(NSControlStateValueOff)
-        self._check_button.setIdentifier_("")
-
-    def setSelected_(self, selected: bool) -> None:
-        objc.super(PhotosMcpLocalPhotoItem, self).setSelected_(selected)
-        self.view().layer().setBorderColor_((accent_color() if selected else subtle_border_color()).CGColor())
-        self.view().layer().setBorderWidth_(2.0 if selected else 1.0)
-
-    def viewDidLayout(self) -> None:
-        objc.super(PhotosMcpLocalPhotoItem, self).viewDidLayout()
-        bounds = self.view().bounds()
-        width = float(bounds.size.width)
-        height = float(bounds.size.height)
-        self._image_view.setFrame_(NSMakeRect(5.0, 5.0, max(1.0, width - 10.0), max(60.0, height - 10.0)))
-        self._placeholder.setFrame_(self._image_view.frame())
-        self._check_button.setFrame_(NSMakeRect(max(5.0, width - 36.0), max(5.0, height - 36.0), 28.0, 28.0))
-
-    @objc.python_method
-    def configure(self, photo: LocalPhoto, controller: Any) -> None:
-        self._photo_path = photo.path
-        self._controller = controller
-        self.view().setToolTip_(photo.name)
-        self.view().setAccessibilityLabel_(photo.name)
-        self._check_button.setTarget_(controller)
-        self._check_button.setIdentifier_(photo.path)
-        self._check_button.setState_(
-            NSControlStateValueOn if controller.is_photo_checked(photo.path) else NSControlStateValueOff
-        )
-        self._check_button.setAccessibilityLabel_(f"{photo.name} 분류 대상으로 선택")
-        image = controller.thumbnail_for(photo, controller.thumbnail_pixels_for_visible_item())
-        self.set_thumbnail(image)
-
-    @objc.python_method
-    def refresh_checked_state(self) -> None:
-        checked = bool(self._controller and self._controller.is_photo_checked(self._photo_path))
-        self._check_button.setState_(NSControlStateValueOn if checked else NSControlStateValueOff)
-
-    @objc.python_method
-    def set_thumbnail(self, image: Any | None) -> None:
-        self._image_view.setImage_(image)
-        self._placeholder.setHidden_(image is not None)
 
 
 class PhotosMcpLocalPhotoSelectionController(NSWindowController):
