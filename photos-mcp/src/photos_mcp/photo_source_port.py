@@ -4,8 +4,31 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Protocol
 
+from photos_mcp.application.source_registry import descriptor_from_legacy_source
+from photos_mcp.domain.models.source import SourceCapabilities, SourceDescriptor
+
 
 VendorCaller = Callable[..., Awaitable[Any]]
+
+
+def legacy_source_descriptor(
+    source: str,
+    *,
+    path_or_bucket: str = "",
+    account_id: str = "",
+) -> SourceDescriptor:
+    """Map the existing MCP source fields into the typed source contract."""
+
+    return descriptor_from_legacy_source(
+        source,
+        locator=path_or_bucket,
+        account_id=account_id,
+    )
+
+
+def legacy_source_capabilities(source: str) -> SourceCapabilities:
+    descriptor = legacy_source_descriptor(source)
+    return SourceCapabilities.for_provider(descriptor.provider)
 
 
 class PhotoSourcePort(Protocol):
