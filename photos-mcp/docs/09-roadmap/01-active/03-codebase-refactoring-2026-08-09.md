@@ -2,11 +2,36 @@
 
 ## 상태
 
-- 단계: 현행 코드 계측 및 실행 계획 수립 완료, 구현 승인 대기
+- 단계: 0~7단계 구현 및 standalone 회귀 검증 완료
 - 작성일: 2026-08-09
 - 재검토: 2026-08-09, Google Photos Picker·Library API와 GCS 확장 경계 반영
 - 대상: `src/photos_mcp`, `tests`, `scripts`, 앱 패키징과 관련 문서
 - 목표: 사용자 기능과 MCP 계약을 유지하면서 책임별 모듈 경계, 디렉터리, 테스트 구조를 단계적으로 재정리하고 Google Photos 같은 대화형 cloud source를 추가할 수 있는 기반 확립
+
+## 구현 결과
+
+2026-08-09에 이 문서의 0~7단계를 독립 커밋으로 구현했다.
+
+| 영역 | 반영 결과 |
+| --- | --- |
+| 공개 계약 | 4개 MCP tool, endpoint, console entry point와 기존 AppKit class import 유지 |
+| domain | typed source, capability, access grant, asset reference와 source policy 추가 |
+| application | 분류·결과·선택·내보내기·승인·preflight·cloud selection use case 이동 |
+| infrastructure | Apple·local·GCS·Google, persistence, Keychain, RAW, VLM, vendor adapter 분리 |
+| AppKit | main, menu, classification, local browser, results, shared feature package 구성 |
+| 로컬 브라우저 | folder tree, photo grid, single-photo keyboard/zoom view와 pane layout 분리 |
+| 결과 화면 | 공통 result presenter와 reusable collection item 분리, 기존 viewer 유지 |
+| MCP·실행 | MCP interface와 app composition root 분리, 최상위 경로는 얇은 wrapper로 유지 |
+| vendor | host import를 `infrastructure/vendor_adapter/compat.py` 한 경계로 제한 |
+| Google Photos | 제거된 legacy Library 조회 구현 삭제, Picker fake lifecycle과 정책 gate 추가 |
+| GCS | catalog, content, destination adapter와 별도 capability 추가 |
+| 운영 | packaging·validation을 `operations`로 이동하고 이전 CLI 경로 유지 |
+
+최종 자동 검증은 `466 passed`로 기준선 446건보다 20건 늘었다. 문서 검사, standalone py2app 빌드, 코드 서명, health, `osxphotos`, photo-source와 photo-ranker runtime import smoke가 모두 통과했다. 상세 결과는 [코드베이스 리팩터링 검증 보고서](../../08-reports/01-validation/06-codebase-refactoring-2026-08-09.md)에 기록한다.
+
+PyObjC selector와 delegate 수명주기를 보호하기 위해 window controller 자체는 무리한 mixin 다중 상속으로 분해하지 않았다. 대신 독립 view, collection item, 순수 모델·레이아웃·service를 실제 package로 이동했다. controller 줄 수 상한은 완료 조건이 아닌 경보 기준으로 사용했으며, 이후 UX 변경 시 해당 feature package 안에서 추가 분리한다.
+
+최상위 compatibility module도 즉시 제거하지 않았다. 기존 사용자 설치본, console entry point와 외부 import를 깨뜨리지 않는 것이 이 문서의 최우선 조건이므로 새 구현을 re-export하는 무상태 wrapper로 유지하고 architecture test로 동일 객체 연결을 고정했다.
 
 ## 결론
 
@@ -692,6 +717,10 @@ compatibility module에는 새 로직을 추가하지 않는다. 마지막 단�
 - 성능과 peak memory가 기준선에서 허용 범위를 벗어나지 않는다.
 - 전체 자동 테스트, 문서 검사, standalone 설치 앱과 실환경 smoke가 통과한다.
 
-## 승인 후 진행 순서
+## 완료 후 운영 원칙
 
-사용자 승인 후 `0단계 → 1단계 → 2단계`까지만 첫 리팩터링 주기로 진행한다. 이 주기의 결과로 로컬 브라우저가 안정적으로 분리되고 전체 검증이 통과하면, 변경 규모와 계측 결과를 다시 보고한 뒤 3단계 이후를 이어간다.
+- 새 기능은 최상위 compatibility wrapper가 아니라 새 책임 package에 추가한다.
+- package 이동 시 architecture, 공개 import, 전체 pytest와 standalone smoke를 함께 실행한다.
+- 실제 Google 계정 OAuth와 Picker browser 연동은 별도 사용자 승인과 개인정보 검토 후 진행한다.
+- 실제 사진 또는 앨범을 변경하는 E2E는 승인된 test destination에서만 수행한다.
+- compatibility wrapper 제거는 외부 호출자 inventory와 설치 앱 전환이 확인된 별도 작업으로 처리한다.

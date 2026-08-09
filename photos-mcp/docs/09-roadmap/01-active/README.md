@@ -12,7 +12,7 @@
 
 ## 코드 구조
 
-- [Photos MCP 코드베이스 리팩터링](03-codebase-refactoring-2026-08-09.md): 현행 구조 계측, Google Photos Picker·GCS 확장 경계, 목표 package tree, 단계별 이동 순서, 호환 계층, 성능·메모리 기준과 rollback 계획
+- [Photos MCP 코드베이스 리팩터링](03-codebase-refactoring-2026-08-09.md): 0~7단계 구현과 standalone 검증 완료. typed source, application service, infrastructure adapter, AppKit·MCP interface, vendor 격리와 Google Photos Picker 확장 경계 반영
 
 ## 인물 확인과 개인화
 

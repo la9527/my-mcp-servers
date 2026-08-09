@@ -22,6 +22,9 @@
 
 # 런타임과 패키징
 ./.venv/bin/pytest tests/test_runtime_bootstrap.py tests/test_packaging.py tests/test_main.py -q
+
+# 계층 의존성과 이전 import 호환성
+./.venv/bin/pytest tests/architecture -q
 ```
 
 ## 문서 검증
@@ -44,3 +47,24 @@
 5. 테스트 목적지에 승인 기반 내보내기를 수행한다.
 
 실제 검증 결과는 날짜와 환경을 포함해 `docs/08-reports/01-validation`에 기록한다.
+
+## standalone 번들 검증
+
+설치 위치를 덮어쓰지 않는 리팩터링 검증 빌드는 다음처럼 별도 경로를 사용한다.
+
+```bash
+PHOTOS_MCP_INSTALL_BUNDLE_PATH="$PWD/build-refactor-install/PhotosMcp.app" \
+PHOTOS_MCP_PUBLIC_APPLICATION_LINK="$PWD/build-refactor-install/PhotosMcp-public.app" \
+./scripts/build_framework_standalone.sh
+```
+
+빌드 뒤에는 source 실행이 아니라 번들 실행 파일을 직접 검사한다.
+
+```bash
+BUNDLE="$PWD/dist-framework-standalone/PhotosMcp.app"
+codesign --verify --deep --strict "$BUNDLE"
+"$BUNDLE/Contents/MacOS/PhotosMcp" --health
+"$BUNDLE/Contents/MacOS/PhotosMcp" --runtime-import-smoke
+"$BUNDLE/Contents/MacOS/PhotosMcp" --vendor-runtime-smoke
+./.venv/bin/python scripts/smoke_bundle_imports.py --bundle "$BUNDLE"
+```
