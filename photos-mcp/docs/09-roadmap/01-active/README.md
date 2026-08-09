@@ -1,18 +1,6 @@
 # 활성 후보
 
-아래에는 최근 완료된 기능과 메인 AppKit 사용자 흐름으로 완결되지 않았거나 실제 환경 검증이 더 필요한 후보를 함께 기록한다.
-
-## 로컬 사진 선택
-
-- [여러 폴더에서 사진 누적 선택](01-multi-folder-local-selection-2026-08-09.md): 구현 및 설치본 검증 완료. 폴더 이동과 독립된 선택 목록, 폴더별 관리 UI, 상세 촬영 정보와 단일 분류 작업 실행 계약
-
-## 전체 화면 뷰어
-
-- [사진 뷰어 직접 조작 UX](02-photo-viewer-direct-manipulation-2026-08-09.md): 더블클릭·smart zoom의 기준점 확대, 확대 사진 drag 이동, 공통 확대·축소와 비동기 로드 보호에 대한 구현 승인 대기 계획
-
-## 코드 구조
-
-- [Photos MCP 코드베이스 리팩터링](03-codebase-refactoring-2026-08-09.md): 0~7단계 구현과 standalone 검증 완료. typed source, application service, infrastructure adapter, AppKit·MCP interface, vendor 격리와 Google Photos Picker 확장 경계 반영
+구현이나 실환경 검증이 아직 남은 다음 제품 단계를 기록한다. 완료된 로컬 선택, 사진 뷰어와 코드베이스 리팩터링 계획은 보관소로 이동했다.
 
 ## 인물 확인과 개인화
 
@@ -34,11 +22,6 @@ vendor 계층에는 얼굴 crop, embedding, 수동 label 저장 기능이 있다
 
 현재 로컬 내보내기는 사용자가 고른 디렉토리로 복사할 수 있어 iCloud Drive 동기화 폴더도 목적지가 될 수 있다. 동기화 완료 여부 확인, 충돌 처리, 재개 가능한 업로드를 제품 기능으로 보장하려면 목적지 adapter와 상태 UI가 추가로 필요하다.
 
-## 실환경 회귀 검증
+## 다음 검증 원칙
 
-- 1,000장 이상 혼합 사진에서 장면별 대표 2장 선별
-- RAW·HEIC·iCloud-only 혼합 입력
-- Linux VLM 장기 실행과 Mac 로컬 fallback 비교
-- 승인 후 복합 내보내기 중단·재개
-
-각 항목은 개인정보를 제거한 결과 요약과 재현 명령을 `reports`에 남긴 뒤 완료 처리한다.
+각 후보는 개인정보를 제거한 결과 요약과 재현 명령을 `reports`에 남긴 뒤 완료 처리한다. 리팩터링 실환경 회귀 결과는 [2026-08-10 검증 보고서](../../08-reports/01-validation/07-refactor-real-environment-regression-2026-08-10.md)에 기록했다.

@@ -18,3 +18,4 @@ YYYY-MM-DD-<검증-대상>.md
 - [2026-08-09 결과 갤러리·상대 추천 기준 검증](04-result-gallery-relative-recommendation-2026-08-09.md)
 - [2026-08-09 RAW 전체 화면 뷰어 캐시 검증](05-raw-viewer-preview-cache-2026-08-09.md)
 - [2026-08-09 코드베이스 리팩터링 검증](06-codebase-refactoring-2026-08-09.md)
+- [2026-08-10 리팩터링 실환경 회귀 검증](07-refactor-real-environment-regression-2026-08-10.md)
