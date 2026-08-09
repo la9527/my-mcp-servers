@@ -11,7 +11,7 @@ from functools import wraps
 from pathlib import Path
 from threading import RLock
 
-from photos_mcp.infrastructure.runtime.paths import photo_ranker_runtime_root
+from photos_mcp.infrastructure.vendor_adapter.compat import photo_ranker_runtime_root
 
 from .jobs import Job, JobProgress, JobStatus
 

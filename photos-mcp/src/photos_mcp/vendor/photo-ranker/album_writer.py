@@ -14,8 +14,8 @@ import sys
 import time
 
 from apple_terminal_helper import run_in_terminal
-from photos_mcp.infrastructure.sources.apple_photos.runtime import get_apple_photos_db
-from photos_mcp.app.runtime_bootstrap import default_terminal_python
+from photos_mcp.infrastructure.vendor_adapter.compat import get_apple_photos_db
+from photos_mcp.infrastructure.vendor_adapter.compat import default_terminal_python
 
 logger = logging.getLogger(__name__)
 

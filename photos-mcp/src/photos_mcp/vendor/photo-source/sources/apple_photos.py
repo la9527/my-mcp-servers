@@ -13,9 +13,9 @@ from pathlib import Path
 from ..models import Photo, PhotoMetadata
 from .image_utils import open_image_path, thumbnail_to_base64
 from apple_terminal_helper import run_in_terminal
-from photos_mcp.infrastructure.sources.apple_photos.asset_resolver import preferred_analysis_path
-from photos_mcp.infrastructure.sources.apple_photos.runtime import get_apple_photos_db
-from photos_mcp.app.runtime_bootstrap import default_terminal_python
+from photos_mcp.infrastructure.vendor_adapter.compat import preferred_analysis_path
+from photos_mcp.infrastructure.vendor_adapter.compat import get_apple_photos_db
+from photos_mcp.infrastructure.vendor_adapter.compat import default_terminal_python
 
 logger = logging.getLogger(__name__)
 

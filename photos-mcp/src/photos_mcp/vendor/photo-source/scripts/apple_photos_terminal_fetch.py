@@ -48,7 +48,7 @@ def main() -> int:
     os.environ["PHOTO_SOURCE_APPLE_FETCH_MODE"] = "direct"
     prepare_photo_source_runtime(__file__)
 
-    from photos_mcp.infrastructure.runtime.paths import photo_source_cache_root
+    from photos_mcp.infrastructure.vendor_adapter.compat import photo_source_cache_root
 
     import osxphotos
 

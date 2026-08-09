@@ -15,7 +15,7 @@ except ImportError:
 
 from ..models import Photo, PhotoMetadata
 from .image_utils import open_image_path, thumbnail_to_base64
-from photos_mcp.infrastructure.sources.local_files.raw_image import RAW_IMAGE_EXTENSIONS, raw_image_dimensions
+from photos_mcp.infrastructure.vendor_adapter.compat import RAW_IMAGE_EXTENSIONS, raw_image_dimensions
 
 logger = logging.getLogger(__name__)
 

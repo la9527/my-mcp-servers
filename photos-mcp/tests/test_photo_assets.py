@@ -1,7 +1,7 @@
 import pytest
 
 from photos_mcp.application.run_service import _selected_photo_probe
-from photos_mcp.photo_assets import PhotoAsset
+from photos_mcp.domain.models.photo import PhotoAsset
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
@@ -19,6 +19,13 @@ def test_gcs_asset_is_analysis_ready_without_a_local_original() -> None:
     asset = PhotoAsset.from_payload({"id": "photos/image.jpg"}, source="gcs")
 
     assert asset.readiness == "ready"
+    assert asset.local_path_available is False
+
+
+def test_google_picker_asset_id_alone_is_not_analysis_ready() -> None:
+    asset = PhotoAsset.from_payload({"id": "picked-item"}, source="google")
+
+    assert asset.readiness == "cloud_only"
     assert asset.local_path_available is False
 
 

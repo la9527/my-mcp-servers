@@ -48,7 +48,7 @@ def main() -> int:
     os.environ["PHOTO_RANKER_APPLE_FETCH_MODE"] = "direct"
     prepare_photo_ranker_runtime(__file__)
 
-    from photos_mcp.infrastructure.runtime.paths import photo_ranker_runtime_root
+    from photos_mcp.infrastructure.vendor_adapter.compat import photo_ranker_runtime_root
 
     import osxphotos
 

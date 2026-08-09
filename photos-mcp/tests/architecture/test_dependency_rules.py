@@ -63,3 +63,22 @@ def test_application_does_not_import_ui_or_vendor_concrete_modules() -> None:
 
     assert violations == []
 
+
+def test_vendor_imports_host_only_through_vendor_adapter() -> None:
+    vendor_root = PACKAGE / "vendor"
+    violations: list[str] = []
+    for path in vendor_root.rglob("*.py"):
+        if "__pycache__" in path.parts:
+            continue
+        for imported in _absolute_imports(path):
+            if not imported.startswith("photos_mcp"):
+                continue
+            if imported.startswith("photos_mcp_vendor_"):
+                continue
+            if imported == "photos_mcp.infrastructure.vendor_adapter" or imported.startswith(
+                "photos_mcp.infrastructure.vendor_adapter."
+            ):
+                continue
+            violations.append(f"{path.relative_to(ROOT)} -> {imported}")
+
+    assert violations == []
