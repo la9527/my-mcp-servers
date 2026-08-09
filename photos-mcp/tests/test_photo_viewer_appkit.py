@@ -191,9 +191,24 @@ def test_drag_pan_moves_scroll_origin_by_pointer_delta() -> None:
 
     moved_origin = controller._scroll_view.contentView().bounds().origin
     assert float(moved_origin.x) == pytest.approx(float(start_origin.x) + 80.0)
-    assert float(moved_origin.y) == pytest.approx(float(start_origin.y) + 60.0)
+    assert float(moved_origin.y) == pytest.approx(float(start_origin.y) - 60.0)
     controller.end_pan()
     assert controller.is_panning_image() is False
+    controller.window().orderOut_(None)
+
+
+def test_drag_pan_tracks_upward_pointer_motion_in_flipped_document() -> None:
+    controller = _controller_with_test_image()
+    controller.zoomIn_(None)
+    controller.begin_pan_at_window_point(NSMakePoint(300.0, 180.0))
+    start_origin = controller._scroll_view.contentView().bounds().origin
+
+    controller.pan_image_to_window_point(NSMakePoint(300.0, 240.0))
+
+    moved_origin = controller._scroll_view.contentView().bounds().origin
+    assert float(moved_origin.x) == pytest.approx(float(start_origin.x))
+    assert float(moved_origin.y) == pytest.approx(float(start_origin.y) + 60.0)
+    controller.end_pan()
     controller.window().orderOut_(None)
 
 

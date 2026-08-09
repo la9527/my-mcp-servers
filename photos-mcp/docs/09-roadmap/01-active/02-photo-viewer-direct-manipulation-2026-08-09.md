@@ -125,5 +125,5 @@ NSEvent (double click / smart magnify / pinch / command-scroll / drag)
 
 - `PhotosMcpZoomImageView`는 double-click, smart zoom, pinch, `Command` + scroll의 발생 위치를 controller로 전달한다.
 - controller는 클릭 위치의 원본 image 좌표를 계산한 뒤 확대된 document에서 그 좌표가 뷰 중앙에 오도록 `NSClipView` origin을 갱신한다. 가장자리도 중앙에 배치할 수 있도록 수동 확대 상태에서만 반 화면 크기의 검은 여백을 허용한다.
-- 확대 상태의 mouse drag는 시작 clip origin에서 포인터 delta를 빼 표준 scroll origin으로 적용한다. 범위를 벗어난 값은 document 크기에 맞게 clamp한다.
-- 500장 RAW 결과 설치 앱에서 화면 맞춤, 우측 지점 double-click 중앙 확대, 우하단 방향 drag를 직접 수행했다. drag 전후 사진 내용과 가로·세로 scroll bar 값이 함께 바뀌어 실제 clip origin 이동을 확인했고, 같은 동작은 `NSClipView` 실객체 회귀 테스트로도 고정했다.
+- 확대 상태의 mouse drag는 시작 clip origin과 포인터 delta로 계산한다. 가로축은 delta를 빼고, 위쪽으로 증가하는 window 좌표와 아래쪽으로 증가하는 flipped document 좌표가 반대인 세로축은 delta를 더해 잡은 이미지 지점이 포인터를 그대로 따라가게 한다. 범위를 벗어난 값은 document 크기에 맞게 clamp한다.
+- 500장 RAW 결과 설치 앱에서 2단계 확대 후 세로·가로 drag를 각각 재검증했다. 아래로 150px 이동할 때 세로 scroll bar가 `0.500 → 0.338`, 오른쪽으로 200px 이동할 때 가로 scroll bar가 `0.500 → 0.356`으로 감소하며 잡은 사진 지점이 포인터와 같은 방향으로 이동했다. 아래쪽·위쪽·가로쪽 포인터 이동은 `NSClipView` 실객체 회귀 테스트로 고정했다.

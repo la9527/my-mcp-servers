@@ -499,7 +499,9 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         self._scroll_to_origin(
             NSMakePoint(
                 float(origin.x) - (float(window_point.x) - float(start.x)),
-                float(origin.y) - (float(window_point.y) - float(start.y)),
+                # The document view is flipped, while window coordinates grow upward.
+                # Adding the window Y delta keeps the grabbed image point under the pointer.
+                float(origin.y) + (float(window_point.y) - float(start.y)),
             )
         )
 
