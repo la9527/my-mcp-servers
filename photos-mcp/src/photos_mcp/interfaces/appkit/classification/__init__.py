@@ -1,0 +1,1 @@
+"""Direct classification interface."""

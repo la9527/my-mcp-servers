@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from photos_mcp import menu_app
+from photos_mcp.interfaces.appkit.menu import controller as menu_app
 from photos_mcp.preflight import PreflightCheckResult
 from photos_mcp.state import PhotosMcpStateStore, preflight_check_snapshot_from_payload
 from photos_mcp.state import PhotosMcpStateStore
