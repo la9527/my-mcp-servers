@@ -6,7 +6,7 @@ from Foundation import NSMakePoint, NSMakeSize
 from PIL import Image
 
 from photos_mcp.photo_viewer_appkit import PhotosMcpPhotoViewerController, PhotosMcpZoomImageView
-from photos_mcp.viewer_asset_service import (
+from photos_mcp.application.viewer_asset_service import (
     cached_raw_viewer_preview,
     hydrate_viewer_source_paths,
     render_raw_viewer_preview,
@@ -70,7 +70,7 @@ def test_raw_viewer_preview_is_rendered_once_and_cached(tmp_path, monkeypatch) -
         assert prefer_embedded_preview is False
         return b"jpeg-preview"
 
-    monkeypatch.setattr("photos_mcp.viewer_asset_service.raw_preview_jpeg_bytes", fake_raw_preview)
+    monkeypatch.setattr("photos_mcp.application.viewer_asset_service.raw_preview_jpeg_bytes", fake_raw_preview)
     cache_root = tmp_path / "cache"
 
     preview = render_raw_viewer_preview(source, cache_root=cache_root)

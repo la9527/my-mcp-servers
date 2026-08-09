@@ -13,8 +13,8 @@ from photos_mcp.facade.run_service import photos_run
 from photos_mcp.facade.select_handler import handle_select
 from photos_mcp.facade.workflow_handler import handle_workflow
 from photos_mcp.facade.write_handler import handle_write
-from photos_mcp.mutation_approval import require_mutation_approval
-from photos_mcp.mutation_plan_service import resolve_mutation_plan
+from photos_mcp.application.mutation_approval import require_mutation_approval
+from photos_mcp.application.mutation_service import resolve_mutation_plan
 from photos_mcp.state import PhotosMcpStateStore
 
 

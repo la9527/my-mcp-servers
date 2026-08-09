@@ -74,7 +74,7 @@ from Quartz import (
     kCGImageSourceThumbnailMaxPixelSize,
 )
 
-from photos_mcp.direct_classification import (
+from photos_mcp.application.classification_service import (
     ClassificationCommand,
     DirectClassificationService,
     common_local_source_path,

@@ -3,8 +3,8 @@ from __future__ import annotations
 from threading import Event
 from types import SimpleNamespace
 
-import photos_mcp.preflight as preflight
-from photos_mcp.preflight import (
+import photos_mcp.application.preflight_service as preflight
+from photos_mcp.application.preflight_service import (
     CHECK_ERROR,
     CHECK_OK,
     CHECK_WARNING,
@@ -26,7 +26,7 @@ def test_check_photos_library_readability_reports_success(monkeypatch) -> None:
             return [SimpleNamespace(photo_id="photo-1")]
 
     fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
-    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.application.preflight_service.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_library_readability()
 
@@ -40,7 +40,7 @@ def test_check_photos_library_readability_reports_failure(monkeypatch) -> None:
             raise RuntimeError("photos db unavailable")
 
     fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
-    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.application.preflight_service.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_library_readability()
 
@@ -83,7 +83,7 @@ def test_check_photos_automation_access_downgrades_permission_error(monkeypatch)
             raise RuntimeError("run_script failed: Not authorized to send Apple events to Photos. (-1743)")
 
     fake_module = SimpleNamespace(AlbumWriter=lambda: FakeWriter())
-    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.application.preflight_service.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_automation_access()
 
@@ -97,7 +97,7 @@ def test_check_photos_automation_access_reports_success(monkeypatch) -> None:
             return [{"name": "album-1"}, {"name": "album-2"}]
 
     fake_module = SimpleNamespace(AlbumWriter=lambda: FakeWriter())
-    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.application.preflight_service.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_automation_access()
 
@@ -114,7 +114,7 @@ def test_check_photos_automation_access_prefers_lightweight_probe(monkeypatch) -
             raise AssertionError("preflight should not enumerate full album counts")
 
     fake_module = SimpleNamespace(AlbumWriter=lambda: FakeWriter())
-    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.application.preflight_service.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_automation_access()
 
@@ -136,7 +136,7 @@ def test_check_photos_permission_access_requests_photokit_authorization(monkeypa
             }
 
     fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
-    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.application.preflight_service.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_permission_access()
 
@@ -154,21 +154,21 @@ def test_run_startup_checks_loads_library_before_photokit_but_displays_permissio
         calls.append(timeout_result.key)
         return check_fn()
 
-    monkeypatch.setattr("photos_mcp.preflight._run_check_with_timeout", fake_run_check_with_timeout)
+    monkeypatch.setattr("photos_mcp.application.preflight_service._run_check_with_timeout", fake_run_check_with_timeout)
     monkeypatch.setattr(
-        "photos_mcp.preflight.check_photos_permission_access",
+        "photos_mcp.application.preflight_service.check_photos_permission_access",
         lambda: SimpleNamespace(key="photos_permission", status=CHECK_OK),
     )
     monkeypatch.setattr(
-        "photos_mcp.preflight.check_photos_library_readability",
+        "photos_mcp.application.preflight_service.check_photos_library_readability",
         lambda: SimpleNamespace(key="photos_read", status=CHECK_OK),
     )
     monkeypatch.setattr(
-        "photos_mcp.preflight.check_photos_automation_access",
+        "photos_mcp.application.preflight_service.check_photos_automation_access",
         lambda: SimpleNamespace(key="photos_automation", status=CHECK_OK),
     )
     monkeypatch.setattr(
-        "photos_mcp.preflight.check_photos_thumbnail_access",
+        "photos_mcp.application.preflight_service.check_photos_thumbnail_access",
         lambda: SimpleNamespace(key="photos_thumbnail", status=CHECK_OK),
     )
 
@@ -195,9 +195,9 @@ def test_run_preflight_check_dispatches_only_requested_check(monkeypatch) -> Non
         calls.append(timeout_result.key)
         return check_fn()
 
-    monkeypatch.setattr("photos_mcp.preflight._run_check_with_timeout", fake_run_check_with_timeout)
+    monkeypatch.setattr("photos_mcp.application.preflight_service._run_check_with_timeout", fake_run_check_with_timeout)
     monkeypatch.setattr(
-        "photos_mcp.preflight.check_photos_thumbnail_access",
+        "photos_mcp.application.preflight_service.check_photos_thumbnail_access",
         lambda: preflight.PreflightCheckResult(
             "photos_thumbnail",
             "Thumbnail",
@@ -214,19 +214,19 @@ def test_run_preflight_check_dispatches_only_requested_check(monkeypatch) -> Non
 
 def test_startup_defers_uninterruptible_automation_and_thumbnail_checks(monkeypatch) -> None:
     monkeypatch.setattr(
-        "photos_mcp.preflight.check_photos_permission_access",
+        "photos_mcp.application.preflight_service.check_photos_permission_access",
         lambda: preflight.PreflightCheckResult("photos_permission", "Permission", CHECK_OK, "ok"),
     )
     monkeypatch.setattr(
-        "photos_mcp.preflight.check_photos_library_readability",
+        "photos_mcp.application.preflight_service.check_photos_library_readability",
         lambda: preflight.PreflightCheckResult("photos_read", "Read", CHECK_OK, "ok"),
     )
     monkeypatch.setattr(
-        "photos_mcp.preflight.check_photos_automation_access",
+        "photos_mcp.application.preflight_service.check_photos_automation_access",
         lambda: (_ for _ in ()).throw(AssertionError("automation probe must be deferred")),
     )
     monkeypatch.setattr(
-        "photos_mcp.preflight.check_photos_thumbnail_access",
+        "photos_mcp.application.preflight_service.check_photos_thumbnail_access",
         lambda: (_ for _ in ()).throw(AssertionError("thumbnail probe must be deferred")),
     )
 
@@ -293,7 +293,7 @@ def test_check_photos_thumbnail_access_reports_success(monkeypatch) -> None:
             return "thumb-b64"
 
     fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
-    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.application.preflight_service.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_thumbnail_access()
 
@@ -317,7 +317,7 @@ def test_check_photos_thumbnail_access_reports_warning_when_thumbnail_missing(mo
             return None
 
     fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
-    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.application.preflight_service.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_thumbnail_access()
 
@@ -348,7 +348,7 @@ def test_check_photos_thumbnail_access_uses_fallback_candidate(monkeypatch) -> N
             raise AssertionError(f"unexpected photo_id {photo_id}")
 
     fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
-    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.application.preflight_service.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_thumbnail_access()
 
@@ -376,7 +376,7 @@ def test_check_photos_thumbnail_access_requests_enough_candidates_for_late_local
             return None
 
     fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
-    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.application.preflight_service.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_thumbnail_access()
 
@@ -402,7 +402,7 @@ def test_check_photos_thumbnail_access_reports_permission_denied_context(monkeyp
             )
 
     fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
-    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.application.preflight_service.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_thumbnail_access()
 
@@ -429,7 +429,7 @@ def test_check_photos_thumbnail_access_reports_silent_photokit_permission_denied
             return None
 
     fake_module = SimpleNamespace(_get_apple_source=lambda: FakeSource())
-    monkeypatch.setattr("photos_mcp.preflight.load_vendor_server", lambda name: fake_module)
+    monkeypatch.setattr("photos_mcp.application.preflight_service.load_vendor_server", lambda name: fake_module)
 
     result = check_photos_thumbnail_access()
 
@@ -441,7 +441,7 @@ def test_check_photos_thumbnail_access_reports_silent_photokit_permission_denied
 
 def test_check_photos_thumbnail_access_error_hint_uses_grouped_tool_name(monkeypatch) -> None:
     monkeypatch.setattr(
-        "photos_mcp.preflight.load_vendor_server",
+        "photos_mcp.application.preflight_service.load_vendor_server",
         lambda _name: (_ for _ in ()).throw(RuntimeError("thumbnail unavailable")),
     )
 

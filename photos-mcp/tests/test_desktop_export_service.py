@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from photos_mcp.desktop_export_service import (
+from photos_mcp.application.export_service import (
     execute_selected_export,
     prepare_retry_originals,
     prepare_selected_export,

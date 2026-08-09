@@ -82,7 +82,7 @@ from photos_mcp.interfaces.appkit.menu.presentation import (
     check_view_model_from_payload,
     mutation_plan_view_model,
 )
-from photos_mcp.preflight import (
+from photos_mcp.application.preflight_service import (
     CHECK_ERROR,
     prepare_photos_library_runtime,
     run_preflight_check,

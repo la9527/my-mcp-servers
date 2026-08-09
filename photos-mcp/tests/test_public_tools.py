@@ -347,7 +347,7 @@ async def test_photos_workflow_curate_to_album_analyzes_before_album_writeback(m
         }
 
     monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
-    monkeypatch.setattr("photos_mcp.mutation_plan_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.mutation_service.call_vendor", fake_call_vendor)
     client = _client()
 
     payload = await client.call_tool(
@@ -403,7 +403,7 @@ async def test_photos_workflow_curate_to_album_returns_accepted_first_response(m
         }
 
     monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
-    monkeypatch.setattr("photos_mcp.mutation_plan_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.mutation_service.call_vendor", fake_call_vendor)
     client = _client()
 
     payload = await client.call_tool(
@@ -593,7 +593,7 @@ async def test_photos_workflow_classify_then_organize_returns_accepted_first_res
         }
 
     monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
-    monkeypatch.setattr("photos_mcp.mutation_plan_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.mutation_service.call_vendor", fake_call_vendor)
     client = _client()
 
     payload = await client.call_tool(

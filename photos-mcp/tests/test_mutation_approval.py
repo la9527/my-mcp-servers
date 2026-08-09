@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from photos_mcp.mutation_approval import (
+from photos_mcp.application.mutation_approval import (
     clear_pending_mutation_plans,
     require_mutation_approval,
 )

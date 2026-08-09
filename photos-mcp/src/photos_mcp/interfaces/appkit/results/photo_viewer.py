@@ -33,7 +33,7 @@ from AppKit import (
 from Foundation import NSMakePoint, NSMakeSize, NSURL
 
 from photos_mcp.interfaces.appkit.shared.theme import app_font
-from photos_mcp.viewer_asset_service import (
+from photos_mcp.application.viewer_asset_service import (
     cached_raw_viewer_preview,
     render_raw_viewer_preview,
     resolve_viewer_asset,

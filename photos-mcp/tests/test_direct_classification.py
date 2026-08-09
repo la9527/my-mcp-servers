@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from photos_mcp.direct_classification import (
+from photos_mcp.application.classification_service import (
     ClassificationCommand,
     ClassificationValidationError,
     common_local_source_path,

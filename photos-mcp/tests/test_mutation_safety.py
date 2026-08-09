@@ -5,7 +5,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from apple_terminal_helper import TerminalHelperError
 
 from photos_mcp.config import load_config
-from photos_mcp.mutation_approval import finalize_mutation_receipt
+from photos_mcp.application.mutation_approval import finalize_mutation_receipt
 from photos_mcp.server import build_server
 from photos_mcp.state import PhotosMcpStateStore
 
@@ -39,7 +39,7 @@ async def test_exact_plan_menu_approval_and_duplicate_suppression(monkeypatch) -
             return {"album": args[1], "added": len(photo_ids), "failed": 0}
         raise AssertionError(function_name)
 
-    monkeypatch.setattr("photos_mcp.mutation_plan_service.call_vendor", fake_vendor)
+    monkeypatch.setattr("photos_mcp.application.mutation_service.call_vendor", fake_vendor)
     monkeypatch.setattr("photos_mcp.facade.public_tools.call_vendor", fake_vendor)
     monkeypatch.setattr("photos_mcp.server.call_vendor", fake_vendor)
     store = PhotosMcpStateStore(endpoint="http://local/mcp", health_endpoint="http://local/health")

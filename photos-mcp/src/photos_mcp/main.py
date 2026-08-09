@@ -16,7 +16,7 @@ from photos_mcp.config import load_config
 from photos_mcp.daemon import PhotosMcpDaemonController
 from photos_mcp.logging_setup import build_dated_log_path, configure_root_logging
 from photos_mcp.interfaces.appkit.menu.controller import run_menu_app
-from photos_mcp.preflight import prepare_photos_library_runtime
+from photos_mcp.application.preflight_service import prepare_photos_library_runtime
 from photos_mcp.run_repository import default_run_repository_path
 from photos_mcp.single_instance import AlreadyRunningError, acquire_single_instance_lock
 from photos_mcp.state import PhotosMcpStateStore

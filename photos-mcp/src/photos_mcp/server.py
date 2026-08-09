@@ -14,13 +14,13 @@ from photos_mcp.facade.public_tools import photos_select as facade_photos_select
 from photos_mcp.facade.public_tools import photos_workflow as facade_photos_workflow
 from photos_mcp.facade.public_tools import photos_write as facade_photos_write
 from photos_mcp.facade.common import call_vendor
-from photos_mcp.mutation_approval import (
+from photos_mcp.application.mutation_approval import (
     _safe_mutation_error,
     begin_mutation_receipt,
     finalize_mutation_receipt,
     require_mutation_approval,
 )
-from photos_mcp.mutation_plan_service import resolve_mutation_plan
+from photos_mcp.application.mutation_service import resolve_mutation_plan
 from photos_mcp.state import PhotosMcpStateStore, TERMINAL_JOB_STATUSES, job_snapshot_from_payload
 from photos_mcp.vision_runtime import vision_runtime_summary
 

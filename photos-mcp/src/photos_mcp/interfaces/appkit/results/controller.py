@@ -61,14 +61,14 @@ from photos_mcp.application.result_presenter import (
     sorted_result_items,
 )
 from photos_mcp.interfaces.appkit.results.photo_viewer import PhotosMcpPhotoViewerController
-from photos_mcp.desktop_export_service import (
+from photos_mcp.application.export_service import (
     execute_selected_export,
     prepare_retry_originals,
     prepare_selected_export,
 )
 from photos_mcp.facade.common import call_vendor
 from photos_mcp.interfaces.appkit.shared.theme import accent_color, app_font
-from photos_mcp.viewer_asset_service import hydrate_viewer_source_paths
+from photos_mcp.application.viewer_asset_service import hydrate_viewer_source_paths
 
 
 _RESULT_WINDOW_WIDTH = 1320.0
