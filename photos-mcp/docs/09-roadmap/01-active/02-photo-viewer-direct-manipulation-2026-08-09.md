@@ -4,7 +4,7 @@
 
 - 단계: 표준 스크롤 뷰 재구현 및 자동·설치 앱 검증 완료
 - 작성일: 2026-08-09
-- 대상 화면: `사진 크게 보기`
+- 대상 화면: `사진 크게 보기`, 로컬 사진 분류 `한 장` 보기
 - 목표: 사진 앱과 Preview에서 기대하는 방식으로 확대 지점을 보존하고, 확대된 사진을 직접 끌어 이동
 
 ## 문제
@@ -127,3 +127,4 @@ NSEvent (double click / smart magnify / pinch / command-scroll / drag)
 - controller는 클릭 위치의 원본 image 좌표를 계산한 뒤 확대된 document에서 그 좌표가 뷰 중앙에 오도록 `NSClipView` origin을 갱신한다. 가장자리도 중앙에 배치할 수 있도록 수동 확대 상태에서만 반 화면 크기의 검은 여백을 허용한다.
 - 확대 상태의 mouse drag는 시작 clip origin과 포인터 delta로 계산한다. 가로축은 delta를 빼고, 위쪽으로 증가하는 window 좌표와 아래쪽으로 증가하는 flipped document 좌표가 반대인 세로축은 delta를 더해 잡은 이미지 지점이 포인터를 그대로 따라가게 한다. 범위를 벗어난 값은 document 크기에 맞게 clamp한다.
 - 500장 RAW 결과 설치 앱에서 2단계 확대 후 세로·가로 drag를 각각 재검증했다. 아래로 150px 이동할 때 세로 scroll bar가 `0.500 → 0.338`, 오른쪽으로 200px 이동할 때 가로 scroll bar가 `0.500 → 0.356`으로 감소하며 잡은 사진 지점이 포인터와 같은 방향으로 이동했다. 아래쪽·위쪽·가로쪽 포인터 이동은 `NSClipView` 실객체 회귀 테스트로 고정했다.
+- 로컬 사진 분류의 `한 장` 보기에도 같은 canvas를 연결했다. 기존 좌우 이동과 Enter·Space 선택은 유지하고, 더블클릭·smart zoom·pinch·`Command` + scroll·toolbar 확대와 drag pan을 추가했다. SONY ARW 설치 앱에서 오른쪽 아래로 100px drag했을 때 가로 scroll bar가 `0.500 → 0.432`, 세로가 `0.500 → 0.398`로 감소하며 사진이 포인터를 따라 이동했다. 다음 사진으로 이동하면 scroll bar가 사라지고 화면 맞춤으로 초기화되는 것도 확인했다.

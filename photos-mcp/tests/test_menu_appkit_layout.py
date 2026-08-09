@@ -10,6 +10,7 @@ from AppKit import (
     NSButton,
     NSCollectionView,
     NSControlSizeLarge,
+    NSImage,
     NSImageView,
     NSOutlineView,
     NSScrollView,
@@ -18,7 +19,7 @@ from AppKit import (
     NSTextField,
     NSWindowZoomButton,
 )
-from Foundation import NSDate, NSIndexPath, NSMakeRect, NSMakeSize, NSRunLoop, NSSet
+from Foundation import NSDate, NSIndexPath, NSMakePoint, NSMakeRect, NSMakeSize, NSRunLoop, NSSet
 from PIL import Image
 import pytest
 
@@ -1050,6 +1051,69 @@ def test_local_photo_single_view_supports_arrow_return_and_space_keys(tmp_path) 
 
     assert controller._selected_paths == {photos[1].path}
     assert controller.window().firstResponder() == controller._single_view
+    controller.shutdown()
+
+
+def test_local_photo_single_view_supports_point_zoom_and_drag_pan(tmp_path) -> None:
+    NSApplication.sharedApplication()
+    root_path = tmp_path / "photos"
+    root_path.mkdir()
+    controller = PhotosMcpLocalPhotoSelectionController.alloc().initWithMenuController_service_sourcePath_selectedPhotoIds_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+        str(root_path),
+        (),
+    )
+    controller._content.setFrame_(NSMakeRect(0.0, 0.0, 700.0, 616.0))
+    controller._view_mode = "single"
+    controller._layout_content()
+    controller._single_set_photo_image(NSImage.alloc().initWithSize_(NSMakeSize(1600.0, 1200.0)))
+
+    assert controller._single_scroll.documentView() is controller._single_image
+    assert controller._single_is_fit is True
+    click_point = controller._single_visible_center_point()
+    controller.toggle_zoom_at_view_point(click_point)
+    assert controller._single_is_fit is False
+    assert controller.can_pan_image() is True
+
+    controller.begin_pan_at_window_point(NSMakePoint(300.0, 240.0))
+    start_origin = controller._single_scroll.contentView().bounds().origin
+    controller.pan_image_to_window_point(NSMakePoint(220.0, 180.0))
+    moved_origin = controller._single_scroll.contentView().bounds().origin
+
+    assert float(moved_origin.x) == pytest.approx(float(start_origin.x) + 80.0)
+    assert float(moved_origin.y) == pytest.approx(float(start_origin.y) - 60.0)
+    controller.end_pan()
+    controller.singleFitPhoto_(None)
+    assert controller._single_is_fit is True
+    controller.shutdown()
+
+
+def test_local_photo_single_canvas_keeps_navigation_and_selection_keys(tmp_path) -> None:
+    NSApplication.sharedApplication()
+    root_path = tmp_path / "photos"
+    root_path.mkdir()
+    photos = []
+    for name in ("first.jpg", "second.jpg"):
+        path = root_path / name
+        path.write_bytes(name.encode())
+        photos.append(LocalPhoto(str(path.resolve()), name, path.stat().st_mtime, path.stat().st_size, 1600, 900))
+    controller = PhotosMcpLocalPhotoSelectionController.alloc().initWithMenuController_service_sourcePath_selectedPhotoIds_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+        str(root_path),
+        (),
+    )
+    controller._photos = photos
+    controller._focused_path = photos[0].path
+    controller._view_mode_control.setSelectedSegment_(1)
+    controller.viewModeChanged_(controller._view_mode_control)
+
+    controller._single_image.keyDown_(SimpleNamespace(keyCode=lambda: 124))
+    controller._single_image.keyDown_(SimpleNamespace(keyCode=lambda: 49))
+
+    assert controller._focused_path == photos[1].path
+    assert controller._selected_paths == {photos[1].path}
     controller.shutdown()
 
 
