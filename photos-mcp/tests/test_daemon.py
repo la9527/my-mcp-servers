@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from photos_mcp.config import load_config
-from photos_mcp.daemon import PhotosMcpDaemonController
+from photos_mcp.app.config import load_config
+from photos_mcp.app.lifecycle import PhotosMcpDaemonController
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
@@ -30,7 +30,7 @@ def test_cancel_job_persists_queue_state(monkeypatch) -> None:
     )
     fake_module = SimpleNamespace(_get_job_queue=lambda: queue, _get_job_db=lambda: db)
 
-    monkeypatch.setattr("photos_mcp.daemon.load_vendor_server", lambda _name: fake_module)
+    monkeypatch.setattr("photos_mcp.app.lifecycle.load_vendor_server", lambda _name: fake_module)
     monkeypatch.setattr(controller, "refresh_jobs_once", lambda: None)
 
     assert controller.cancel_job("job-1") is True
@@ -44,7 +44,7 @@ def test_delete_job_rejects_non_terminal_status(monkeypatch) -> None:
     db = SimpleNamespace(load_job=lambda _job_id: running_job)
     fake_module = SimpleNamespace(_get_job_queue=lambda: queue, _get_job_db=lambda: db)
 
-    monkeypatch.setattr("photos_mcp.daemon.load_vendor_server", lambda _name: fake_module)
+    monkeypatch.setattr("photos_mcp.app.lifecycle.load_vendor_server", lambda _name: fake_module)
 
     assert controller.delete_job("job-1") is False
 
@@ -66,7 +66,7 @@ def test_clear_job_history_removes_terminal_queue_and_db_rows(monkeypatch) -> No
     )
     fake_module = SimpleNamespace(_get_job_queue=lambda: queue, _get_job_db=lambda: db)
 
-    monkeypatch.setattr("photos_mcp.daemon.load_vendor_server", lambda _name: fake_module)
+    monkeypatch.setattr("photos_mcp.app.lifecycle.load_vendor_server", lambda _name: fake_module)
     monkeypatch.setattr(controller, "refresh_jobs_once", lambda: None)
 
     deleted_ids = controller.clear_job_history(("completed", "failed"))
@@ -107,7 +107,7 @@ def test_clear_job_history_removes_terminal_synthetic_runs_from_state(monkeypatc
     db = SimpleNamespace(clear_job_history=lambda statuses: [])
     fake_module = SimpleNamespace(_get_job_queue=lambda: queue, _get_job_db=lambda: db)
 
-    monkeypatch.setattr("photos_mcp.daemon.load_vendor_server", lambda _name: fake_module)
+    monkeypatch.setattr("photos_mcp.app.lifecycle.load_vendor_server", lambda _name: fake_module)
 
     deleted_ids = controller.clear_job_history(("completed",))
     snapshot = controller._state_store.snapshot()

@@ -4,7 +4,7 @@ from datetime import datetime
 import logging
 from pathlib import Path
 
-from photos_mcp.logging_setup import (
+from photos_mcp.app.logging import (
     CompactLogFormatter,
     ToolLogContext,
     build_dated_log_path,

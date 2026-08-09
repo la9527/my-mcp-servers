@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from photos_mcp.facade import library_service
-from photos_mcp.config import load_config
-from photos_mcp.server import build_server
+from photos_mcp.application import library_service
+from photos_mcp.app.config import load_config
+from photos_mcp.interfaces.mcp.server import build_server
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore, preflight_check_snapshot_from_payload
 
 
@@ -115,7 +115,7 @@ async def test_mock_mcp_client_photos_run_normalizes_job_payloads_and_updates_st
         assert name == "photo-ranker"
         return fake_module
 
-    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fake_load_vendor_server)
+    monkeypatch.setattr("photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server", fake_load_vendor_server)
 
     state_store = PhotosMcpStateStore(
         endpoint="http://127.0.0.1:18791/mcp",
@@ -156,7 +156,7 @@ async def test_mock_mcp_client_photos_result_summary_promotes_structured_job_err
         assert name == "photo-ranker"
         return fake_module
 
-    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fake_load_vendor_server)
+    monkeypatch.setattr("photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server", fake_load_vendor_server)
 
     mcp = build_server(config=load_config(), state_store=None)
     client = MockMcpClient(mcp)
@@ -196,7 +196,7 @@ async def test_mock_mcp_client_photos_library_adds_photo_id_alias(monkeypatch) -
         assert name == "photo-source"
         return fake_module
 
-    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fake_load_vendor_server)
+    monkeypatch.setattr("photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server", fake_load_vendor_server)
 
     mcp = build_server(config=load_config(), state_store=None)
     client = MockMcpClient(mcp)
@@ -236,7 +236,7 @@ async def test_mock_mcp_client_photos_library_sets_local_path_availability_false
         assert name == "photo-source"
         return fake_module
 
-    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fake_load_vendor_server)
+    monkeypatch.setattr("photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server", fake_load_vendor_server)
 
     mcp = build_server(config=load_config(), state_store=None)
     client = MockMcpClient(mcp)
@@ -262,7 +262,7 @@ async def test_mock_mcp_client_photos_library_returns_retryable_timeout(monkeypa
 
     fake_module = SimpleNamespace(list_photos=blocked_list_tool)
     monkeypatch.setattr(
-        "photos_mcp.facade.common.load_vendor_server",
+        "photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server",
         lambda name: fake_module if name == "photo-source" else None,
     )
     monkeypatch.setattr(library_service, "DEFAULT_LIBRARY_LIST_TIMEOUT_SECONDS", 0.01)
@@ -300,7 +300,7 @@ async def test_mock_mcp_client_photos_library_ready_only_filters_to_analyze_read
         assert name == "photo-source"
         return fake_module
 
-    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fake_load_vendor_server)
+    monkeypatch.setattr("photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server", fake_load_vendor_server)
 
     mcp = build_server(config=load_config(), state_store=None)
     client = MockMcpClient(mcp)
@@ -343,7 +343,7 @@ async def test_mock_mcp_client_photos_library_prefetch_reports_download_counts(m
         assert name == "photo-source"
         return fake_module
 
-    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fake_load_vendor_server)
+    monkeypatch.setattr("photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server", fake_load_vendor_server)
 
     mcp = build_server(config=load_config(), state_store=None)
     client = MockMcpClient(mcp)
@@ -390,7 +390,7 @@ async def test_inspect_and_prefetch_persist_asset_readiness_for_analyze(monkeypa
         prefetch_photos=fake_prefetch,
     )
     monkeypatch.setattr(
-        "photos_mcp.facade.common.load_vendor_server",
+        "photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server",
         lambda name: fake_module if name == "photo-source" else None,
     )
     state_store = PhotosMcpStateStore(
@@ -458,7 +458,7 @@ async def test_mock_mcp_client_photos_run_reports_structured_thumbnail_error(mon
         assert name == "photo-source"
         return photo_source_module
 
-    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fake_load_vendor_server)
+    monkeypatch.setattr("photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server", fake_load_vendor_server)
 
     state_store = PhotosMcpStateStore(
         endpoint="http://127.0.0.1:18791/mcp",
@@ -529,7 +529,7 @@ async def test_mock_mcp_client_photos_run_blocks_video_analyze(monkeypatch) -> N
         assert name == "photo-source"
         return photo_source_module
 
-    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fake_load_vendor_server)
+    monkeypatch.setattr("photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server", fake_load_vendor_server)
 
     mcp = build_server(config=load_config(), state_store=None)
     client = MockMcpClient(mcp)
@@ -580,8 +580,8 @@ async def test_mock_mcp_client_photos_run_waits_for_local_download_and_completes
             "local_path": "/tmp/sample.heic" if local_available else "",
         }
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
-    monkeypatch.setattr("photos_mcp.facade.run_service._selected_photo_probe", fake_selected_probe)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service._selected_photo_probe", fake_selected_probe)
 
     state_store = PhotosMcpStateStore(
         endpoint="http://127.0.0.1:18791/mcp",
@@ -654,7 +654,7 @@ async def test_mock_mcp_client_photos_run_wait_for_local_continues_despite_permi
         assert name == "photo-source"
         return photo_source_module
 
-    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fake_load_vendor_server)
+    monkeypatch.setattr("photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server", fake_load_vendor_server)
 
     state_store = PhotosMcpStateStore(
         endpoint="http://127.0.0.1:18791/mcp",
@@ -728,8 +728,8 @@ async def test_mock_mcp_client_photos_run_wait_for_local_can_cancel(monkeypatch)
             "local_path": "",
         }
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
-    monkeypatch.setattr("photos_mcp.facade.run_service._selected_photo_probe", fake_selected_probe)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service._selected_photo_probe", fake_selected_probe)
 
     state_store = PhotosMcpStateStore(
         endpoint="http://127.0.0.1:18791/mcp",
@@ -803,8 +803,8 @@ async def test_mock_mcp_client_photos_run_wait_for_local_returns_immediately_for
             "local_path": "",
         }
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
-    monkeypatch.setattr("photos_mcp.facade.run_service._selected_photo_probe", fake_selected_probe)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service._selected_photo_probe", fake_selected_probe)
 
     state_store = PhotosMcpStateStore(
         endpoint="http://127.0.0.1:18791/mcp",

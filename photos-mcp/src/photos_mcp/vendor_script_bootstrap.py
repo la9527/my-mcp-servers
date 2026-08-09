@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from photos_mcp.runtime_bootstrap import ensure_runtime_import_paths
+from photos_mcp.app.runtime_bootstrap import ensure_runtime_import_paths
 
 
 def ensure_photos_mcp_importable(anchor_file: str | Path) -> None:

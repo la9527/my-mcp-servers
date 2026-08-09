@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from photos_mcp.facade.write_handler import handle_write
+from photos_mcp.application.write_service import handle_write
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 

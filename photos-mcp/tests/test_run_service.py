@@ -5,8 +5,8 @@ import asyncio
 
 import pytest
 
-from photos_mcp.facade import run_service
-from photos_mcp.facade.run_service import photos_run
+from photos_mcp.application import run_service
+from photos_mcp.application.run_service import photos_run
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
@@ -21,9 +21,9 @@ async def test_curate_passes_exclude_screenshots_to_vendor(monkeypatch) -> None:
         captured["kwargs"] = kwargs
         return {"job_id": "job-1", "selected_count": 2}
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fake_call_vendor)
     monkeypatch.setattr(
-        "photos_mcp.facade.run_service.wrap_run_payload",
+        "photos_mcp.application.run_service.wrap_run_payload",
         lambda payload, *, intent, run_id=None: {"intent": intent, **payload},
     )
 
@@ -50,9 +50,9 @@ async def test_cleanup_album_routes_to_delete_vendor(monkeypatch) -> None:
         captured["kwargs"] = kwargs
         return {"album": args[0], "deleted": True}
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fake_call_vendor)
     monkeypatch.setattr(
-        "photos_mcp.facade.run_service.wrap_run_payload",
+        "photos_mcp.application.run_service.wrap_run_payload",
         lambda payload, *, intent, run_id=None: {"intent": intent, **payload},
     )
 
@@ -85,7 +85,7 @@ async def test_curate_structured_vendor_error_becomes_terminal_failure(monkeypat
             "strategies_tried": ["download_missing", "download_missing_photokit"],
         }
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fake_call_vendor)
 
     payload = await photos_run(
         intent="curate",

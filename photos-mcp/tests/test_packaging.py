@@ -30,7 +30,7 @@ def test_build_py2app_setup_kwargs_uses_photos_mcp_bundle_defaults() -> None:
     assert kwargs["options"]["py2app"]["plist"] == "Info.plist"
     assert kwargs["options"]["py2app"]["argv_emulation"] is False
     assert "photos_mcp" in kwargs["packages"]
-    assert "photos_mcp.facade" in kwargs["packages"]
+    assert "photos_mcp.interfaces.mcp.facade" in kwargs["packages"]
     assert "mcp" not in kwargs["packages"]
     assert "mcp" in kwargs["options"]["py2app"]["packages"]
     assert "bitarray" in kwargs["options"]["py2app"]["packages"]
@@ -45,7 +45,7 @@ def test_build_app_packages_discovers_nested_photos_packages() -> None:
     packages = build_app_packages()
 
     assert "photos_mcp" in packages
-    assert "photos_mcp.facade" in packages
+    assert "photos_mcp.interfaces.mcp.facade" in packages
     assert "apple_terminal_helper" in packages
 
 

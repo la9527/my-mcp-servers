@@ -77,7 +77,7 @@ class VendorPhotoSourcePort:
     async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         # Resolve lazily so test and host integrations can replace the caller.
         if self._caller is None:
-            from photos_mcp.facade.common import call_vendor
+            from photos_mcp.infrastructure.vendor_adapter.gateway import call_vendor
 
             caller = call_vendor
         else:
@@ -162,7 +162,7 @@ class VendorPhotoSourcePort:
         if source != "apple":
             return probe
         try:
-            from photos_mcp.facade.common import load_vendor_server
+            from photos_mcp.infrastructure.vendor_adapter.gateway import load_vendor_server
 
             module = load_vendor_server("photo-source")
             apple_source = module._get_apple_source()
@@ -194,7 +194,7 @@ class VendorPhotoSourcePort:
         if source != "apple":
             return None
         try:
-            from photos_mcp.facade.common import load_vendor_server
+            from photos_mcp.infrastructure.vendor_adapter.gateway import load_vendor_server
 
             apple_source = load_vendor_server("photo-source")._get_apple_source()
             detail = getattr(apple_source, "_last_fetch_details", {}).get(photo_id)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from photos_mcp.facade.run_service import _resolve_analyze_thumbnail
+from photos_mcp.application.run_service import _resolve_analyze_thumbnail
 from photos_mcp.photo_source_port import VendorPhotoSourcePort
 
 

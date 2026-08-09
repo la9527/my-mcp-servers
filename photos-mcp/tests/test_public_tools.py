@@ -5,11 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from photos_mcp.config import load_config
-import photos_mcp.facade.public_tools as public_tools
-from photos_mcp.facade.public_tools import photos_workflow, photos_write
-from photos_mcp.facade.write_handler import handle_write
-from photos_mcp.server import build_server
+from photos_mcp.app.config import load_config
+import photos_mcp.interfaces.mcp.facade.public_tools as public_tools
+from photos_mcp.interfaces.mcp.facade.public_tools import photos_workflow, photos_write
+from photos_mcp.application.write_service import handle_write
+from photos_mcp.interfaces.mcp.server import build_server
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
@@ -138,7 +138,7 @@ async def test_interrupted_workflow_requires_plan_and_approval_before_resume(mon
     async def fake_photos_run(**_kwargs):
         return {"status": "completed", "run_id": "vendor-resumed"}
 
-    monkeypatch.setattr("photos_mcp.facade.public_tools.photos_run", fake_photos_run)
+    monkeypatch.setattr("photos_mcp.interfaces.mcp.facade.public_tools.photos_run", fake_photos_run)
     state_store = PhotosMcpStateStore(
         endpoint="http://127.0.0.1:18791/mcp",
         health_endpoint="http://127.0.0.1:18791/health",
@@ -197,7 +197,7 @@ async def test_photos_select_rejects_write_options_before_vendor(monkeypatch) ->
     async def fail_call_vendor(*_args, **_kwargs):
         raise AssertionError("vendor should not be called for invalid select options")
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fail_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fail_call_vendor)
     client = _client()
 
     payload = await client.call_tool(
@@ -225,7 +225,7 @@ async def test_photos_workflow_curate_to_album_rejects_album_prefix_before_vendo
     async def fail_call_vendor(*_args, **_kwargs):
         raise AssertionError("vendor should not be called for invalid workflow options")
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fail_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fail_call_vendor)
     client = _client()
 
     payload = await client.call_tool(
@@ -254,7 +254,7 @@ async def test_photos_workflow_curate_to_album_rejects_selected_photo_ids_with_r
     async def fail_call_vendor(*_args, **_kwargs):
         raise AssertionError("vendor should not be called for invalid workflow options")
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fail_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fail_call_vendor)
     client = _client()
 
     payload = await client.call_tool(
@@ -287,7 +287,7 @@ async def test_photos_workflow_curate_to_album_rejects_nested_scope_and_selectio
     async def fail_call_vendor(*_args, **_kwargs):
         raise AssertionError("vendor should not be called for invalid workflow options")
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fail_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fail_call_vendor)
     client = _client()
 
     payload = await client.call_tool(
@@ -346,7 +346,7 @@ async def test_photos_workflow_curate_to_album_analyzes_before_album_writeback(m
             "classification_album_created": False,
         }
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fake_call_vendor)
     monkeypatch.setattr("photos_mcp.application.mutation_service.call_vendor", fake_call_vendor)
     client = _client()
 
@@ -402,7 +402,7 @@ async def test_photos_workflow_curate_to_album_returns_accepted_first_response(m
             "album_result": None,
         }
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fake_call_vendor)
     monkeypatch.setattr("photos_mcp.application.mutation_service.call_vendor", fake_call_vendor)
     client = _client()
 
@@ -457,7 +457,7 @@ async def test_photos_write_import_to_album_returns_accepted_first_response(monk
             "album": kwargs["album_name"],
         }
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fake_call_vendor)
     client = _client()
 
     payload = await _call_with_approval(
@@ -493,8 +493,8 @@ async def test_photos_write_organize_by_category_returns_accepted_first_response
             "album_prefix": kwargs["album_prefix"],
         }
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
-    monkeypatch.setattr("photos_mcp.facade.public_tools.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.interfaces.mcp.facade.public_tools.call_vendor", fake_call_vendor)
     client = _client()
 
     payload = await _call_with_approval(
@@ -555,7 +555,7 @@ async def test_gcs_ranked_results_are_blocked_before_apple_write(monkeypatch) ->
             return {"source": "gcs"}
         raise AssertionError(f"unexpected vendor call: {function_name}")
 
-    monkeypatch.setattr("photos_mcp.facade.public_tools.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.interfaces.mcp.facade.public_tools.call_vendor", fake_call_vendor)
 
     write_payload = await photos_write(
         action="add_selected_to_album",
@@ -592,7 +592,7 @@ async def test_photos_workflow_classify_then_organize_returns_accepted_first_res
             "selected_count": 2,
         }
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fake_call_vendor)
     monkeypatch.setattr("photos_mcp.application.mutation_service.call_vendor", fake_call_vendor)
     client = _client()
 
@@ -630,7 +630,7 @@ async def test_photos_write_organize_by_category_rejects_target_album_name(monke
     async def fail_call_vendor(*_args, **_kwargs):
         raise AssertionError("vendor should not be called for invalid write options")
 
-    monkeypatch.setattr("photos_mcp.facade.run_service.call_vendor", fail_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.run_service.call_vendor", fail_call_vendor)
     client = _client()
 
     payload = await client.call_tool(

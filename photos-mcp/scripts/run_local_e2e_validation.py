@@ -23,7 +23,7 @@ from photos_mcp.direct_classification import (
     DirectClassificationService,
     LOCAL_IMAGE_EXTENSIONS,
 )
-from photos_mcp.facade.common import call_vendor
+from photos_mcp.application.run_support import call_vendor
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
 

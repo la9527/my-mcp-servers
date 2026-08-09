@@ -1,6 +1,6 @@
 import pytest
 
-from photos_mcp.facade.run_service import _selected_photo_probe
+from photos_mcp.application.run_service import _selected_photo_probe
 from photos_mcp.photo_assets import PhotoAsset
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
@@ -59,7 +59,7 @@ async def test_analyze_probe_reuses_readiness_from_its_own_state_store(monkeypat
     def fail_vendor_load(_name: str):
         raise AssertionError("cached readiness should not load the Apple source")
 
-    monkeypatch.setattr("photos_mcp.facade.common.load_vendor_server", fail_vendor_load)
+    monkeypatch.setattr("photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server", fail_vendor_load)
 
     probe = await _selected_photo_probe("apple", "photo-1", "", store)
 

@@ -8,7 +8,7 @@ import sqlite3
 from threading import Lock, Thread
 import time
 
-from photos_mcp.vendor_loader import load_vendor_server
+from photos_mcp.infrastructure.vendor_adapter.gateway import load_vendor_server
 
 
 CHECK_OK = "ok"

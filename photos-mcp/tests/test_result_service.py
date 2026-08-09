@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from photos_mcp.facade.result_service import photos_result
+from photos_mcp.application.result_service import photos_result
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
@@ -24,7 +24,7 @@ async def test_vendor_selected_artifacts_and_cancel_actions_route_to_expected_op
             return {"cancelled": True}
         raise AssertionError(f"unexpected vendor operation: {function}")
 
-    monkeypatch.setattr("photos_mcp.facade.result_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.result_service.call_vendor", fake_call_vendor)
 
     selected = await photos_result(action="selected", run_id="run-1", top_n=5)
     preview = await photos_result(action="artifacts", run_id="run-1")
@@ -66,7 +66,7 @@ async def test_gcs_artifact_export_is_blocked_before_vendor_write(monkeypatch) -
             return {"source": "gcs"}
         raise AssertionError(f"unexpected vendor operation: {function}")
 
-    monkeypatch.setattr("photos_mcp.facade.result_service.call_vendor", fake_call_vendor)
+    monkeypatch.setattr("photos_mcp.application.result_service.call_vendor", fake_call_vendor)
 
     payload = await photos_result(
         action="artifacts",

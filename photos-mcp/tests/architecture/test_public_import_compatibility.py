@@ -16,4 +16,3 @@ def test_existing_appkit_imports_remain_available_during_refactor() -> None:
     assert PhotosMcpZoomImageView is not None
     assert PhotosMcpResultsController is not None
     assert callable(run_menu_app)
-

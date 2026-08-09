@@ -9,7 +9,7 @@ from typing import Any
 import uuid
 
 from apple_terminal_helper import TerminalHelperError
-from photos_mcp.facade.action_options import ActionValidationError, validate_action_options
+from photos_mcp.application.action_options import ActionValidationError, validate_action_options
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
 

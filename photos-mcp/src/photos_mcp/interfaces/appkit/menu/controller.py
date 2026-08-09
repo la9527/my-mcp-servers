@@ -62,13 +62,13 @@ from AppKit import (
 )
 from Foundation import NSMakePoint, NSMakeSize, NSObject, NSTimer
 
-from photos_mcp.config import PhotosMcpConfig
+from photos_mcp.app.config import PhotosMcpConfig
 from photos_mcp.application.result_presenter import (
     result_item_failure,
     sanitized_result_export_payload,
     sorted_result_items,
 )
-from photos_mcp.daemon import PhotosMcpDaemonController
+from photos_mcp.app.lifecycle import PhotosMcpDaemonController
 from photos_mcp.interfaces.appkit.classification.controller import PhotosMcpDirectClassificationController
 from photos_mcp.interfaces.appkit.main.controller import PhotosMcpMainWindowController
 from photos_mcp.interfaces.appkit.menu.presentation import (

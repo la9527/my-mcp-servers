@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-from photos_mcp.facade.action_options import ACTION_SPECS
+from photos_mcp.application.action_options import ACTION_SPECS
 
 
 CATALOG_PATH = Path(__file__).resolve().parents[1] / "docs" / "03-integration" / "02-tool-reference.md"

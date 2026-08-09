@@ -66,7 +66,7 @@ from photos_mcp.application.export_service import (
     prepare_retry_originals,
     prepare_selected_export,
 )
-from photos_mcp.facade.common import call_vendor
+from photos_mcp.application.run_support import call_vendor
 from photos_mcp.interfaces.appkit.shared.theme import accent_color, app_font
 from photos_mcp.application.viewer_asset_service import hydrate_viewer_source_paths
 

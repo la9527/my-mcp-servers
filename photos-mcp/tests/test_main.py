@@ -9,11 +9,11 @@ import sys
 import textwrap
 import json
 
-from photos_mcp.config import load_config
-from photos_mcp.main import run_cli
-from photos_mcp.server import build_health_payload, build_http_app, build_server
+from photos_mcp.app.config import load_config
+from photos_mcp.app.main import run_cli
+from photos_mcp.interfaces.mcp.server import build_health_payload, build_http_app, build_server
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
-from photos_mcp.single_instance import AlreadyRunningError
+from photos_mcp.app.single_instance import AlreadyRunningError
 from photos_mcp.vendor_loader import VENDOR_ROOT, load_vendor_server, prepare_vendor_runtime, resolve_vendor_root
 
 
@@ -30,7 +30,7 @@ def test_health_mode_returns_expected_payload(capsys) -> None:
 def test_runtime_import_smoke_prepares_osxphotos(monkeypatch, capsys) -> None:
     calls: list[str] = []
     monkeypatch.setattr(
-        "photos_mcp.main.prepare_photos_library_runtime",
+        "photos_mcp.app.main.prepare_photos_library_runtime",
         lambda: calls.append("osxphotos"),
     )
 
@@ -48,18 +48,18 @@ def test_vendor_runtime_smoke_loads_photo_source_and_pyobjc(monkeypatch, capsys)
     imported: list[str] = []
 
     monkeypatch.setattr(
-        "photos_mcp.main.load_vendor_server",
+        "photos_mcp.app.main.load_vendor_server",
         lambda name: calls.append(name),
     )
     monkeypatch.setattr(
-        "photos_mcp.main.prepare_vendor_runtime",
+        "photos_mcp.app.main.prepare_vendor_runtime",
         lambda name: prepared.append(name),
     )
     monkeypatch.setitem(sys.modules, "FSEvents", object())
     monkeypatch.setitem(sys.modules, "osxphotos", object())
     monkeypatch.setitem(sys.modules, "Vision", object())
     monkeypatch.setattr(
-        "photos_mcp.main.importlib.import_module",
+        "photos_mcp.app.main.importlib.import_module",
         lambda name: imported.append(name),
     )
 
@@ -83,8 +83,8 @@ def test_run_cli_returns_locked_error_when_instance_is_already_running(monkeypat
     def fail_run_menu_app(*_args, **_kwargs):
         raise AssertionError("run_menu_app should not run when lock acquisition fails")
 
-    monkeypatch.setattr("photos_mcp.main.acquire_single_instance_lock", raise_locked)
-    monkeypatch.setattr("photos_mcp.main.run_menu_app", fail_run_menu_app)
+    monkeypatch.setattr("photos_mcp.app.main.acquire_single_instance_lock", raise_locked)
+    monkeypatch.setattr("photos_mcp.app.main.run_menu_app", fail_run_menu_app)
 
     exit_code = run_cli([])
     captured = capsys.readouterr()
@@ -106,8 +106,8 @@ def test_single_instance_lock_rejects_second_process(tmp_path: Path) -> None:
             textwrap.dedent(
                 """
                 import sys
-                from photos_mcp.config import load_config
-                from photos_mcp.single_instance import acquire_single_instance_lock
+                from photos_mcp.app.config import load_config
+                from photos_mcp.app.single_instance import acquire_single_instance_lock
 
                 with acquire_single_instance_lock(load_config()):
                     print('locked', flush=True)
@@ -132,8 +132,8 @@ def test_single_instance_lock_rejects_second_process(tmp_path: Path) -> None:
                 "-c",
                 textwrap.dedent(
                     """
-                    from photos_mcp.config import load_config
-                    from photos_mcp.single_instance import AlreadyRunningError, acquire_single_instance_lock
+                    from photos_mcp.app.config import load_config
+                    from photos_mcp.app.single_instance import AlreadyRunningError, acquire_single_instance_lock
 
                     try:
                         with acquire_single_instance_lock(load_config()):

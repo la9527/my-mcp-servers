@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from photos_mcp.facade.common import call_vendor
+from photos_mcp.application.run_support import call_vendor
 
 
 @pytest.mark.asyncio
@@ -17,7 +17,7 @@ async def test_call_vendor_runs_sync_vendor_functions_off_event_loop(monkeypatch
         return {"ok": True}
 
     monkeypatch.setattr(
-        "photos_mcp.facade.common.load_vendor_server",
+        "photos_mcp.infrastructure.vendor_adapter.gateway.load_vendor_server",
         lambda _name: SimpleNamespace(sync_vendor=sync_vendor),
     )
 

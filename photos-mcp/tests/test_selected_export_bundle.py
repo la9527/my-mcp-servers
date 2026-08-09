@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from photos_mcp.facade.action_options import ActionValidationError, validate_action_options
-from photos_mcp.facade.write_handler import handle_write
+from photos_mcp.application.action_options import ActionValidationError, validate_action_options
+from photos_mcp.application.write_service import handle_write
 
 
 def _selected_items() -> list[dict[str, object]]:

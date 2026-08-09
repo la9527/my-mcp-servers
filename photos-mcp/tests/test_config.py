@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from photos_mcp.config import load_config
+from photos_mcp.app.config import load_config
 
 
 def test_load_config_uses_default_names(monkeypatch, tmp_path: Path) -> None:

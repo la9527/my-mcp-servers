@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from photos_mcp.runtime_bootstrap import default_terminal_python, ensure_runtime_import_paths
+from photos_mcp.app.runtime_bootstrap import default_terminal_python, ensure_runtime_import_paths
 
 
 def _load_bootstrap_module(path: Path, module_name: str):
@@ -22,7 +22,7 @@ def test_ensure_runtime_import_paths_adds_source_parent(tmp_path: Path, monkeypa
     script_path.parent.mkdir(parents=True)
     package_dir.mkdir(exist_ok=True)
     script_path.write_text("", encoding="utf-8")
-    monkeypatch.setattr("photos_mcp.runtime_bootstrap.sys.path", [])
+    monkeypatch.setattr("photos_mcp.app.runtime_bootstrap.sys.path", [])
 
     ensure_runtime_import_paths(script_path)
 
@@ -36,7 +36,7 @@ def test_ensure_runtime_import_paths_adds_bundled_python_root(tmp_path: Path, mo
     script_path = python_root / "photos_mcp" / "vendor" / "photo-source" / "scripts" / "helper.py"
     script_path.parent.mkdir(parents=True)
     script_path.write_text("", encoding="utf-8")
-    monkeypatch.setattr("photos_mcp.runtime_bootstrap.sys.path", [])
+    monkeypatch.setattr("photos_mcp.app.runtime_bootstrap.sys.path", [])
 
     ensure_runtime_import_paths(script_path)
 
@@ -52,7 +52,7 @@ def test_ensure_runtime_import_paths_adds_bundled_lib_dynload(tmp_path: Path, mo
     script_path.parent.mkdir(parents=True)
     script_path.write_text("", encoding="utf-8")
     lib_dynload.mkdir(parents=True)
-    monkeypatch.setattr("photos_mcp.runtime_bootstrap.sys.path", [])
+    monkeypatch.setattr("photos_mcp.app.runtime_bootstrap.sys.path", [])
 
     ensure_runtime_import_paths(script_path)
 

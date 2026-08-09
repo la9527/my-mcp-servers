@@ -13,7 +13,7 @@ from apple_terminal_helper import TerminalHelperError
 from mcp.server.fastmcp import FastMCP
 from photos_mcp.infrastructure.sources.apple_photos.asset_resolver import preferred_original_path
 from photos_mcp.infrastructure.sources.apple_photos.runtime import get_apple_photos_db
-from photos_mcp.logging_setup import ToolLogContext, log_context
+from photos_mcp.app.logging import ToolLogContext, log_context
 from photos_mcp.infrastructure.vision.broker_client import default_runtime_broker_client
 
 from .artifacts import job_results_path, save_face_crop, save_job_results, save_preview

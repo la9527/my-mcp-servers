@@ -4,9 +4,9 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 from apple_terminal_helper import TerminalHelperError
 
-from photos_mcp.config import load_config
+from photos_mcp.app.config import load_config
 from photos_mcp.application.mutation_approval import finalize_mutation_receipt
-from photos_mcp.server import build_server
+from photos_mcp.interfaces.mcp.server import build_server
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
@@ -40,8 +40,8 @@ async def test_exact_plan_menu_approval_and_duplicate_suppression(monkeypatch) -
         raise AssertionError(function_name)
 
     monkeypatch.setattr("photos_mcp.application.mutation_service.call_vendor", fake_vendor)
-    monkeypatch.setattr("photos_mcp.facade.public_tools.call_vendor", fake_vendor)
-    monkeypatch.setattr("photos_mcp.server.call_vendor", fake_vendor)
+    monkeypatch.setattr("photos_mcp.interfaces.mcp.facade.public_tools.call_vendor", fake_vendor)
+    monkeypatch.setattr("photos_mcp.interfaces.mcp.server.call_vendor", fake_vendor)
     store = PhotosMcpStateStore(endpoint="http://local/mcp", health_endpoint="http://local/health")
     client = MockMcpClient(store)
     arguments = {
@@ -79,8 +79,8 @@ async def test_partial_write_receipt_requires_reconciliation(monkeypatch) -> Non
             return {"album": "부분 성공", "exists": True, "photo_ids": ["p-1"]}
         raise AssertionError(function_name)
 
-    monkeypatch.setattr("photos_mcp.facade.public_tools.call_vendor", fake_vendor)
-    monkeypatch.setattr("photos_mcp.server.call_vendor", fake_vendor)
+    monkeypatch.setattr("photos_mcp.interfaces.mcp.facade.public_tools.call_vendor", fake_vendor)
+    monkeypatch.setattr("photos_mcp.interfaces.mcp.server.call_vendor", fake_vendor)
     store = PhotosMcpStateStore(endpoint="http://local/mcp", health_endpoint="http://local/health")
     client = MockMcpClient(store)
     options = {"photo_ids": ["p-1", "p-2"], "target_album_name": "부분 성공"}
@@ -116,8 +116,8 @@ async def test_timeout_leaves_durable_reconciliation_receipt(monkeypatch) -> Non
             return {"album": "타임아웃", "exists": True, "photo_ids": ["p-1"]}
         raise TimeoutError("Photos automation timeout")
 
-    monkeypatch.setattr("photos_mcp.facade.public_tools.call_vendor", timeout_vendor)
-    monkeypatch.setattr("photos_mcp.server.call_vendor", timeout_vendor)
+    monkeypatch.setattr("photos_mcp.interfaces.mcp.facade.public_tools.call_vendor", timeout_vendor)
+    monkeypatch.setattr("photos_mcp.interfaces.mcp.server.call_vendor", timeout_vendor)
     store = PhotosMcpStateStore(endpoint="http://local/mcp", health_endpoint="http://local/health")
     client = MockMcpClient(store)
     options = {"photo_ids": ["p-1"], "target_album_name": "타임아웃"}
@@ -153,8 +153,8 @@ async def test_reconciliation_query_failure_remains_blocked(monkeypatch) -> None
     async def unavailable_vendor(*_args, **_kwargs):
         raise TimeoutError("Photos automation remains unavailable")
 
-    monkeypatch.setattr("photos_mcp.facade.public_tools.call_vendor", unavailable_vendor)
-    monkeypatch.setattr("photos_mcp.server.call_vendor", unavailable_vendor)
+    monkeypatch.setattr("photos_mcp.interfaces.mcp.facade.public_tools.call_vendor", unavailable_vendor)
+    monkeypatch.setattr("photos_mcp.interfaces.mcp.server.call_vendor", unavailable_vendor)
     store = PhotosMcpStateStore(endpoint="http://local/mcp", health_endpoint="http://local/health")
     client = MockMcpClient(store)
     options = {"photo_ids": ["p-1"], "target_album_name": "재조정 대기"}

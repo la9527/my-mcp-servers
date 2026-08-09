@@ -39,7 +39,7 @@ from photos_mcp.local_file_selection_appkit import (
     _maximum_sidebar_width,
     _scan_local_photos,
 )
-from photos_mcp.main_window_appkit import PhotosMcpMainWindowController
+from photos_mcp.interfaces.appkit.main.controller import PhotosMcpMainWindowController
 from photos_mcp.ui_theme import scaled_font_size
 
 

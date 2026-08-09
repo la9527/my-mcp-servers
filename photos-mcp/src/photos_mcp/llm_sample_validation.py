@@ -16,7 +16,7 @@ from typing import Any, Callable
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from photos_mcp.logging_setup import ToolLogContext, build_dated_log_path, configure_root_logging, log_context
+from photos_mcp.app.logging import ToolLogContext, build_dated_log_path, configure_root_logging, log_context
 from photos_mcp.infrastructure.runtime.paths import photos_mcp_logs_root
 
 
