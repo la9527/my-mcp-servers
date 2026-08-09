@@ -1,15 +1,103 @@
 from __future__ import annotations
 
-from AppKit import NSApplication
+from AppKit import NSApplication, NSMakeRect
+from Foundation import NSMakePoint
 from PIL import Image
 
-from photos_mcp.photo_viewer_appkit import PhotosMcpPhotoViewerController
+from photos_mcp.photo_viewer_appkit import PhotosMcpPhotoViewerController, PhotosMcpZoomImageView
 from photos_mcp.viewer_asset_service import (
     cached_raw_viewer_preview,
     hydrate_viewer_source_paths,
     render_raw_viewer_preview,
     resolve_viewer_asset,
 )
+
+
+class _FakeButton:
+    def __init__(self) -> None:
+        self.enabled: bool | None = None
+
+    def setEnabled_(self, enabled: bool) -> None:
+        self.enabled = bool(enabled)
+
+
+class _FakeImageView:
+    def __init__(self, zoom_factor: float = 0.5) -> None:
+        self.zoom_factor = zoom_factor
+        self.fit_zoom_factor = zoom_factor
+        self.zoom_calls: list[tuple[float, tuple[float, float]]] = []
+        self.fit_calls = 0
+
+    def zoomFactor(self) -> float:
+        return self.zoom_factor
+
+    def convertViewPointToImagePoint_(self, point):
+        return NSMakePoint(float(point.x) * 10.0, float(point.y) * 10.0)
+
+    def setImageZoomFactor_centerPoint_(self, zoom_factor: float, point) -> None:
+        self.zoom_factor = float(zoom_factor)
+        self.zoom_calls.append((float(zoom_factor), (float(point.x), float(point.y))))
+
+    def zoomImageToFit_(self, _sender) -> None:
+        self.fit_calls += 1
+        self.zoom_factor = self.fit_zoom_factor
+
+    def zoomImageToActualSize_(self, _sender) -> None:
+        self.zoom_factor = 1.0
+
+    def bounds(self):
+        return NSMakeRect(0.0, 0.0, 800.0, 400.0)
+
+
+class _FakePointerEvent:
+    def __init__(self, point, click_count: int = 1) -> None:
+        self.point = point
+        self.click_count = click_count
+
+    def clickCount(self) -> int:
+        return self.click_count
+
+    def locationInWindow(self):
+        return self.point
+
+
+class _FakeGestureOwner:
+    def __init__(self) -> None:
+        self.panning = False
+        self.events: list[tuple[str, tuple[float, float]]] = []
+
+    def can_pan_image(self) -> bool:
+        return True
+
+    def is_panning_image(self) -> bool:
+        return self.panning
+
+    def begin_pan_at_view_point(self, point) -> None:
+        self.panning = True
+        self.events.append(("begin", (float(point.x), float(point.y))))
+
+    def pan_image_to_view_point(self, point) -> None:
+        self.events.append(("pan", (float(point.x), float(point.y))))
+
+    def end_pan(self) -> None:
+        self.panning = False
+        self.events.append(("end", (0.0, 0.0)))
+
+    def toggle_zoom_at_view_point(self, point) -> None:
+        self.events.append(("toggle", (float(point.x), float(point.y))))
+
+
+def _controller_with_fake_image_view() -> tuple[PhotosMcpPhotoViewerController, _FakeImageView]:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpPhotoViewerController.alloc().init()
+    image_view = _FakeImageView()
+    controller._image_view = image_view
+    controller._zoom_out_button = _FakeButton()
+    controller._zoom_in_button = _FakeButton()
+    controller._fit_button = _FakeButton()
+    controller._fit_zoom_factor = 0.5
+    controller._is_fit = True
+    return controller, image_view
 
 
 def test_viewer_asset_prefers_source_and_falls_back_to_preview(tmp_path) -> None:
@@ -103,3 +191,74 @@ def test_viewer_loads_source_and_navigates_current_filter(tmp_path) -> None:
     assert controller._index == 1
     assert controller._info_scene.stringValue() == "두 번째 사진"
     controller.window().orderOut_(None)
+
+
+def test_double_click_zoom_uses_clicked_image_point_and_toggles_back_to_fit() -> None:
+    controller, image_view = _controller_with_fake_image_view()
+
+    controller.toggle_zoom_at_view_point(NSMakePoint(64.0, 38.0))
+
+    assert image_view.zoom_calls == [(1.0, (640.0, 380.0))]
+    assert controller._is_fit is False
+    assert controller._zoom_out_button.enabled is True
+    assert controller._fit_button.enabled is True
+
+    controller.toggle_zoom_at_view_point(NSMakePoint(64.0, 38.0))
+
+    assert image_view.fit_calls == 1
+    assert controller._is_fit is True
+    assert controller._zoom_out_button.enabled is False
+    assert controller._fit_button.enabled is False
+    controller.window().orderOut_(None)
+
+
+def test_toolbar_zoom_anchors_to_visible_center_and_stops_at_fit_floor() -> None:
+    controller, image_view = _controller_with_fake_image_view()
+
+    controller.zoomIn_(None)
+
+    assert image_view.zoom_calls == [(0.625, (4000.0, 2000.0))]
+    assert controller._is_fit is False
+
+    controller.zoom_by_factor_at_view_point(0.1, NSMakePoint(12.0, 24.0))
+
+    assert image_view.fit_calls == 1
+    assert image_view.zoom_calls == [(0.625, (4000.0, 2000.0))]
+    assert controller._is_fit is True
+    controller.window().orderOut_(None)
+
+
+def test_drag_pan_moves_the_zoomed_image_by_pointer_delta() -> None:
+    controller, image_view = _controller_with_fake_image_view()
+    image_view.zoom_factor = 1.0
+    controller._is_fit = False
+
+    controller.begin_pan_at_view_point(NSMakePoint(100.0, 80.0))
+    controller.pan_image_to_view_point(NSMakePoint(140.0, 100.0))
+
+    assert image_view.zoom_calls == [(1.0001, (3960.0, 1980.0)), (1.0, (3960.0, 1980.0))]
+    assert controller.is_panning_image() is True
+
+    controller.end_pan()
+
+    assert controller.is_panning_image() is False
+    controller.window().orderOut_(None)
+
+
+def test_image_view_routes_mouse_drag_and_double_click_to_viewer_controller() -> None:
+    NSApplication.sharedApplication()
+    image_view = PhotosMcpZoomImageView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 800.0, 400.0))
+    owner = _FakeGestureOwner()
+    image_view._viewer_owner = owner
+
+    image_view.mouseDown_(_FakePointerEvent(NSMakePoint(100.0, 80.0)))
+    image_view.mouseDragged_(_FakePointerEvent(NSMakePoint(140.0, 100.0)))
+    image_view.mouseUp_(_FakePointerEvent(NSMakePoint(140.0, 100.0)))
+    image_view.mouseDown_(_FakePointerEvent(NSMakePoint(64.0, 38.0), click_count=2))
+
+    assert owner.events == [
+        ("begin", (100.0, 80.0)),
+        ("pan", (140.0, 100.0)),
+        ("end", (0.0, 0.0)),
+        ("toggle", (64.0, 38.0)),
+    ]
