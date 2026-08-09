@@ -51,6 +51,7 @@ review = [
 ]
 all = [
     "photos-mcp[app,apple,gcs,google,vlm,aesthetic,face,face-legacy,review]",
+    "mediapipe>=0.10",
 ]
 dev = [
     "pytest>=8.0",

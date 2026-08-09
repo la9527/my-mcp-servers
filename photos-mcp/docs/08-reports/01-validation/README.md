@@ -14,3 +14,4 @@ YYYY-MM-DD-<검증-대상>.md
 
 - [2026-08-09 문서 재구성 검증](02-documentation-rebuild-2026-08-09.md)
 - [2026-08-09 standalone 앱 빌드 및 화면 검증](03-standalone-app-build-and-ui-validation-2026-08-09.md)
+- [2026-08-09 로컬 사진 500장 E2E 검증](02-local-500-photo-e2e-2026-08-09.md)
