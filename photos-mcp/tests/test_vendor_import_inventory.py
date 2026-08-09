@@ -4,7 +4,7 @@ import ast
 from collections import defaultdict
 from pathlib import Path
 
-from photos_mcp.vendor_loader import VENDOR_ROOT
+from photos_mcp.infrastructure.vendor_adapter.loader import VENDOR_ROOT
 
 
 EXPECTED_LOCAL_TOP_LEVEL_IMPORTS = {

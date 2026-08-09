@@ -27,7 +27,7 @@ def _prepare_photo_ranker_runtime() -> None:
             if parent_str not in sys.path:
                 sys.path.insert(0, parent_str)
             break
-    from photos_mcp.vendor_script_bootstrap import prepare_script_vendor_runtime
+    from photos_mcp.infrastructure.vendor_adapter.script_bootstrap import prepare_script_vendor_runtime
 
     prepare_script_vendor_runtime("photo-ranker", anchor_path)
 

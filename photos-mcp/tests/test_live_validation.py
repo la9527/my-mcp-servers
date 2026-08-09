@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from photos_mcp.live_validation import PASS, PARTIAL, SKIP, CheckResult, ReportSection, ValidationConfig, _json_preview, _prepare_local_workflow_sample, apple_items_are_photo_only, build_parser, derive_search_seed, format_progress_message, is_workflow_classify_start_payload, pick_library_candidates, pick_local_source_path, render_markdown_report, status_latest_matches_run, status_running_matches_run, wait_timeout_terminal_rounds
+from photos_mcp.operations.validation.live import PASS, PARTIAL, SKIP, CheckResult, ReportSection, ValidationConfig, _json_preview, _prepare_local_workflow_sample, apple_items_are_photo_only, build_parser, derive_search_seed, format_progress_message, is_workflow_classify_start_payload, pick_library_candidates, pick_local_source_path, render_markdown_report, status_latest_matches_run, status_running_matches_run, wait_timeout_terminal_rounds
 
 
 def test_pick_library_candidates_prefers_local_and_non_local_items() -> None:

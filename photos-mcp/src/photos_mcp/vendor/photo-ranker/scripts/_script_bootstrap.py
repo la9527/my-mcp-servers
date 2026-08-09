@@ -25,6 +25,6 @@ def _ensure_photos_mcp_importable(anchor_path: Path) -> None:
 def prepare_photo_ranker_runtime(anchor_file: str) -> None:
     anchor_path = Path(anchor_file).resolve()
     _ensure_photos_mcp_importable(anchor_path)
-    from photos_mcp.vendor_script_bootstrap import prepare_script_vendor_runtime
+    from photos_mcp.infrastructure.vendor_adapter.script_bootstrap import prepare_script_vendor_runtime
 
     prepare_script_vendor_runtime("photo-ranker", anchor_path)

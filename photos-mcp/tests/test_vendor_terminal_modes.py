@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from photos_mcp.vendor_loader import load_vendor_server
+from photos_mcp.infrastructure.vendor_adapter.loader import load_vendor_server
 
 
 def test_photo_ranker_album_writer_terminal_mode_checks_platform(monkeypatch) -> None:

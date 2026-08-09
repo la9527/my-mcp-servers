@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 import types
 
-from photos_mcp.vendor_loader import prepare_vendor_runtime
+from photos_mcp.infrastructure.vendor_adapter.loader import prepare_vendor_runtime
 
 
 def _load_artifacts_module():

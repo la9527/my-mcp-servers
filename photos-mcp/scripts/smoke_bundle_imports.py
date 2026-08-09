@@ -48,7 +48,7 @@ def main() -> int:
     if args.bundle is not None:
         _add_bundle_paths(args.bundle)
 
-    from photos_mcp.packaging_contract import PY2APP_INCLUDES, PY2APP_PACKAGES
+    from photos_mcp.operations.packaging.contract import PY2APP_INCLUDES, PY2APP_PACKAGES
 
     failures = _import_required_modules(sorted(set(PY2APP_PACKAGES + PY2APP_INCLUDES)))
     if failures:

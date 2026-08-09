@@ -4,13 +4,13 @@ import plistlib
 import tomllib
 from pathlib import Path
 
-from photos_mcp import packaging
-from photos_mcp.packaging_contract import (
+from photos_mcp.operations.packaging import builder as packaging
+from photos_mcp.operations.packaging.contract import (
     PY2APP_INCLUDES,
     PY2APP_PACKAGES,
     SITE_PACKAGES_RESOURCE_NAMES,
 )
-from photos_mcp.packaging import (
+from photos_mcp.operations.packaging.builder import (
     build_app_packages,
     build_py2app_setup_kwargs,
     build_site_packages_resources,

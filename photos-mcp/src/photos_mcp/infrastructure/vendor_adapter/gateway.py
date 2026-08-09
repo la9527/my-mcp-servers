@@ -7,7 +7,7 @@ import inspect
 import json
 from typing import Any
 
-from photos_mcp.vendor_loader import load_vendor_server
+from photos_mcp.infrastructure.vendor_adapter.loader import load_vendor_server
 
 
 def parse_vendor_payload(value: Any) -> Any:

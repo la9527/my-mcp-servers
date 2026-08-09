@@ -8,7 +8,7 @@ from typing import Any
 
 from photos_mcp.application.run_support import call_vendor, new_run_id, parse_json_list, resolve_run_id, wrap_run_payload
 from photos_mcp.app.logging import ToolLogContext, log_context
-from photos_mcp.photo_source_port import PhotoSourcePort, VendorPhotoSourcePort
+from photos_mcp.infrastructure.vendor_adapter.photo_source import PhotoSourcePort, VendorPhotoSourcePort
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 

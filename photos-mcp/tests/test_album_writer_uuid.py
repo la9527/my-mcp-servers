@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from photos_mcp.vendor_loader import prepare_vendor_runtime
+from photos_mcp.infrastructure.vendor_adapter.loader import prepare_vendor_runtime
 
 
 def _album_writer_module():

@@ -14,7 +14,7 @@ from photos_mcp.app.main import run_cli
 from photos_mcp.interfaces.mcp.server import build_health_payload, build_http_app, build_server
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 from photos_mcp.app.single_instance import AlreadyRunningError
-from photos_mcp.vendor_loader import VENDOR_ROOT, load_vendor_server, prepare_vendor_runtime, resolve_vendor_root
+from photos_mcp.infrastructure.vendor_adapter.loader import VENDOR_ROOT, load_vendor_server, prepare_vendor_runtime, resolve_vendor_root
 
 
 def test_health_mode_returns_expected_payload(capsys) -> None:

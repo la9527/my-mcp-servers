@@ -20,7 +20,7 @@ from photos_mcp.application.preflight_service import prepare_photos_library_runt
 from photos_mcp.infrastructure.persistence.run_repository import default_run_repository_path
 from photos_mcp.app.single_instance import AlreadyRunningError, acquire_single_instance_lock
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
-from photos_mcp.vendor_loader import load_vendor_server, prepare_vendor_runtime
+from photos_mcp.infrastructure.vendor_adapter.loader import load_vendor_server, prepare_vendor_runtime
 
 
 logger = logging.getLogger(__name__)

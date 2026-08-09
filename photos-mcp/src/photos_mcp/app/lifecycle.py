@@ -13,7 +13,7 @@ from photos_mcp.app.config import PhotosMcpConfig
 from photos_mcp.infrastructure.persistence.job_state import PhotoRankerJobStore, synthetic_review_result
 from photos_mcp.interfaces.mcp.server import build_http_app, build_server
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
-from photos_mcp.vendor_loader import load_vendor_server
+from photos_mcp.infrastructure.vendor_adapter.loader import load_vendor_server
 
 
 def _ensure_bundled_uvicorn_package_path() -> None:

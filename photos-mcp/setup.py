@@ -12,7 +12,7 @@ if str(SRC_DIR) not in sys.path:
 	sys.path.insert(0, str(SRC_DIR))
 
 
-from photos_mcp.packaging import build_py2app_setup_kwargs
+from photos_mcp.operations.packaging.builder import build_py2app_setup_kwargs
 
 
 setup(**build_py2app_setup_kwargs())

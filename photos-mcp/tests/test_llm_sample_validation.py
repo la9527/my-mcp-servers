@@ -4,8 +4,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-import photos_mcp.llm_sample_validation as llm_sample_validation
-from photos_mcp.llm_sample_validation import FAIL, PASS, SampleResult, ValidationReport, render_markdown_report, sample_catalog
+import photos_mcp.operations.validation.llm_samples as llm_sample_validation
+from photos_mcp.operations.validation.llm_samples import FAIL, PASS, SampleResult, ValidationReport, render_markdown_report, sample_catalog
 
 
 def test_sample_catalog_centers_the_confirmed_llm_target_prompts() -> None:

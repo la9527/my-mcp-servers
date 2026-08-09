@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from photos_mcp.application.selection_service import handle_select
-from photos_mcp.photo_source_port import PhotoSourcePort, VendorPhotoSourcePort
+from photos_mcp.infrastructure.vendor_adapter.photo_source import PhotoSourcePort, VendorPhotoSourcePort
 from photos_mcp.infrastructure.sources.local_files.raw_image import RAW_IMAGE_EXTENSIONS
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 

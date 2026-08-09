@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from photos_mcp.vendor_loader import prepare_vendor_runtime
+from photos_mcp.infrastructure.vendor_adapter.loader import prepare_vendor_runtime
 
 
 def _load_vlm_module():
@@ -174,7 +174,7 @@ def test_fallback_validator_defaults_to_vendor_loader_server_launch(monkeypatch)
         "3.12",
         "python",
         "-c",
-        'from photos_mcp.vendor_loader import load_vendor_server; load_vendor_server("photo-ranker").mcp.run()',
+        'from photos_mcp.infrastructure.vendor_adapter.loader import load_vendor_server; load_vendor_server("photo-ranker").mcp.run()',
     ]
 
 

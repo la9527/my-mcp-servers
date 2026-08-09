@@ -5,7 +5,7 @@ import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from photos_mcp.vendor_loader import prepare_vendor_runtime
+from photos_mcp.infrastructure.vendor_adapter.loader import prepare_vendor_runtime
 
 
 def _load_job_db_class():

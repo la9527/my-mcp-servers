@@ -22,7 +22,7 @@ from photos_mcp.domain.policies.source_policy import (
     SourcePolicy,
     SourcePolicyViolation,
 )
-from photos_mcp.photo_source_port import (
+from photos_mcp.infrastructure.vendor_adapter.photo_source import (
     legacy_source_capabilities,
     legacy_source_descriptor,
 )

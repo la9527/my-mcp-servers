@@ -1,4 +1,4 @@
-from photos_mcp.vendor_loader import load_vendor_server
+from photos_mcp.infrastructure.vendor_adapter.loader import load_vendor_server
 
 
 def test_gcs_location_preserves_bucket_and_prefix() -> None:

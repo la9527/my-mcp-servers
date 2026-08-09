@@ -106,7 +106,7 @@ def parse_args() -> argparse.Namespace:
             "python",
             "-c",
             (
-                'from photos_mcp.vendor_loader import load_vendor_server; '
+                'from photos_mcp.infrastructure.vendor_adapter.loader import load_vendor_server; '
                 'load_vendor_server("photo-ranker").mcp.run()'
             ),
         ],

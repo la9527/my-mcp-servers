@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from photos_mcp.vendor_loader import load_vendor_server
+from photos_mcp.infrastructure.vendor_adapter.loader import load_vendor_server
 
 
 @pytest.mark.asyncio

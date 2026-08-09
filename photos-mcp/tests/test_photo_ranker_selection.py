@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from apple_terminal_helper import TerminalHelperError
-from photos_mcp.vendor_loader import prepare_vendor_runtime
+from photos_mcp.infrastructure.vendor_adapter.loader import prepare_vendor_runtime
 
 
 def _load_scoring_module():
