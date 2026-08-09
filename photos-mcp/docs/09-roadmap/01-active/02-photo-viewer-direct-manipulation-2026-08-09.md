@@ -2,7 +2,7 @@
 
 ## 상태
 
-- 단계: 구현 및 자동·설치 앱 핵심 검증 완료
+- 단계: 표준 스크롤 뷰 재구현 및 자동·설치 앱 검증 완료
 - 작성일: 2026-08-09
 - 대상 화면: `사진 크게 보기`
 - 목표: 사진 앱과 Preview에서 기대하는 방식으로 확대 지점을 보존하고, 확대된 사진을 직접 끌어 이동
@@ -19,10 +19,9 @@
 
 - Apple [Gestures](https://developer.apple.com/design/human-interface-guidelines/gestures/)는 macOS에서 double-click을 확대·축소의 표준 제스처로, drag를 직접 조작으로 정의한다. 익숙한 제스처는 문맥마다 같은 의미로 동작해야 한다.
 - Apple [Pointing devices](https://developer.apple.com/design/human-interface-guidelines/pointing-devices/)는 Mac의 smart zoom을 콘텐츠 확대·축소 동작으로 제시한다. 마우스와 trackpad 설정이 다를 수 있으므로 특정 입력만 강제하면 안 된다.
-- Apple [IKImageView](https://developer.apple.com/documentation/Quartz/IKImageView)는 `setImageZoomFactor(_:center:)`, 이미지·뷰 좌표 변환, 지정 위치 scroll API를 제공한다. 현재 뷰어가 사용하는 네이티브 ImageKit 안에서 확대 기준점과 이동을 처리할 수 있다.
-- Apple [Scroll views](https://developer.apple.com/design/human-interface-guidelines/scroll-views/)는 기본 scroll 제스처와 키보드 동작을 유지하고, 확대를 지원하면 최소·최대 배율을 명확히 제한하도록 권장한다.
+- Apple [Scroll views](https://developer.apple.com/design/human-interface-guidelines/scroll-views/)와 AppKit `NSScrollView`는 확대 콘텐츠의 clip origin, scroll bar, trackpad scroll을 표준 방식으로 제공하며 최소·최대 배율을 명확히 제한하도록 권장한다. ImageKit 내부 scroll 상태는 앱이 안정적으로 읽고 갱신할 수 없으므로 결과 뷰어는 `NSScrollView`와 읽기 전용 사진 canvas를 사용한다.
 
-외부 사진 뷰어 라이브러리는 도입하지 않는다. 현재 `IKImageView`의 메타데이터 처리, RAW 캐시 표시, 접근성 구조를 보존하면서 필요한 API를 그대로 사용할 수 있다.
+외부 사진 뷰어 라이브러리는 도입하지 않는다. AppKit `NSScrollView`, `NSClipView`, `NSImage`만 사용하고 기존 RAW 고해상도 캐시와 접근성 구조를 보존한다.
 
 ## 확정 제안
 
@@ -69,21 +68,21 @@
 
 ```text
 NSEvent (double click / smart magnify / pinch / command-scroll / drag)
-  -> PhotosMcpZoomImageView
-  -> image view 좌표를 image 좌표로 변환
+  -> PhotosMcpZoomImageView (read-only canvas)
+  -> document 좌표를 원본 image 좌표로 변환
   -> PhotosMcpPhotoViewerController
-  -> IKImageView.setImageZoomFactor(center:)
-  -> IKImageView.scroll(to:)로 기준점을 화면 중앙에 배치
+  -> 확대된 document frame과 image rect 계산
+  -> NSClipView.scrollToPoint로 기준점을 중앙 배치하거나 drag delta 반영
 ```
 
 구현 항목:
 
-1. `PhotosMcpZoomImageView`에 event 위치를 image 좌표로 바꾸는 helper와 drag 시작·이동·종료 처리를 추가한다.
-2. controller에 `zoom_at_image_point`, `fit_zoom_factor`, `pan_by_view_delta`를 둔다. ImageKit 좌표 변환과 동일 zoom 중심 갱신을 이용해 읽기 전용 상태에서도 drag pan을 처리하고, 배율 계산과 clamp는 한 곳에서 처리한다.
+1. `PhotosMcpZoomImageView`는 사진을 읽기 전용 canvas에 그리고 event 위치와 drag 시작·이동·종료를 controller로 전달한다.
+2. controller는 원본 image 좌표, 확대된 표시 rect, `NSClipView` origin을 명시적으로 관리한다. drag delta와 scroll 범위 clamp는 한 곳에서 처리한다.
 3. 더블클릭과 `smartMagnifyWithEvent_`는 같은 `toggle_zoom_at_point`를 사용한다.
 4. pinch와 `Command` + scroll은 발생 위치를 anchor로 하는 연속/단계 확대를 사용한다.
 5. RAW 캐시 준비·URL 비동기 재그리기 generation이 완료된 뒤에도 수동 조작 generation을 확인하여, 이미 사용자가 확대·이동했다면 `zoomImageToFit_`을 다시 호출하지 않는다.
-6. ImageKit의 기본 edit panel은 계속 열지 않도록 `doubleClickOpensImageEditPanel`을 명시적으로 끈다. 이 앱은 읽기 전용 결과 뷰어다.
+6. canvas에는 파일 drop, 선택, 편집 또는 저장 경로를 두지 않는다. 확대·이동은 화면 상태만 바꾸며 원본은 계속 읽기 전용이다.
 
 ## 검증 계획
 
@@ -107,7 +106,7 @@ NSEvent (double click / smart magnify / pinch / command-scroll / drag)
 
 | 경로 | 변경 |
 | --- | --- |
-| `src/photos_mcp/photo_viewer_appkit.py` | anchor zoom, read-only drag pan, cursor, 비동기 재배치 보호 |
+| `src/photos_mcp/photo_viewer_appkit.py` | 표준 scroll view, anchor zoom, read-only drag pan, cursor, 비동기 재배치 보호 |
 | `tests/test_photo_viewer_appkit.py` | 좌표·배율·drag·지연 로드 회귀 |
 | `docs/02-user-guide/04-results-and-export.md` | 실제 뷰어 조작법 |
 | `docs/02-user-guide/05-keyboard-shortcuts.md` | 단축키 확인 및 갱신 |
@@ -125,7 +124,6 @@ NSEvent (double click / smart magnify / pinch / command-scroll / drag)
 ## 구현 결과
 
 - `PhotosMcpZoomImageView`는 double-click, smart zoom, pinch, `Command` + scroll의 발생 위치를 controller로 전달한다.
-- controller는 `setImageZoomFactor:centerPoint:`에 이미지 좌표를 전달해 클릭한 지점을 기준으로 확대하고, 두 번째 double-click에서 화면 맞춤으로 복귀한다.
-- 확대 상태의 mouse drag는 시작 위치와 현재 위치의 delta를 image 좌표로 환산해 읽기 전용 이미지 중심을 이동한다. ImageKit이 같은 배율의 중심 변경을 무시하는 경우에는 즉시 복원되는 미세 배율 pulse로 새 중심을 적용한다.
-- 설치 앱에서 500장 RAW 결과를 열어 우하단 지점 double-click 확대, 화면 맞춤 복귀, toolbar 접근성 라벨과 비활성 상태 전환을 확인했다.
-- Computer Use의 Cocoa drag 재현은 포인터 좌표가 이동하지 않는 제한이 있어 화면 캡처만으로 drag 결과를 판정하지 않았다. 대신 실제 AppKit `mouseDown`·`mouseDragged`·`mouseUp` 이벤트가 pan controller로 전달되는 자동 회귀 테스트와 delta 중심 이동 테스트를 추가했다.
+- controller는 클릭 위치의 원본 image 좌표를 계산한 뒤 확대된 document에서 그 좌표가 뷰 중앙에 오도록 `NSClipView` origin을 갱신한다. 가장자리도 중앙에 배치할 수 있도록 수동 확대 상태에서만 반 화면 크기의 검은 여백을 허용한다.
+- 확대 상태의 mouse drag는 시작 clip origin에서 포인터 delta를 빼 표준 scroll origin으로 적용한다. 범위를 벗어난 값은 document 크기에 맞게 clamp한다.
+- 500장 RAW 결과 설치 앱에서 화면 맞춤, 우측 지점 double-click 중앙 확대, 우하단 방향 drag를 직접 수행했다. drag 전후 사진 내용과 가로·세로 scroll bar 값이 함께 바뀌어 실제 clip origin 이동을 확인했고, 같은 동작은 `NSClipView` 실객체 회귀 테스트로도 고정했다.

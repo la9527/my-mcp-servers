@@ -10,9 +10,13 @@ from AppKit import (
     NSBackingStoreBuffered,
     NSButton,
     NSColor,
+    NSCompositingOperationSourceOver,
     NSCursor,
     NSEventModifierFlagCommand,
+    NSImage,
     NSMakeRect,
+    NSRectFill,
+    NSScrollView,
     NSTextField,
     NSView,
     NSViewHeightSizable,
@@ -27,7 +31,6 @@ from AppKit import (
     NSWindowStyleMaskTitled,
 )
 from Foundation import NSMakePoint, NSMakeSize, NSURL
-from Quartz import IKImageView, IKToolModeNone
 
 from photos_mcp.ui_theme import app_font
 from photos_mcp.viewer_asset_service import (
@@ -46,8 +49,59 @@ _DOUBLE_CLICK_ZOOM_STEP = 2.0
 _ZOOM_EPSILON = 0.005
 
 
-class PhotosMcpZoomImageView(IKImageView):
-    """Route image gestures to the controller while preserving read-only viewing."""
+class PhotosMcpZoomImageView(NSView):
+    """Draw a photo and route direct-manipulation gestures to the controller."""
+
+    def initWithFrame_(self, frame):
+        self = objc.super(PhotosMcpZoomImageView, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self._photo_image = None
+        self._display_rect = NSMakeRect(0.0, 0.0, 0.0, 0.0)
+        return self
+
+    def isFlipped(self) -> bool:
+        return True
+
+    def drawRect_(self, dirty_rect) -> None:
+        NSColor.blackColor().setFill()
+        NSRectFill(dirty_rect)
+        if self._photo_image is None:
+            return
+        self._photo_image.drawInRect_fromRect_operation_fraction_respectFlipped_hints_(
+            self._display_rect,
+            NSMakeRect(0.0, 0.0, 0.0, 0.0),
+            NSCompositingOperationSourceOver,
+            1.0,
+            True,
+            None,
+        )
+
+    @objc.python_method
+    def set_photo_image(self, image) -> None:
+        self._photo_image = image
+        self.setNeedsDisplay_(True)
+
+    @objc.python_method
+    def image_size(self):
+        if self._photo_image is None:
+            return NSMakeSize(0.0, 0.0)
+        representations = list(self._photo_image.representations() or [])
+        if representations:
+            representation = max(
+                representations,
+                key=lambda item: int(item.pixelsWide()) * int(item.pixelsHigh()),
+            )
+            width = float(representation.pixelsWide())
+            height = float(representation.pixelsHigh())
+            if width > 0.0 and height > 0.0:
+                return NSMakeSize(width, height)
+        return self._photo_image.size()
+
+    @objc.python_method
+    def set_display_rect(self, rect) -> None:
+        self._display_rect = rect
+        self.setNeedsDisplay_(True)
 
     def acceptsFirstResponder(self) -> bool:
         return True
@@ -88,7 +142,7 @@ class PhotosMcpZoomImageView(IKImageView):
             owner.toggle_zoom_at_view_point(view_point)
             return
         if owner is not None and owner.can_pan_image():
-            owner.begin_pan_at_view_point(view_point)
+            owner.begin_pan_at_window_point(event.locationInWindow())
             NSCursor.closedHandCursor().set()
             return
         objc.super(PhotosMcpZoomImageView, self).mouseDown_(event)
@@ -96,7 +150,7 @@ class PhotosMcpZoomImageView(IKImageView):
     def mouseDragged_(self, event) -> None:
         owner = getattr(self, "_viewer_owner", None)
         if owner is not None and owner.is_panning_image():
-            owner.pan_image_to_view_point(self._event_view_point(event))
+            owner.pan_image_to_window_point(event.locationInWindow())
             return
         objc.super(PhotosMcpZoomImageView, self).mouseDragged_(event)
 
@@ -161,9 +215,11 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         self._index = 0
         self._is_fit = True
         self._fit_zoom_factor = _ABSOLUTE_MIN_ZOOM
-        self._pan_start_view_point = None
-        self._pan_start_image_center = None
-        self._pan_start_zoom_factor = 0.0
+        self._zoom_factor = _ABSOLUTE_MIN_ZOOM
+        self._image_size = NSMakeSize(0.0, 0.0)
+        self._display_rect = NSMakeRect(0.0, 0.0, 0.0, 0.0)
+        self._pan_start_window_point = None
+        self._pan_start_scroll_origin = None
         self._info_visible = True
         self._raw_preview_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -220,24 +276,30 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         self._apply_fit_zoom()
 
     def actualSize_(self, _sender) -> None:
-        self._is_fit = False
-        self._image_view.zoomImageToActualSize_(None)
-        self._update_zoom_controls()
+        self._set_zoom_at_view_point(1.0, self._visible_center_point())
 
     def toggleFitActual_(self, _sender) -> None:
         self.toggle_zoom_at_view_point(self._visible_center_point())
 
     def toggleInfo_(self, _sender) -> None:
+        anchor = self._visible_image_center()
         self._info_visible = not self._info_visible
         self._info_panel.setHidden_(not self._info_visible)
         self._layout_view()
         if self._is_fit:
             self._apply_fit_zoom()
+        else:
+            self._layout_document(self._zoom_factor)
+            self._center_image_point(anchor)
 
     def windowDidResize_(self, _notification) -> None:
+        anchor = self._visible_image_center()
         self._layout_view()
         if self._is_fit:
             self._apply_fit_zoom()
+        else:
+            self._layout_document(self._zoom_factor)
+            self._center_image_point(anchor)
 
     @objc.python_method
     def _build_view(self) -> None:
@@ -245,18 +307,21 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         root.setWantsLayer_(True)
         root.layer().setBackgroundColor_(NSColor.blackColor().CGColor())
 
-        self._image_view = PhotosMcpZoomImageView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
+        self._scroll_view = NSScrollView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
+        self._scroll_view.setDrawsBackground_(True)
+        self._scroll_view.setBackgroundColor_(NSColor.blackColor())
+        self._scroll_view.setHasHorizontalScroller_(True)
+        self._scroll_view.setHasVerticalScroller_(True)
+        self._scroll_view.setAutohidesScrollers_(True)
+        self._scroll_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+
+        self._image_view = PhotosMcpZoomImageView.alloc().initWithFrame_(
+            NSMakeRect(0.0, 0.0, 1.0, 1.0)
+        )
         self._image_view._viewer_owner = self
-        self._image_view.setBackgroundColor_(NSColor.blackColor())
-        self._image_view.setHasHorizontalScroller_(True)
-        self._image_view.setHasVerticalScroller_(True)
-        self._image_view.setAutohidesScrollers_(True)
-        self._image_view.setEditable_(False)
-        self._image_view.setDoubleClickOpensImageEditPanel_(False)
-        self._image_view.setCurrentToolMode_(IKToolModeNone)
-        self._image_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         self._image_view.setAccessibilityLabel_("선택한 사진 크게 보기")
-        root.addSubview_(self._image_view)
+        self._scroll_view.setDocumentView_(self._image_view)
+        root.addSubview_(self._scroll_view)
 
         self._toolbar = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 48.0))
         self._toolbar.setWantsLayer_(True)
@@ -306,7 +371,7 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         info_height = 116.0 if self._info_visible else 0.0
         self._toolbar.setFrame_(NSMakeRect(0.0, height - toolbar_height, width, toolbar_height))
         self._info_panel.setFrame_(NSMakeRect(0.0, 0.0, width, 116.0))
-        self._image_view.setFrame_(
+        self._scroll_view.setFrame_(
             NSMakeRect(0.0, info_height, width, max(1.0, height - toolbar_height - info_height))
         )
         self._previous_button.setFrame_(NSMakeRect(16.0, 9.0, 70.0, 30.0))
@@ -333,7 +398,7 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         if asset is None:
             self._image_load_generation += 1
             self._counter_label.setStringValue_("사진을 불러올 수 없습니다")
-            self._image_view.setImage_(None)
+            self._set_photo_image(None)
         elif asset.requires_rendered_preview:
             self._display_raw_asset(asset.path)
         else:
@@ -358,75 +423,104 @@ class PhotosMcpPhotoViewerController(NSWindowController):
 
     @objc.python_method
     def zoom_by_factor_at_view_point(self, factor: float, view_point) -> None:
-        current_zoom = float(self._image_view.zoomFactor())
-        self._set_zoom_at_view_point(current_zoom * factor, view_point)
+        self._set_zoom_at_view_point(self._zoom_factor * factor, view_point)
 
     @objc.python_method
     def toggle_zoom_at_view_point(self, view_point) -> None:
         if not self._is_fit:
             self._apply_fit_zoom()
             return
-        current_zoom = float(self._image_view.zoomFactor())
-        target_zoom = max(1.0, current_zoom * _DOUBLE_CLICK_ZOOM_STEP)
-        self._set_zoom_at_view_point(target_zoom, view_point)
+        target_zoom = max(1.0, self._zoom_factor * _DOUBLE_CLICK_ZOOM_STEP)
+        self._set_zoom_at_view_point(target_zoom, view_point, center_anchor=True)
 
     @objc.python_method
-    def _set_zoom_at_view_point(self, requested_zoom: float, view_point) -> None:
+    def _set_zoom_at_view_point(
+        self,
+        requested_zoom: float,
+        view_point,
+        *,
+        center_anchor: bool = False,
+    ) -> None:
         minimum_zoom = self._minimum_manual_zoom()
         target_zoom = max(minimum_zoom, min(_MAX_ZOOM, requested_zoom))
         if target_zoom <= minimum_zoom + _ZOOM_EPSILON:
             self._apply_fit_zoom()
             return
-        image_point = self._image_view.convertViewPointToImagePoint_(view_point)
-        self._image_view.setImageZoomFactor_centerPoint_(target_zoom, image_point)
+        image_point = self._image_point_at_document_point(view_point)
+        clip_view = self._scroll_view.contentView()
+        clip_bounds = clip_view.bounds()
+        if center_anchor:
+            anchor_in_clip = NSMakePoint(
+                float(clip_bounds.size.width) / 2.0,
+                float(clip_bounds.size.height) / 2.0,
+            )
+        else:
+            anchor_in_clip = NSMakePoint(
+                float(view_point.x) - float(clip_bounds.origin.x),
+                float(view_point.y) - float(clip_bounds.origin.y),
+            )
+        self._layout_document(target_zoom, center_margin=True)
+        target_document_point = self._document_point_for_image_point(image_point)
+        self._scroll_to_origin(
+            NSMakePoint(
+                float(target_document_point.x) - float(anchor_in_clip.x),
+                float(target_document_point.y) - float(anchor_in_clip.y),
+            )
+        )
         self._is_fit = False
         self._update_zoom_controls()
 
     @objc.python_method
     def can_pan_image(self) -> bool:
-        return not self._is_fit and float(self._image_view.zoomFactor()) > self._minimum_manual_zoom() + _ZOOM_EPSILON
+        clip_bounds = self._scroll_view.contentView().bounds()
+        document_bounds = self._image_view.bounds()
+        return not self._is_fit and (
+            float(document_bounds.size.width) > float(clip_bounds.size.width) + 0.5
+            or float(document_bounds.size.height) > float(clip_bounds.size.height) + 0.5
+        )
 
     @objc.python_method
     def is_panning_image(self) -> bool:
-        return self._pan_start_view_point is not None and self._pan_start_image_center is not None
+        return self._pan_start_window_point is not None and self._pan_start_scroll_origin is not None
 
     @objc.python_method
-    def begin_pan_at_view_point(self, view_point) -> None:
+    def begin_pan_at_window_point(self, window_point) -> None:
         if not self.can_pan_image():
             return
-        self._pan_start_view_point = view_point
-        self._pan_start_image_center = self._image_view.convertViewPointToImagePoint_(
-            self._visible_center_point()
-        )
-        self._pan_start_zoom_factor = float(self._image_view.zoomFactor())
+        self._pan_start_window_point = window_point
+        self._pan_start_scroll_origin = self._scroll_view.contentView().bounds().origin
 
     @objc.python_method
-    def pan_image_to_view_point(self, view_point) -> None:
+    def pan_image_to_window_point(self, window_point) -> None:
         if not self.is_panning_image():
             return
-        start_point = self._pan_start_view_point
-        start_center = self._pan_start_image_center
-        zoom_factor = max(_ABSOLUTE_MIN_ZOOM, self._pan_start_zoom_factor)
-        delta_x = (float(view_point.x) - float(start_point.x)) / zoom_factor
-        delta_y = (float(view_point.y) - float(start_point.y)) / zoom_factor
-        center = NSMakePoint(float(start_center.x) - delta_x, float(start_center.y) - delta_y)
-        # ImageKit ignores a center update when the requested zoom is unchanged.
-        # A sub-pixel pulse keeps the displayed scale while applying the new center.
-        pulse_zoom = zoom_factor - 0.0001 if zoom_factor >= _MAX_ZOOM else zoom_factor + 0.0001
-        self._image_view.setImageZoomFactor_centerPoint_(pulse_zoom, center)
-        self._image_view.setImageZoomFactor_centerPoint_(zoom_factor, center)
+        start = self._pan_start_window_point
+        origin = self._pan_start_scroll_origin
+        self._scroll_to_origin(
+            NSMakePoint(
+                float(origin.x) - (float(window_point.x) - float(start.x)),
+                float(origin.y) - (float(window_point.y) - float(start.y)),
+            )
+        )
 
     @objc.python_method
     def end_pan(self) -> None:
-        self._pan_start_view_point = None
-        self._pan_start_image_center = None
-        self._pan_start_zoom_factor = 0.0
+        self._pan_start_window_point = None
+        self._pan_start_scroll_origin = None
 
     @objc.python_method
     def _apply_fit_zoom(self) -> None:
         self._is_fit = True
-        self._image_view.zoomImageToFit_(None)
-        self._fit_zoom_factor = max(_ABSOLUTE_MIN_ZOOM, float(self._image_view.zoomFactor()))
+        if float(self._image_size.width) <= 0.0 or float(self._image_size.height) <= 0.0:
+            return
+        clip_size = self._scroll_view.contentSize()
+        fit_zoom = min(
+            float(clip_size.width) / float(self._image_size.width),
+            float(clip_size.height) / float(self._image_size.height),
+        )
+        self._fit_zoom_factor = max(_ABSOLUTE_MIN_ZOOM, fit_zoom)
+        self._layout_document(self._fit_zoom_factor, center_margin=False)
+        self._scroll_to_origin(NSMakePoint(0.0, 0.0))
         self._update_zoom_controls()
 
     @objc.python_method
@@ -435,20 +529,85 @@ class PhotosMcpPhotoViewerController(NSWindowController):
 
     @objc.python_method
     def _visible_center_point(self):
-        bounds = self._image_view.bounds()
+        bounds = self._scroll_view.contentView().bounds()
         return NSMakePoint(
             float(bounds.origin.x) + float(bounds.size.width) / 2.0,
             float(bounds.origin.y) + float(bounds.size.height) / 2.0,
         )
 
     @objc.python_method
+    def _visible_image_center(self):
+        return self._image_point_at_document_point(self._visible_center_point())
+
+    @objc.python_method
     def _update_zoom_controls(self) -> None:
         if not hasattr(self, "_zoom_out_button"):
             return
-        zoom_factor = float(self._image_view.zoomFactor())
+        zoom_factor = self._zoom_factor
         self._zoom_out_button.setEnabled_(zoom_factor > self._minimum_manual_zoom() + _ZOOM_EPSILON)
         self._zoom_in_button.setEnabled_(zoom_factor < _MAX_ZOOM - _ZOOM_EPSILON)
         self._fit_button.setEnabled_(not self._is_fit)
+
+    @objc.python_method
+    def _layout_document(self, zoom_factor: float, *, center_margin: bool | None = None) -> None:
+        self._zoom_factor = zoom_factor
+        clip_size = self._scroll_view.contentSize()
+        scaled_width = max(1.0, float(self._image_size.width) * zoom_factor)
+        scaled_height = max(1.0, float(self._image_size.height) * zoom_factor)
+        if center_margin is None:
+            center_margin = not self._is_fit
+        horizontal_margin = float(clip_size.width) if center_margin else 0.0
+        vertical_margin = float(clip_size.height) if center_margin else 0.0
+        document_width = max(float(clip_size.width), scaled_width + horizontal_margin)
+        document_height = max(float(clip_size.height), scaled_height + vertical_margin)
+        self._image_view.setFrameSize_(NSMakeSize(document_width, document_height))
+        self._display_rect = NSMakeRect(
+            (document_width - scaled_width) / 2.0,
+            (document_height - scaled_height) / 2.0,
+            scaled_width,
+            scaled_height,
+        )
+        self._image_view.set_display_rect(self._display_rect)
+
+    @objc.python_method
+    def _image_point_at_document_point(self, document_point):
+        zoom_factor = max(_ABSOLUTE_MIN_ZOOM, self._zoom_factor)
+        return NSMakePoint(
+            (float(document_point.x) - float(self._display_rect.origin.x)) / zoom_factor,
+            (float(document_point.y) - float(self._display_rect.origin.y)) / zoom_factor,
+        )
+
+    @objc.python_method
+    def _document_point_for_image_point(self, image_point):
+        return NSMakePoint(
+            float(self._display_rect.origin.x) + float(image_point.x) * self._zoom_factor,
+            float(self._display_rect.origin.y) + float(image_point.y) * self._zoom_factor,
+        )
+
+    @objc.python_method
+    def _center_image_point(self, image_point) -> None:
+        document_point = self._document_point_for_image_point(image_point)
+        clip_size = self._scroll_view.contentSize()
+        self._scroll_to_origin(
+            NSMakePoint(
+                float(document_point.x) - float(clip_size.width) / 2.0,
+                float(document_point.y) - float(clip_size.height) / 2.0,
+            )
+        )
+
+    @objc.python_method
+    def _scroll_to_origin(self, requested_origin) -> None:
+        clip_view = self._scroll_view.contentView()
+        clip_size = clip_view.bounds().size
+        document_size = self._image_view.bounds().size
+        maximum_x = max(0.0, float(document_size.width) - float(clip_size.width))
+        maximum_y = max(0.0, float(document_size.height) - float(clip_size.height))
+        origin = NSMakePoint(
+            max(0.0, min(maximum_x, float(requested_origin.x))),
+            max(0.0, min(maximum_y, float(requested_origin.y))),
+        )
+        clip_view.scrollToPoint_(origin)
+        self._scroll_view.reflectScrolledClipView_(clip_view)
 
     @objc.python_method
     def _display_raw_asset(self, source_path) -> None:
@@ -459,7 +618,7 @@ class PhotosMcpPhotoViewerController(NSWindowController):
             return
 
         self._image_load_generation += 1
-        self._image_view.setImage_(None)
+        self._set_photo_image(None)
         self._counter_label.setStringValue_(f"{self._index + 1} / {len(self._items)} · 고해상도 RAW 미리보기를 준비하는 중입니다")
         token = f"{self._raw_preview_generation}:{source_path}"
         self._raw_preview_executor.submit(self._render_raw_preview_worker, token, self._raw_preview_generation, str(source_path))
@@ -490,12 +649,15 @@ class PhotosMcpPhotoViewerController(NSWindowController):
     def _set_viewer_image_path(self, path) -> None:
         self._image_load_generation += 1
         generation = self._image_load_generation
-        self._image_view.setImageWithURL_(NSURL.fileURLWithPath_(str(path)))
+        image = NSImage.alloc().initWithContentsOfURL_(NSURL.fileURLWithPath_(str(path)))
+        self._set_photo_image(image)
+        if image is None:
+            self._counter_label.setStringValue_("사진을 불러올 수 없습니다")
+            return
         self._is_fit = True
         self._apply_fit_zoom()
-        # IKImageView may finish URL decoding after the first fit calculation.
-        # Reapply layout on subsequent run-loop turns instead of requiring a
-        # manual window resize before the image becomes visible.
+        # NSImage can decode lazily. Repaint on subsequent run-loop turns so a
+        # large RAW preview never needs a manual window resize to appear.
         for delay in (0.0, 0.12, 0.45):
             self.performSelector_withObject_afterDelay_(
                 "refreshImageAfterLoad:", str(generation), delay
@@ -504,11 +666,18 @@ class PhotosMcpPhotoViewerController(NSWindowController):
     def refreshImageAfterLoad_(self, generation) -> None:
         if int(generation) != self._image_load_generation:
             return
-        self._image_view.setNeedsLayout_(True)
         self._image_view.setNeedsDisplay_(True)
         if self._is_fit:
             self._apply_fit_zoom()
         self.window().contentView().setNeedsDisplay_(True)
+
+    @objc.python_method
+    def _set_photo_image(self, image) -> None:
+        self._image_view.set_photo_image(image)
+        self._image_size = self._image_view.image_size()
+        if image is None:
+            self._display_rect = NSMakeRect(0.0, 0.0, 0.0, 0.0)
+            self._image_view.setFrameSize_(self._scroll_view.contentSize())
 
     @objc.python_method
     def _button(self, parent: Any, title: str, action: str) -> Any:
