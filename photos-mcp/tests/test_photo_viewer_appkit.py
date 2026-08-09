@@ -96,6 +96,7 @@ def test_viewer_loads_source_and_navigates_current_filter(tmp_path) -> None:
 
     assert "1 / 2" in controller._counter_label.stringValue()
     assert "원본 화질" in controller._counter_label.stringValue()
+    assert controller._image_load_generation == 1
     assert controller._previous_button.isEnabled() is False
     assert controller._next_button.isEnabled() is True
     controller.nextPhoto_(None)

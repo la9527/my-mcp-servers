@@ -124,6 +124,7 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         )
         self._raw_preview_generation = 0
         self._pending_raw_previews: dict[str, tuple[int, str, str]] = {}
+        self._image_load_generation = 0
         window.setTitle_("사진 크게 보기")
         window.setMinSize_(NSMakeSize(720.0, 520.0))
         window.setCollectionBehavior_(NSWindowCollectionBehaviorFullScreenPrimary)
@@ -275,18 +276,17 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         asset = resolve_viewer_asset(item)
         self._raw_preview_generation += 1
         if asset is None:
+            self._image_load_generation += 1
             self._counter_label.setStringValue_("사진을 불러올 수 없습니다")
             self._image_view.setImage_(None)
         elif asset.requires_rendered_preview:
             self._display_raw_asset(asset.path)
         else:
-            self._image_view.setImageWithURL_(NSURL.fileURLWithPath_(str(asset.path)))
+            self._set_viewer_image_path(asset.path)
             self._counter_label.setStringValue_(
                 f"{self._index + 1} / {len(self._items)} · "
                 f"{'원본 화질' if asset.is_high_resolution else '미리보기 화질'}"
             )
-            self._is_fit = True
-            self._image_view.zoomImageToFit_(None)
         self._previous_button.setEnabled_(self._index > 0)
         self._next_button.setEnabled_(self._index + 1 < len(self._items))
         scene = str(item.get("error_message") or item.get("scene_description") or "분석 설명이 없습니다.")
@@ -309,6 +309,7 @@ class PhotosMcpPhotoViewerController(NSWindowController):
             self._counter_label.setStringValue_(f"{self._index + 1} / {len(self._items)} · 고해상도 RAW 미리보기")
             return
 
+        self._image_load_generation += 1
         self._image_view.setImage_(None)
         self._counter_label.setStringValue_(f"{self._index + 1} / {len(self._items)} · 고해상도 RAW 미리보기를 준비하는 중입니다")
         token = f"{self._raw_preview_generation}:{source_path}"
@@ -338,9 +339,27 @@ class PhotosMcpPhotoViewerController(NSWindowController):
 
     @objc.python_method
     def _set_viewer_image_path(self, path) -> None:
+        self._image_load_generation += 1
+        generation = self._image_load_generation
         self._image_view.setImageWithURL_(NSURL.fileURLWithPath_(str(path)))
         self._is_fit = True
         self._image_view.zoomImageToFit_(None)
+        # IKImageView may finish URL decoding after the first fit calculation.
+        # Reapply layout on subsequent run-loop turns instead of requiring a
+        # manual window resize before the image becomes visible.
+        for delay in (0.0, 0.12, 0.45):
+            self.performSelector_withObject_afterDelay_(
+                "refreshImageAfterLoad:", str(generation), delay
+            )
+
+    def refreshImageAfterLoad_(self, generation) -> None:
+        if int(generation) != self._image_load_generation:
+            return
+        self._image_view.setNeedsLayout_(True)
+        self._image_view.setNeedsDisplay_(True)
+        if self._is_fit:
+            self._image_view.zoomImageToFit_(None)
+        self.window().contentView().setNeedsDisplay_(True)
 
     @objc.python_method
     def _button(self, parent: Any, title: str, action: str) -> Any:
