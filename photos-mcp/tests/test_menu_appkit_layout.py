@@ -1168,7 +1168,7 @@ def test_local_photo_browser_stacks_content_controls_in_a_narrow_center_pane(tmp
     controller.shutdown()
 
 
-def test_local_photo_browser_moves_settings_to_top_without_a_focused_photo(tmp_path) -> None:
+def test_local_photo_browser_keeps_settings_fixed_below_scrollable_inspector(tmp_path) -> None:
     NSApplication.sharedApplication()
     root_path = tmp_path / "photos"
     root_path.mkdir()
@@ -1182,13 +1182,14 @@ def test_local_photo_browser_moves_settings_to_top_without_a_focused_photo(tmp_p
 
     controller._layout_inspector()
 
-    inspector_height = float(controller._inspector.bounds().size.height)
     card_top = float(controller._settings_card.frame().origin.y + controller._settings_card.frame().size.height)
-    assert card_top >= inspector_height - 64.0
+    assert float(controller._settings_card.frame().origin.y) == 38.0
+    assert float(controller._photo_scroll.frame().origin.y) >= card_top + 14.0
+    assert float(controller._selection_scroll.frame().origin.y) >= card_top + 14.0
     controller.shutdown()
 
 
-def test_local_photo_browser_reflows_inspector_when_a_photo_becomes_focused(tmp_path) -> None:
+def test_local_photo_browser_focus_populates_scrollable_photo_inspector_without_moving_settings(tmp_path) -> None:
     NSApplication.sharedApplication()
     root_path = tmp_path / "photos"
     root_path.mkdir()
@@ -1213,12 +1214,11 @@ def test_local_photo_browser_reflows_inspector_when_a_photo_becomes_focused(tmp_
     card_frame = controller._settings_card.frame()
     preview_frame = controller._inspector_image.frame()
     card_top = float(card_frame.origin.y + card_frame.size.height)
-    assert float(card_frame.origin.y) < empty_card_y
-    assert card_top + 12.0 <= float(controller._file_resolution.frame().origin.y)
-    assert float(controller._file_name.frame().origin.y + controller._file_name.frame().size.height) <= float(
-        preview_frame.origin.y
-    )
-    assert float(preview_frame.origin.y) >= card_top + 128.0
+    assert float(card_frame.origin.y) == empty_card_y == 38.0
+    assert float(controller._photo_scroll.frame().origin.y) >= card_top + 14.0
+    assert float(preview_frame.origin.y) == 0.0
+    assert float(controller._file_name.frame().origin.y) > float(preview_frame.size.height)
+    assert float(controller._photo_document.frame().size.height) >= float(controller._photo_scroll.contentSize().height)
     controller.shutdown()
 
 
@@ -1249,8 +1249,8 @@ def test_local_photo_browser_keeps_focused_metadata_above_settings_at_minimum_he
     controller._layout_inspector()
 
     card_top = float(controller._settings_card.frame().origin.y + controller._settings_card.frame().size.height)
-    resolution_bottom = float(controller._file_resolution.frame().origin.y)
-    assert resolution_bottom >= card_top + 12.0
+    assert float(controller._photo_scroll.frame().origin.y) >= card_top + 14.0
+    assert float(controller._photo_scroll.frame().size.height) >= 120.0
     assert controller._selected_count.superview() == controller._settings_card
     settings_title_right = float(controller._settings_title.frame().origin.x + controller._settings_title.frame().size.width)
     selected_count_left = float(controller._selected_count.frame().origin.x)
@@ -1276,7 +1276,64 @@ def test_local_photo_browser_hides_preview_without_a_focused_photo(tmp_path) -> 
     controller._update_inspector()
 
     assert controller._inspector_image.isHidden()
-    assert controller._inspector_empty.isHidden()
+    assert not controller._inspector_empty.isHidden()
+    assert str(controller._inspector_empty.stringValue()) == "사진을 클릭하면 상세 정보를 볼 수 있습니다."
+    controller.shutdown()
+
+
+def test_local_photo_browser_preserves_selection_across_folder_navigation(tmp_path) -> None:
+    NSApplication.sharedApplication()
+    first_folder = tmp_path / "first"
+    second_folder = tmp_path / "second"
+    first_folder.mkdir()
+    second_folder.mkdir()
+    first_path = first_folder / "first.jpg"
+    second_path = second_folder / "second.jpg"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+    first_photo = LocalPhoto(str(first_path.resolve()), first_path.name, first_path.stat().st_mtime, 5, 100, 100)
+    second_photo = LocalPhoto(str(second_path.resolve()), second_path.name, second_path.stat().st_mtime, 6, 100, 100)
+    controller = PhotosMcpLocalPhotoSelectionController.alloc().initWithMenuController_service_sourcePath_selectedPhotoIds_(
+        _menu_controller(_snapshot()), SimpleNamespace(), str(first_folder), ()
+    )
+    controller._photos = [first_photo]
+    controller._set_photo_checked(first_photo.path, True)
+
+    controller._set_current_folder(str(second_folder), add_history=True)
+    controller._photos = [second_photo]
+    controller._set_photo_checked(second_photo.path, True)
+
+    assert controller._selected_paths == {first_photo.path, second_photo.path}
+    assert set(controller._selected_photos) == controller._selected_paths
+    assert controller._selected_folder_count() == 2
+    assert "선택 목록 2" == str(controller._inspector_mode_control.labelForSegment_(1))
+    controller.shutdown()
+
+
+def test_local_photo_browser_clear_current_view_keeps_other_folder_selection(tmp_path) -> None:
+    NSApplication.sharedApplication()
+    first_folder = tmp_path / "first"
+    second_folder = tmp_path / "second"
+    first_folder.mkdir()
+    second_folder.mkdir()
+    first_path = first_folder / "first.jpg"
+    second_path = second_folder / "second.jpg"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+    first_photo = LocalPhoto(str(first_path.resolve()), first_path.name, 1.0, 5, 100, 100)
+    second_photo = LocalPhoto(str(second_path.resolve()), second_path.name, 2.0, 6, 100, 100)
+    controller = PhotosMcpLocalPhotoSelectionController.alloc().initWithMenuController_service_sourcePath_selectedPhotoIds_(
+        _menu_controller(_snapshot()), SimpleNamespace(), str(first_folder), ()
+    )
+    controller._photos = [first_photo]
+    controller._set_photo_checked(first_photo.path, True)
+    controller._photos = [second_photo]
+    controller._set_photo_checked(second_photo.path, True)
+
+    controller.clearSelection_(None)
+
+    assert controller._selected_paths == {first_photo.path}
+    assert set(controller._selected_photos) == {first_photo.path}
     controller.shutdown()
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -36,6 +37,8 @@ from AppKit import (
     NSOpenPanel,
     NSOutlineView,
     NSOutlineViewDisclosureButtonKey,
+    NSPasteboard,
+    NSPasteboardTypeString,
     NSPopUpButton,
     NSSearchField,
     NSSegmentedControl,
@@ -77,7 +80,9 @@ from photos_mcp.direct_classification import (
     ClassificationCommand,
     DirectClassificationService,
     LOCAL_IMAGE_EXTENSIONS,
+    common_local_source_path,
 )
+from photos_mcp.local_photo_metadata import LocalPhotoMetadata, extract_local_photo_metadata
 from photos_mcp.raw_image import RAW_IMAGE_EXTENSIONS
 from photos_mcp.ui_theme import accent_color, app_font, panel_background_color, subtle_border_color
 
@@ -170,6 +175,13 @@ class SinglePhotoKeyView(NSView):
         objc.super(SinglePhotoKeyView, self).keyDown_(event)
 
 
+class FlippedDocumentView(NSView):
+    """Lay out scroll document content from the visible top edge."""
+
+    def isFlipped(self) -> bool:
+        return True
+
+
 def _maximum_sidebar_width(
     total_width: float,
     divider_width: float,
@@ -205,6 +217,19 @@ class LocalPhoto:
     size_bytes: int
     pixel_width: int = 0
     pixel_height: int = 0
+
+
+def _local_photo_from_path(path: str) -> LocalPhoto | None:
+    source = Path(path).expanduser()
+    try:
+        resolved = source.resolve()
+        if not resolved.is_file() or resolved.suffix.lower() not in LOCAL_IMAGE_EXTENSIONS:
+            return None
+        stat = resolved.stat()
+    except (OSError, PermissionError):
+        return None
+    width, height = _image_dimensions(str(resolved))
+    return LocalPhoto(str(resolved), resolved.name, stat.st_mtime, stat.st_size, width, height)
 
 
 def _image_dimensions(path: str) -> tuple[int, int]:
@@ -417,6 +442,12 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         requested_root = Path(source_path).expanduser()
         self._current_folder = str(requested_root.resolve()) if requested_root.is_dir() else str(_default_root_path())
         self._selected_paths = {str(Path(path).expanduser().resolve()) for path in selected_photo_ids}
+        self._selected_photos = {
+            photo.path: photo
+            for path in self._selected_paths
+            if (photo := _local_photo_from_path(path)) is not None
+        }
+        self._selected_paths = set(self._selected_photos)
         self._focused_path = next(iter(self._selected_paths), "")
         self._photos: list[LocalPhoto] = []
         self._folder_children: dict[str, list[FolderNode]] = {}
@@ -427,7 +458,21 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._pending_folder_results: dict[str, list[FolderNode]] = {}
         self._pending_photo_results: tuple[int, str, list[LocalPhoto]] | None = None
         self._pending_thumbnail_results: dict[str, Any | None] = {}
+        self._pending_metadata_results: dict[str, tuple[int, LocalPhotoMetadata]] = {}
         self._photo_generation = 0
+        self._metadata_generation = 0
+        self._metadata_cache: OrderedDict[str, LocalPhotoMetadata] = OrderedDict()
+        self._metadata_current: LocalPhotoMetadata | None = None
+        self._metadata_requested_key = ""
+        self._metadata_inflight: set[str] = set()
+        self._metadata_section_expanded = {"file", "camera", "exposure"}
+        self._metadata_dynamic_views: list[Any] = []
+        self._metadata_layout_rows: list[tuple[str, Any]] = []
+        self._selection_dynamic_views: list[Any] = []
+        self._selection_layout_rows: list[tuple[str, Any]] = []
+        self._selection_image_views: dict[str, list[Any]] = {}
+        self._selection_expanded_folders: set[str] = set()
+        self._inspector_mode = "photo"
         self._density_index = _DEFAULT_DENSITY_INDEX
         self._view_mode = "grid"
         self._initial_split_installed = False
@@ -786,17 +831,47 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
     @objc.python_method
     def _build_inspector(self) -> None:
         self._inspector_title = self._label(self._inspector, "보고 있는 사진", 17.0, bold=True)
+        self._inspector_mode_control = NSSegmentedControl.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
+        self._inspector_mode_control.setSegmentCount_(2)
+        self._inspector_mode_control.setLabel_forSegment_("보고 있는 사진", 0)
+        self._inspector_mode_control.setLabel_forSegment_("선택 목록 0", 1)
+        self._inspector_mode_control.setSelectedSegment_(0)
+        self._inspector_mode_control.setSegmentStyle_(NSSegmentStyleRounded)
+        self._inspector_mode_control.setTarget_(self)
+        self._inspector_mode_control.setAction_("inspectorModeChanged:")
+        self._inspector_mode_control.setAccessibilityLabel_("인스펙터 보기")
+        self._inspector.addSubview_(self._inspector_mode_control)
+
+        self._photo_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
+        self._photo_scroll.setHasVerticalScroller_(True)
+        self._photo_scroll.setAutohidesScrollers_(True)
+        self._photo_scroll.setDrawsBackground_(False)
+        self._photo_document = FlippedDocumentView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
+        self._photo_scroll.setDocumentView_(self._photo_document)
+        self._inspector.addSubview_(self._photo_scroll)
         self._inspector_image = NSImageView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
         self._inspector_image.setImageScaling_(NSImageScaleProportionallyUpOrDown)
-        self._inspector.addSubview_(self._inspector_image)
-        self._inspector_empty = self._label(self._inspector, "사진을 클릭하면 크게 볼 수 있습니다.", 12.0, secondary=True)
+        self._photo_document.addSubview_(self._inspector_image)
+        self._inspector_empty = self._label(self._photo_document, "사진을 클릭하면 상세 정보를 볼 수 있습니다.", 12.0, secondary=True)
         self._inspector_empty.setAlignment_(1)
-        self._inspector.addSubview_(self._inspector_empty)
-        self._file_name = self._label(self._inspector, "", 13.0, bold=True)
+        self._file_name = self._label(self._photo_document, "", 13.0, bold=True)
         self._file_name.setMaximumNumberOfLines_(2)
-        self._file_date = self._label(self._inspector, "", 11.0, secondary=True)
-        self._file_size = self._label(self._inspector, "", 11.0, secondary=True)
-        self._file_resolution = self._label(self._inspector, "", 11.0, secondary=True)
+        self._file_date = self._label(self._photo_document, "", 11.0, secondary=True)
+        self._file_size = self._label(self._photo_document, "", 11.0, secondary=True)
+        self._file_resolution = self._label(self._photo_document, "", 11.0, secondary=True)
+        self._metadata_summary = self._label(self._photo_document, "", 11.5, bold=True)
+        self._metadata_status = self._label(self._photo_document, "", 10.5, secondary=True)
+        self._copy_metadata_button = self._button(self._photo_document, "정보 복사", "copyMetadata:")
+        self._copy_metadata_button.setHidden_(True)
+
+        self._selection_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
+        self._selection_scroll.setHasVerticalScroller_(True)
+        self._selection_scroll.setAutohidesScrollers_(True)
+        self._selection_scroll.setDrawsBackground_(False)
+        self._selection_document = FlippedDocumentView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
+        self._selection_scroll.setDocumentView_(self._selection_document)
+        self._selection_scroll.setHidden_(True)
+        self._inspector.addSubview_(self._selection_scroll)
         self._selected_count = self._label(self._inspector, "분류 대상 0장", 13.0, bold=True)
         self._selected_count.setTextColor_(accent_color())
         self._settings_card = self._card(self._inspector)
@@ -827,6 +902,7 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._run_button = self._button(self._settings_card, "사진을 선택하세요", "startClassification:", primary=True)
         self._run_button.setEnabled_(False)
         self._run_status = self._label(self._inspector, "원본 파일은 변경하지 않습니다.", 10.5, secondary=True)
+        self._rebuild_selection_document()
 
     @objc.python_method
     def _install_initial_split_positions(self) -> None:
@@ -925,9 +1001,9 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._single_counter.setFrame_(NSMakeRect(max(12.0, single_width - 126.0), 8.0, 114.0, 20.0))
         self._empty_label.setFrame_(NSMakeRect(24.0, (height / 2.0) - 10.0, max(1.0, width - 48.0), 20.0))
         self._empty_label.setAlignment_(1)
-        self._selection_label.setFrame_(NSMakeRect(20.0, 16.0, max(160.0, width - 260.0), 20.0))
-        self._select_all_button.setFrame_(NSMakeRect(max(240.0, width - 226.0), 11.0, 104.0, 32.0))
-        self._clear_button.setFrame_(NSMakeRect(max(348.0, width - 116.0), 11.0, 96.0, 32.0))
+        self._selection_label.setFrame_(NSMakeRect(20.0, 16.0, max(150.0, width - 328.0), 20.0))
+        self._select_all_button.setFrame_(NSMakeRect(max(176.0, width - 294.0), 11.0, 138.0, 32.0))
+        self._clear_button.setFrame_(NSMakeRect(max(320.0, width - 150.0), 11.0, 130.0, 32.0))
 
     @objc.python_method
     def _layout_inspector(self) -> None:
@@ -936,23 +1012,14 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         height = float(bounds.size.height)
         margin = 22.0
         self._inspector_title.setFrame_(NSMakeRect(margin, height - 46.0, max(1.0, width - margin * 2), 28.0))
+        self._inspector_mode_control.setFrame_(NSMakeRect(margin, height - 88.0, max(1.0, width - margin * 2), 30.0))
         card_y = 38.0
-        has_focused_photo = any(photo.path == self._focused_path for photo in self._photos)
-        if has_focused_photo:
-            card_height = max(236.0, min(270.0, height * 0.34))
-            preview_limit = height - card_y - card_height - 192.0
-            preview_height = min(max(150.0, height * 0.30), 300.0, max(120.0, preview_limit))
-        else:
-            card_height = 270.0
-            card_y = max(38.0, height - 64.0 - card_height)
-            preview_height = min(max(150.0, height * 0.30), 300.0)
-        preview_y = height - 64.0 - preview_height
-        self._inspector_image.setFrame_(NSMakeRect(margin, preview_y, max(1.0, width - margin * 2), preview_height))
-        self._inspector_empty.setFrame_(self._inspector_image.frame())
-        self._file_name.setFrame_(NSMakeRect(margin, preview_y - 48.0, max(1.0, width - margin * 2), 38.0))
-        self._file_date.setFrame_(NSMakeRect(margin, preview_y - 72.0, max(1.0, width - margin * 2), 18.0))
-        self._file_size.setFrame_(NSMakeRect(margin, preview_y - 94.0, max(1.0, width - margin * 2), 18.0))
-        self._file_resolution.setFrame_(NSMakeRect(margin, preview_y - 116.0, max(1.0, width - margin * 2), 18.0))
+        card_height = max(236.0, min(270.0, height * 0.34))
+        scroll_y = card_y + card_height + 14.0
+        scroll_height = max(120.0, height - scroll_y - 106.0)
+        scroll_frame = NSMakeRect(margin, scroll_y, max(1.0, width - margin * 2), scroll_height)
+        self._photo_scroll.setFrame_(scroll_frame)
+        self._selection_scroll.setFrame_(scroll_frame)
         self._settings_card.setFrame_(NSMakeRect(margin, card_y, max(1.0, width - margin * 2), card_height))
         card_width = float(self._settings_card.bounds().size.width)
         selected_count_x = max(120.0, card_width - 164.0)
@@ -966,6 +1033,285 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._limit.setFrame_(NSMakeRect(148.0, card_height - 170.0, max(1.0, card_width - 166.0), 30.0))
         self._run_button.setFrame_(NSMakeRect(18.0, 18.0, max(1.0, card_width - 36.0), 38.0))
         self._run_status.setFrame_(NSMakeRect(margin, 12.0, max(1.0, width - margin * 2), 20.0))
+        self._layout_photo_document()
+        self._layout_selection_document()
+
+    @objc.python_method
+    def _layout_photo_document(self) -> None:
+        width = max(1.0, float(self._photo_scroll.contentSize().width))
+        has_photo = bool(self._focused_photo())
+        y = 0.0
+        preview_height = min(260.0, max(150.0, width * 0.72))
+        self._inspector_image.setFrame_(NSMakeRect(0.0, y, width, preview_height))
+        self._inspector_empty.setFrame_(NSMakeRect(8.0, 24.0, max(1.0, width - 16.0), 40.0))
+        if not has_photo:
+            self._photo_document.setFrameSize_(NSMakeSize(width, max(100.0, float(self._photo_scroll.contentSize().height))))
+            return
+        y += preview_height + 14.0
+        self._file_name.setFrame_(NSMakeRect(0.0, y, width, 40.0))
+        y += 44.0
+        for view in (self._file_date, self._file_size, self._file_resolution):
+            view.setFrame_(NSMakeRect(0.0, y, width, 18.0))
+            y += 22.0
+        self._metadata_summary.setFrame_(NSMakeRect(0.0, y + 4.0, max(1.0, width - 90.0), 22.0))
+        self._copy_metadata_button.setFrame_(NSMakeRect(max(0.0, width - 82.0), y, 82.0, 28.0))
+        y += 38.0
+        self._metadata_status.setFrame_(NSMakeRect(0.0, y, width, 22.0))
+        if not self._metadata_status.isHidden():
+            y += 28.0
+        for kind, view in self._metadata_layout_rows:
+            if kind == "section":
+                view.setFrame_(NSMakeRect(0.0, y, width, 30.0))
+                y += 34.0
+            else:
+                view.setFrame_(NSMakeRect(12.0, y, max(1.0, width - 12.0), 34.0))
+                y += 38.0
+        document_height = max(y + 12.0, float(self._photo_scroll.contentSize().height))
+        self._photo_document.setFrameSize_(NSMakeSize(width, document_height))
+
+    @objc.python_method
+    def _layout_selection_document(self) -> None:
+        width = max(1.0, float(self._selection_scroll.contentSize().width))
+        y = 0.0
+        for kind, view in self._selection_layout_rows:
+            height = 42.0 if kind == "summary" else (34.0 if kind in {"header", "more", "empty"} else 58.0)
+            view.setFrame_(NSMakeRect(0.0, y, width, height))
+            if kind == "summary":
+                subviews = list(view.subviews())
+                if len(subviews) >= 2:
+                    subviews[0].setFrame_(NSMakeRect(0.0, 8.0, max(1.0, width - 92.0), 24.0))
+                    subviews[1].setFrame_(NSMakeRect(max(0.0, width - 86.0), 4.0, 86.0, 32.0))
+            if kind == "header":
+                subviews = list(view.subviews())
+                if len(subviews) >= 2:
+                    subviews[0].setFrame_(NSMakeRect(0.0, 0.0, max(1.0, width - 88.0), 34.0))
+                    subviews[1].setFrame_(NSMakeRect(max(0.0, width - 82.0), 1.0, 82.0, 32.0))
+            if kind == "photo":
+                subviews = list(view.subviews())
+                if len(subviews) >= 3:
+                    subviews[0].setFrame_(NSMakeRect(0.0, 4.0, 64.0, 50.0))
+                    subviews[1].setFrame_(NSMakeRect(74.0, 8.0, max(1.0, width - 112.0), 40.0))
+                    subviews[2].setFrame_(NSMakeRect(max(0.0, width - 32.0), 12.0, 32.0, 32.0))
+            y += height + 6.0
+        self._selection_document.setFrameSize_(
+            NSMakeSize(width, max(y, float(self._selection_scroll.contentSize().height)))
+        )
+
+    @objc.python_method
+    def _focused_photo(self) -> LocalPhoto | None:
+        return next((item for item in self._photos if item.path == self._focused_path), None)
+
+    def inspectorModeChanged_(self, sender) -> None:
+        self._inspector_mode = "selection" if int(sender.selectedSegment()) == 1 else "photo"
+        self._photo_scroll.setHidden_(self._inspector_mode != "photo")
+        self._selection_scroll.setHidden_(self._inspector_mode != "selection")
+        self._inspector_title.setStringValue_("선택한 사진" if self._inspector_mode == "selection" else "보고 있는 사진")
+        if self._inspector_mode == "selection":
+            self._rebuild_selection_document()
+        self._layout_inspector()
+
+    @objc.python_method
+    def _clear_dynamic_views(self, attribute: str) -> None:
+        for view in getattr(self, attribute, []):
+            view.removeFromSuperview()
+        setattr(self, attribute, [])
+
+    @objc.python_method
+    def _rebuild_metadata_document(self) -> None:
+        self._clear_dynamic_views("_metadata_dynamic_views")
+        self._metadata_layout_rows = []
+        metadata = self._metadata_current
+        if metadata is None:
+            self._layout_photo_document()
+            return
+        for section in metadata.sections:
+            expanded = section.key in self._metadata_section_expanded
+            header = self._button(
+                self._photo_document,
+                f"{'▾' if expanded else '▸'}  {section.title}  {len(section.fields)}",
+                "metadataSectionToggled:",
+                identifier=section.key,
+            )
+            header.setAlignment_(0)
+            self._metadata_dynamic_views.append(header)
+            self._metadata_layout_rows.append(("section", header))
+            if not expanded:
+                continue
+            for field in section.fields:
+                value = self._label(self._photo_document, f"{field.label}   {field.value}", 10.5, secondary=True)
+                value.setMaximumNumberOfLines_(2)
+                value.setToolTip_(f"{field.label}: {field.value}")
+                self._metadata_dynamic_views.append(value)
+                self._metadata_layout_rows.append(("field", value))
+        self._layout_photo_document()
+
+    def metadataSectionToggled_(self, sender) -> None:
+        key = str(sender.identifier() or "")
+        if key in self._metadata_section_expanded:
+            self._metadata_section_expanded.remove(key)
+        else:
+            self._metadata_section_expanded.add(key)
+        self._rebuild_metadata_document()
+
+    def copyMetadata_(self, _sender) -> None:
+        if self._metadata_current is None:
+            return
+        pasteboard = NSPasteboard.generalPasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString_forType_(
+            self._metadata_current.clipboard_text(include_sensitive=False),
+            NSPasteboardTypeString,
+        )
+        self._metadata_status.setStringValue_("경로·위치·일련번호를 제외한 정보를 복사했습니다.")
+        self._metadata_status.setHidden_(False)
+        self._layout_photo_document()
+
+    @objc.python_method
+    def _request_photo_metadata(self, photo: LocalPhoto) -> None:
+        key = f"{photo.path}:{int(photo.modified_at)}:{photo.size_bytes}"
+        if key == self._metadata_requested_key:
+            return
+        self._metadata_requested_key = key
+        self._metadata_generation += 1
+        generation = self._metadata_generation
+        cached = self._metadata_cache.get(key)
+        if cached is not None:
+            self._metadata_cache.move_to_end(key)
+            self._apply_photo_metadata(cached)
+            return
+        self._metadata_current = None
+        self._metadata_summary.setStringValue_("")
+        self._metadata_status.setStringValue_("카메라와 렌즈 정보를 불러오는 중입니다.")
+        self._metadata_status.setHidden_(False)
+        self._copy_metadata_button.setHidden_(True)
+        self._rebuild_metadata_document()
+        if key in self._metadata_inflight:
+            return
+        self._metadata_inflight.add(key)
+        self._thumbnail_executor.submit(self._metadata_worker, key, photo.path, generation)
+
+    @objc.python_method
+    def _metadata_worker(self, key: str, path: str, generation: int) -> None:
+        self._pending_metadata_results[key] = (generation, extract_local_photo_metadata(path))
+        self.performSelectorOnMainThread_withObject_waitUntilDone_("metadataReady:", key, False)
+
+    def metadataReady_(self, payload) -> None:
+        key = str(payload)
+        self._metadata_inflight.discard(key)
+        result = self._pending_metadata_results.pop(key, None)
+        if result is None:
+            return
+        generation, metadata = result
+        self._metadata_cache[key] = metadata
+        self._metadata_cache.move_to_end(key)
+        while len(self._metadata_cache) > 64:
+            self._metadata_cache.popitem(last=False)
+        if generation != self._metadata_generation or metadata.path != self._focused_path:
+            return
+        self._apply_photo_metadata(metadata)
+
+    @objc.python_method
+    def _apply_photo_metadata(self, metadata: LocalPhotoMetadata) -> None:
+        self._metadata_current = metadata
+        self._metadata_summary.setStringValue_(metadata.summary or "촬영 정보 없음")
+        self._metadata_status.setStringValue_(metadata.error)
+        self._metadata_status.setHidden_(not bool(metadata.error))
+        self._copy_metadata_button.setHidden_(not bool(metadata.sections))
+        self._rebuild_metadata_document()
+
+    @objc.python_method
+    def _selected_folder_count(self) -> int:
+        return len({str(Path(path).parent) for path in self._selected_paths})
+
+    @objc.python_method
+    def _rebuild_selection_document(self) -> None:
+        if not hasattr(self, "_selection_document"):
+            return
+        self._clear_dynamic_views("_selection_dynamic_views")
+        self._selection_layout_rows = []
+        self._selection_image_views = {}
+        groups: dict[str, list[LocalPhoto]] = {}
+        for photo in self._selected_photos.values():
+            groups.setdefault(str(Path(photo.path).parent), []).append(photo)
+        if not groups:
+            empty = self._label(self._selection_document, "선택한 사진이 없습니다.", 12.0, secondary=True)
+            empty.setAlignment_(1)
+            self._selection_dynamic_views.append(empty)
+            self._selection_layout_rows.append(("empty", empty))
+            self._layout_selection_document()
+            return
+        summary = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
+        summary_label = self._label(
+            summary,
+            f"전체 {len(self._selected_paths)}장 · {len(groups)}개 폴더",
+            12.0,
+            bold=True,
+        )
+        clear_all = self._button(summary, "전체 해제", "clearAllSelection:")
+        self._selection_document.addSubview_(summary)
+        self._selection_dynamic_views.append(summary)
+        self._selection_layout_rows.append(("summary", summary))
+        for folder in sorted(groups, key=str.casefold):
+            photos = sorted(groups[folder], key=lambda item: item.name.casefold())
+            if not self._selection_expanded_folders:
+                self._selection_expanded_folders.add(folder)
+            expanded = folder in self._selection_expanded_folders
+            header = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
+            toggle = self._button(
+                header,
+                f"{'▾' if expanded else '▸'}  {Path(folder).name or folder} · {len(photos)}장",
+                "toggleSelectionGroup:",
+                identifier=folder,
+            )
+            toggle.setAlignment_(0)
+            self._button(header, "폴더 보기", "showSelectionFolder:", identifier=folder)
+            self._selection_document.addSubview_(header)
+            self._selection_dynamic_views.append(header)
+            self._selection_layout_rows.append(("header", header))
+            if not expanded:
+                continue
+            for photo in photos[:60]:
+                row = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
+                image = NSImageView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
+                image.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+                image.setImage_(self.thumbnail_for(photo, 160))
+                row.addSubview_(image)
+                modified = datetime.fromtimestamp(photo.modified_at).strftime("%Y. %m. %d. %H:%M")
+                label = self._label(row, f"{photo.name}\n{modified}", 10.5)
+                label.setMaximumNumberOfLines_(2)
+                remove = self._button(row, "×", "removeSelectedPhoto:", identifier=photo.path, accessibility_label=f"{photo.name} 선택 해제")
+                self._selection_document.addSubview_(row)
+                self._selection_image_views.setdefault(photo.path, []).append(image)
+                self._selection_dynamic_views.append(row)
+                self._selection_layout_rows.append(("photo", row))
+            if len(photos) > 60:
+                more = self._label(self._selection_document, f"이 폴더에 {len(photos) - 60}장 더 선택되어 있습니다.", 10.5, secondary=True)
+                self._selection_dynamic_views.append(more)
+                self._selection_layout_rows.append(("more", more))
+        self._layout_selection_document()
+
+    def toggleSelectionGroup_(self, sender) -> None:
+        folder = str(sender.identifier() or "")
+        if folder in self._selection_expanded_folders:
+            self._selection_expanded_folders.remove(folder)
+        else:
+            self._selection_expanded_folders.add(folder)
+        self._rebuild_selection_document()
+
+    def showSelectionFolder_(self, sender) -> None:
+        folder = str(sender.identifier() or "")
+        if not folder:
+            return
+        self._set_current_folder(folder, add_history=True)
+
+    def removeSelectedPhoto_(self, sender) -> None:
+        self._set_photo_checked(str(sender.identifier() or ""), False, allow_external=True)
+
+    def clearAllSelection_(self, _sender) -> None:
+        self._selected_paths.clear()
+        self._selected_photos.clear()
+        self._refresh_visible_checkboxes()
+        self._sync_collection_selection()
 
     @objc.python_method
     def _update_collection_layout(self) -> None:
@@ -1182,7 +1528,7 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._sync_collection_selection()
 
     def scopeChanged_(self, _sender) -> None:
-        self._load_current_folder(clear_selection=True)
+        self._load_current_folder(clear_selection=False)
 
     def sortChanged_(self, _sender) -> None:
         self._sort_photos()
@@ -1202,12 +1548,18 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._update_collection_layout()
 
     def selectAllPhotos_(self, _sender) -> None:
-        self._selected_paths.update(photo.path for photo in self._visible_photos())
+        for photo in self._visible_photos():
+            self._selected_paths.add(photo.path)
+            self._selected_photos[photo.path] = photo
+            self._selection_expanded_folders.add(str(Path(photo.path).parent))
         self._refresh_visible_checkboxes()
         self._sync_collection_selection()
 
     def clearSelection_(self, _sender) -> None:
-        self._selected_paths.clear()
+        visible_paths = {photo.path for photo in self._visible_photos()}
+        self._selected_paths.difference_update(visible_paths)
+        for path in visible_paths:
+            self._selected_photos.pop(path, None)
         self._refresh_visible_checkboxes()
         self._sync_collection_selection()
 
@@ -1216,13 +1568,18 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._set_photo_checked(path, sender.state() == NSControlStateValueOn)
 
     @objc.python_method
-    def _set_photo_checked(self, path: str, checked: bool) -> None:
-        if not path or path not in {photo.path for photo in self._photos}:
+    def _set_photo_checked(self, path: str, checked: bool, *, allow_external: bool = False) -> None:
+        photo = next((item for item in self._photos if item.path == path), None)
+        if not path or (photo is None and not allow_external):
             return
         if checked:
             self._selected_paths.add(path)
+            if photo is not None:
+                self._selected_photos[path] = photo
+                self._selection_expanded_folders.add(str(Path(path).parent))
         else:
             self._selected_paths.discard(path)
+            self._selected_photos.pop(path, None)
         self._refresh_visible_checkboxes()
         self._sync_collection_selection()
 
@@ -1237,15 +1594,15 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         profile = {"일반": "general", "인물": "person", "풍경": "landscape"}.get(
             str(self._profile.titleOfSelectedItem() or "일반"), "general"
         )
-        command = ClassificationCommand(
-            source="local",
-            source_path=self._current_folder,
-            selected_photo_ids=tuple(sorted(self._selected_paths)),
-            mode="classify" if self._mode.selectedSegment() == 0 else "select_best",
-            selection_profile=profile,
-            limit=limit,
-        )
         try:
+            command = ClassificationCommand(
+                source="local",
+                source_path=common_local_source_path(tuple(sorted(self._selected_paths))),
+                selected_photo_ids=tuple(sorted(self._selected_paths)),
+                mode="classify" if self._mode.selectedSegment() == 0 else "select_best",
+                selection_profile=profile,
+                limit=limit,
+            )
             command.validate()
         except Exception as exc:
             self._run_status.setStringValue_(str(exc))
@@ -1292,7 +1649,7 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
             self._history_index = len(self._history) - 1
         self._update_history_controls()
         self._sync_outline_selection()
-        self._load_current_folder(clear_selection=True)
+        self._load_current_folder(clear_selection=False)
 
     @objc.python_method
     def _sync_outline_selection(self) -> None:
@@ -1315,7 +1672,6 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         generation = self._photo_generation
         folder = self._current_folder
         if clear_selection:
-            self._selected_paths.clear()
             self._focused_path = ""
         self._folder_title.setStringValue_(f"{Path(folder).name or folder} · 사진 불러오는 중")
         self._empty_label.setStringValue_("사진 목록을 불러오는 중입니다.")
@@ -1356,7 +1712,9 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         if not self._visible_photos():
             self._empty_label.setStringValue_("이 폴더에서 지원되는 사진을 찾지 못했습니다.")
         valid_paths = {photo.path for photo in photos}
-        self._selected_paths.intersection_update(valid_paths)
+        for photo in photos:
+            if photo.path in self._selected_paths:
+                self._selected_photos[photo.path] = photo
         if self._focused_path not in valid_paths:
             self._focused_path = photos[0].path if photos else ""
         self._restore_focus_selection()
@@ -1383,11 +1741,17 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
     def _sync_collection_selection(self) -> None:
         visible = self._visible_photos()
         selected_count = len(self._selected_paths)
+        visible_selected_count = sum(photo.path in self._selected_paths for photo in visible)
+        folder_count = self._selected_folder_count()
         query_active = bool(str(self._search_field.stringValue() or "").strip())
         prefix = "검색 결과" if query_active else "사진"
-        self._selection_label.setStringValue_(f"{prefix} {len(visible)}장 · 분류 대상 {selected_count}장")
-        self._select_all_button.setTitle_("검색 결과 전체 선택" if query_active else "전체 선택")
+        self._selection_label.setStringValue_(
+            f"{prefix} {len(visible)}장 · 현재 보기 선택 {visible_selected_count}장 · 전체 선택 {selected_count}장 / {folder_count}개 폴더"
+        )
+        self._select_all_button.setTitle_("검색 결과 전체 선택" if query_active else "현재 보기 전체 선택")
+        self._clear_button.setTitle_("검색 결과 선택 해제" if query_active else "현재 보기 선택 해제")
         self._selected_count.setStringValue_(f"분류 대상 {selected_count}장")
+        self._inspector_mode_control.setLabel_forSegment_(f"선택 목록 {selected_count}", 1)
         limit = self._selection_limit()
         within_limit = selected_count <= limit
         can_run = bool(selected_count) and within_limit and not self._thread_alive(self._run_worker)
@@ -1397,7 +1761,7 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._run_button.setAccessibilityLabel_(run_title)
         self._run_button.setToolTip_(run_title)
         self._select_all_button.setEnabled_(bool(visible))
-        self._clear_button.setEnabled_(bool(selected_count))
+        self._clear_button.setEnabled_(bool(visible_selected_count))
         if selected_count > limit:
             over = selected_count - limit
             self._run_status.setStringValue_(
@@ -1405,6 +1769,7 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
             )
         elif not self._thread_alive(self._run_worker):
             self._run_status.setStringValue_("원본 파일은 변경하지 않습니다.")
+        self._rebuild_selection_document()
         self._update_inspector()
         self._sync_view_mode()
 
@@ -1476,15 +1841,23 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
 
     @objc.python_method
     def _update_inspector(self) -> None:
-        photo = next((item for item in self._photos if item.path == self._focused_path), None)
+        photo = self._focused_photo()
         if photo is None:
+            self._metadata_generation += 1
+            self._metadata_requested_key = ""
+            self._metadata_current = None
             self._inspector_image.setImage_(None)
             self._inspector_image.setHidden_(True)
-            self._inspector_empty.setHidden_(True)
+            self._inspector_empty.setHidden_(False)
             self._file_name.setStringValue_("")
             self._file_date.setStringValue_("")
             self._file_size.setStringValue_("")
             self._file_resolution.setStringValue_("")
+            self._metadata_summary.setStringValue_("")
+            self._metadata_status.setStringValue_("")
+            self._metadata_status.setHidden_(True)
+            self._copy_metadata_button.setHidden_(True)
+            self._rebuild_metadata_document()
             self._layout_inspector()
             return
         self._inspector_image.setHidden_(False)
@@ -1496,6 +1869,7 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._file_resolution.setStringValue_(resolution)
         self._inspector_image.setImage_(self.thumbnail_for(photo, 900))
         self._layout_inspector()
+        self._request_photo_metadata(photo)
 
     @objc.python_method
     def _ensure_folder_children(self, node: FolderNode) -> None:
@@ -1561,6 +1935,11 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
             self._inspector_image.setImage_(image)
         if focused is not None and _thumbnail_cache_key(focused, 1600) == key:
             self._single_image.setImage_(image)
+        for path, image_views in self._selection_image_views.items():
+            selected = self._selected_photos.get(path)
+            if selected is not None and _thumbnail_cache_key(selected, 160) == key:
+                for image_view in image_views:
+                    image_view.setImage_(image)
 
     @objc.python_method
     def _run_event_loop(self) -> None:

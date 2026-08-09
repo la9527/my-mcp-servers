@@ -5,6 +5,7 @@ import pytest
 from photos_mcp.direct_classification import (
     ClassificationCommand,
     ClassificationValidationError,
+    common_local_source_path,
     DirectClassificationService,
 )
 
@@ -210,6 +211,32 @@ async def test_local_selection_is_exactly_preserved_for_shared_job(tmp_path) -> 
     assert calls[0]["options"]["source_path"] == str(root)
     assert calls[0]["options"]["selected_photo_ids"] == [str(selected)]
     assert str(unselected) not in calls[0]["options"]["selected_photo_ids"]
+
+
+def test_common_local_source_path_uses_narrowest_parent_for_multiple_folders(tmp_path) -> None:
+    trip = tmp_path / "trip"
+    day_one = trip / "day-one"
+    day_two = trip / "day-two"
+    day_one.mkdir(parents=True)
+    day_two.mkdir()
+    first = day_one / "first.jpg"
+    second = day_two / "second.jpg"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+
+    source_path = common_local_source_path((str(first), str(second)))
+
+    assert source_path == str(trip.resolve())
+    assert ClassificationCommand(
+        source="local",
+        source_path=source_path,
+        selected_photo_ids=(str(first), str(second)),
+    ).validate()
+
+
+def test_common_local_source_path_rejects_empty_selection() -> None:
+    with pytest.raises(ClassificationValidationError, match="선택"):
+        common_local_source_path(())
 
 
 def test_local_selection_rejects_outside_root_and_limit(tmp_path) -> None:

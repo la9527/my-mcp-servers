@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
@@ -35,6 +36,21 @@ LOCAL_IMAGE_EXTENSIONS = {
 
 class ClassificationValidationError(ValueError):
     """A user-correctable direct classification input error."""
+
+
+def common_local_source_path(selected_photo_ids: tuple[str, ...] | list[str]) -> str:
+    """Return the narrowest directory containing an explicit local selection."""
+
+    parents = [str(Path(path).expanduser().resolve().parent) for path in selected_photo_ids if str(path).strip()]
+    if not parents:
+        raise ClassificationValidationError("분류할 로컬 사진을 선택해 주세요.")
+    try:
+        common = Path(os.path.commonpath(parents)).resolve()
+    except ValueError as exc:
+        raise ClassificationValidationError("선택한 사진의 공통 로컬 경로를 계산할 수 없습니다.") from exc
+    if not common.is_dir():
+        raise ClassificationValidationError("선택한 사진의 공통 로컬 폴더를 찾을 수 없습니다.")
+    return str(common)
 
 
 @dataclass(frozen=True)
