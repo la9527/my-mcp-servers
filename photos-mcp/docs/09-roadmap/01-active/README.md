@@ -10,6 +10,10 @@
 
 - [사진 뷰어 직접 조작 UX](02-photo-viewer-direct-manipulation-2026-08-09.md): 더블클릭·smart zoom의 기준점 확대, 확대 사진 drag 이동, 공통 확대·축소와 비동기 로드 보호에 대한 구현 승인 대기 계획
 
+## 코드 구조
+
+- [Photos MCP 코드베이스 리팩터링](03-codebase-refactoring-2026-08-09.md): 현행 구조 계측, Google Photos Picker·GCS 확장 경계, 목표 package tree, 단계별 이동 순서, 호환 계층, 성능·메모리 기준과 rollback 계획
+
 ## 인물 확인과 개인화
 
 vendor 계층에는 얼굴 crop, embedding, 수동 label 저장 기능이 있다. 메인 앱에서 사용자가 얼굴을 확인하고 이름을 지정하며 잘못된 분류를 수정하는 완결된 흐름은 별도 설계와 개인정보 검증이 필요하다.

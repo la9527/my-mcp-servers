@@ -12,7 +12,7 @@
 | AppKit UI | 홈, 분류, 작업, 환경, 결과, 로컬 브라우저 | `*_appkit.py`, `menu_app.py` |
 | HTTP/MCP | 4개 public tool과 health route | `server.py`, `daemon.py` |
 | Facade | action 검증, orchestration, 응답 정규화 | `facade/` |
-| Photo source port | Apple·local·Google·GCS 입력 정규화 | `photo_source_port.py`, `vendor/photo-source/` |
+| Photo source port | Apple·local·GCS 입력 정규화. 기존 Google 구현은 Picker API 전환 전 비지원 | `photo_source_port.py`, `vendor/photo-source/` |
 | Ranker | 품질·장면·얼굴·중복·선별·내보내기 | `vendor/photo-ranker/` |
 | Runtime services | VLM 선택, Apple Photos runtime, preflight | `vision_runtime.py`, `apple_photos_runtime.py`, `preflight.py` |
 | Persistence | 작업, 이벤트, 승인, 영수증, 자산 상태 | `run_repository.py`, `vendor/photo-ranker/db.py` |

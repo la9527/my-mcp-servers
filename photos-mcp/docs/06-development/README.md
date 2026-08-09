@@ -22,7 +22,7 @@ photos-mcp/
 | 쓰기 승인 | `mutation_approval.py`, `mutation_plan_service.py` |
 | 앱 상태·작업 기록 | `state.py`, `run_repository.py`, `job_state.py` |
 | 메인 AppKit UI | `main_window_appkit.py` |
-| 로컬 폴더 브라우저 | `local_photo_browser_appkit.py` |
+| 로컬 폴더 브라우저 | `local_file_selection_appkit.py` |
 | 결과 갤러리·뷰어 | `result_gallery_appkit.py`, `photo_viewer_appkit.py` |
 | Apple 사진 접근 | `apple_photos_runtime.py`, vendor photo-source |
 | 분석 알고리즘 | vendor photo-ranker |
