@@ -20,3 +20,4 @@ YYYY-MM-DD-<검증-대상>.md
 - [2026-08-09 코드베이스 리팩터링 검증](06-codebase-refactoring-2026-08-09.md)
 - [2026-08-10 리팩터링 실환경 회귀 검증](07-refactor-real-environment-regression-2026-08-10.md)
 - [2026-08-10 추천 품질 사람 검토 UI 검증](08-recommendation-quality-review-ui-2026-08-10.md)
+- [2026-08-10 추천 품질 사람 기준선 및 shadow 점수 검증](09-recommendation-shadow-score-2026-08-10.md)

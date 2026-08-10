@@ -50,6 +50,6 @@ PYTHONPATH=src .venv/bin/python scripts/validate_docs.py
 | `photo-source`·`photo-ranker-vision` vendor smoke | 통과 |
 | production 앱 설치와 재시작 | 통과 |
 
-## 다음 판정
+## 후속 판정
 
-기능 구현은 완료했지만 추천 품질 교정은 아직 시작하지 않는다. 사용자가 최소 50개 장면을 직접 검토한 뒤 생성되는 집계가 현재 기준선이 된다. 이후 동일 라벨을 고정한 상태에서 얼굴 품질, 선명도, 표정과 중복 억제 신호를 shadow score로 비교한다.
+사용자가 116개 장면 검토를 완료해 최소 조건을 충족했다. 기준선과 shadow 비교 결과는 [추천 품질 사람 기준선 및 shadow 점수 검증](09-recommendation-shadow-score-2026-08-10.md)에 기록했다. 현재 점수 필드의 재가중치는 Top-1을 개선하지 못해 운영 순위를 유지한다.
