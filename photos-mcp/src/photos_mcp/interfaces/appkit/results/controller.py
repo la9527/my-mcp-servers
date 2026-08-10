@@ -66,6 +66,9 @@ from photos_mcp.interfaces.appkit.results.collection_item import (
     status_color as _status_color,
 )
 from photos_mcp.interfaces.appkit.results.photo_viewer import PhotosMcpPhotoViewerController
+from photos_mcp.interfaces.appkit.recommendation_review import (
+    PhotosMcpRecommendationReviewController,
+)
 from photos_mcp.application.export_service import (
     execute_selected_export,
     prepare_retry_originals,
@@ -126,6 +129,7 @@ class PhotosMcpResultsController(NSWindowController):
         self._density_index = initial_density_index(stored_density)
         self._computed_columns = 3
         self._viewer_controller = PhotosMcpPhotoViewerController.alloc().init()
+        self._recommendation_review_controller = None
         self._selection_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="photos-mcp-review-selection",
@@ -262,6 +266,21 @@ class PhotosMcpResultsController(NSWindowController):
             alert.setAlertStyle_(NSAlertStyleWarning)
             alert.addButtonWithTitle_("확인")
             alert.runModal()
+
+    def openRecommendationReview_(self, _sender) -> None:
+        try:
+            payload = {
+                "job_id": str(self._payload.get("job_id") or ""),
+                "items": [dict(item) for item in self._items],
+            }
+            self._recommendation_review_controller = (
+                PhotosMcpRecommendationReviewController.alloc().initWithResultPayload_(payload)
+            )
+            self._recommendation_review_controller.window().center()
+            self._recommendation_review_controller.showWindow_(None)
+            self._recommendation_review_controller.window().makeKeyAndOrderFront_(None)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            self._show_alert("추천 품질 검토를 열 수 없습니다", str(exc))
 
     def toggleItemSelection_(self, sender) -> None:
         if self._export_in_progress:
@@ -451,6 +470,11 @@ class PhotosMcpResultsController(NSWindowController):
         self._inspector_event = self._label(self._inspector_card, "", 9.5, secondary=True)
 
         self._finder_button = self._button(root, "Finder에서 보기", "revealSelected:")
+        self._recommendation_review_button = self._button(
+            root,
+            "추천 품질 검토",
+            "openRecommendationReview:",
+        )
         self._json_export_button = self._button(root, "결과 JSON", "exportResults:")
         self._export_button = self._button(root, "선택한 사진 내보내기", "exportSelected:", primary=True)
         self._close_button = self._button(root, "닫기", "closeWindow:", primary=True)
@@ -512,6 +536,9 @@ class PhotosMcpResultsController(NSWindowController):
             self._selection_label.setFrame_(NSMakeRect(margin + 166.0, footer_y + 7.0, 100.0, 20.0))
             self._select_all_button.setFrame_(NSMakeRect(margin + 270.0, footer_y, 86.0, 34.0))
             self._clear_all_button.setFrame_(NSMakeRect(margin + 362.0, footer_y, 86.0, 34.0))
+            self._recommendation_review_button.setFrame_(
+                NSMakeRect(margin + 460.0, footer_y, 150.0, 34.0)
+            )
             self._json_export_button.setFrame_(NSMakeRect(width - margin - 414.0, footer_y, 96.0, 34.0))
             self._export_button.setFrame_(NSMakeRect(width - margin - 308.0, footer_y, 198.0, 34.0))
             self._close_button.setFrame_(NSMakeRect(width - margin - 100.0, footer_y, 100.0, 34.0))
@@ -679,6 +706,10 @@ class PhotosMcpResultsController(NSWindowController):
             self._clear_all_button.setEnabled_(not self._export_in_progress)
         if hasattr(self, "_collection_view"):
             self._collection_view.reloadData()
+        if hasattr(self, "_recommendation_review_button"):
+            self._recommendation_review_button.setEnabled_(
+                any(int(item.get("scene_cluster_size") or 1) > 1 for item in self._items)
+            )
 
     @objc.python_method
     def _set_all_selection(self, selected: bool) -> None:
