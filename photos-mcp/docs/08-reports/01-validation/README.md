@@ -21,3 +21,4 @@ YYYY-MM-DD-<검증-대상>.md
 - [2026-08-10 리팩터링 실환경 회귀 검증](07-refactor-real-environment-regression-2026-08-10.md)
 - [2026-08-10 추천 품질 사람 검토 UI 검증](08-recommendation-quality-review-ui-2026-08-10.md)
 - [2026-08-10 추천 품질 사람 기준선 및 shadow 점수 검증](09-recommendation-shadow-score-2026-08-10.md)
+- [2026-08-10 두 번째 추천 시각적 다양성 shadow 검증](10-recommendation-second-diversity-shadow-2026-08-10.md)
