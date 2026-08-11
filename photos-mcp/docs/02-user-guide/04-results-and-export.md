@@ -44,6 +44,29 @@
 - 개별 checkbox
 - 필터 상태와 독립적인 전체 선택 집합
 
+## 인물 구성 검토와 보정
+
+같은 배경이지만 주요 인물이 달라지는 연속 사진을 더 정확하게 분리하려면 결과 갤러리 하단의 `인물 구성 검토`를 사용한다. 이 검토는 기존 추천 결과와 사진 파일을 바꾸지 않고, 개인 전용 검토 큐에만 라벨을 저장한다.
+
+1. 완료된 작업의 `결과 보기`를 열고 `인물 구성 검토`를 누른다.
+2. 장면의 사진을 큰 화면으로 확인한다.
+3. `주요 인물이 모두 같음`, `주요 인물 구성이 다름`, `배경 행인만 다름`, `얼굴 검출이 어려움`, `판단 보류` 중 하나를 고른다.
+4. `Enter` 또는 `인물 구성 저장하고 다음`으로 다음 장면으로 이동한다.
+5. 같은 주요 인물과 다른 주요 인물을 각각 30장면 이상 실제 사진 기준으로 표시한 뒤 보정 보고서를 다시 실행한다.
+
+사람의 이름·관계·식별 정보는 입력하지 않는다. 사진 ID, 경로, 얼굴 위치와 embedding은 개인 검토 큐 및 개인 계측 캐시에만 남고, Git에 기록하는 보고서는 집계값만 포함한다. 라벨 수만 많아도 운영 추천이 자동으로 바뀌지는 않는다. 같은 인물 정확도 90%와 다른 주요 인물 분리 재현율 95%를 모두 통과하고 전체 추천 회귀도 검증해야 승격 검토가 가능하다.
+
+개인 검토 완료 뒤의 재측정 명령은 다음과 같다. `<job-id>`는 결과 창에서 검토한 작업 ID다.
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/analyze_person_composition_calibration.py \
+  --review ~/.photos-mcp/validation/recommendation-quality/<job-id>/review-private.json \
+  --measurements ~/.photos-mcp/validation/person-aware-scene-shadow/<job-id>/measurements-private.json \
+  --output /tmp/photos-mcp-person-composition-calibration.json
+```
+
+출력 파일에는 aggregate-only 통계만 기록된다. `promotion_ready: false`이면 현재 추천 로직은 계속 유지되는 것이 정상이다.
+
 ## 내보내기 대상
 
 ### Apple 사진 앨범

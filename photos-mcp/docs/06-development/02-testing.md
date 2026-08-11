@@ -15,7 +15,10 @@
 ./.venv/bin/pytest tests/test_action_contract_docs.py tests/test_public_tools.py tests/test_facade_common.py -q
 
 # AppKit 화면과 레이아웃
-./.venv/bin/pytest tests/test_menu_appkit_layout.py tests/test_result_gallery_appkit.py tests/test_photo_viewer_appkit.py -q
+./.venv/bin/pytest tests/test_menu_appkit_layout.py tests/test_result_gallery_appkit.py tests/test_recommendation_review_appkit.py tests/test_photo_viewer_appkit.py -q
+
+# 인물 구성 보정·승격 안전 게이트
+./.venv/bin/pytest tests/test_person_scene_shadow.py tests/test_person_pairwise_shadow.py tests/test_person_composition_calibration.py tests/test_person_promotion.py -q
 
 # 로컬 파일과 내보내기
 ./.venv/bin/pytest tests/test_photo_assets.py tests/test_local_writer.py tests/test_selected_export_bundle.py -q
