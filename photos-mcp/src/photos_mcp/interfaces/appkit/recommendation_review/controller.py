@@ -9,6 +9,7 @@ from AppKit import (
     NSAlert,
     NSBackingStoreBuffered,
     NSButton,
+    NSButtonTypeRadio,
     NSButtonTypeSwitch,
     NSColor,
     NSEventModifierFlagShift,
@@ -29,6 +30,7 @@ from AppKit import (
 from Foundation import NSMakeSize
 
 from photos_mcp.application.recommendation_review import (
+    first_unreviewed_person_composition_index,
     first_unreviewed_scene_index,
     load_or_create_recommendation_review,
     summarize_recommendation_review,
@@ -85,6 +87,25 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
     """Compare photos within one detected scene and persist private labels."""
 
     def initWithResultPayload_(self, result_payload: dict[str, Any]):
+        return self._init_with_result_payload(result_payload, person_composition_review=False)
+
+    def initWithResultPayload_personCompositionReview_(
+        self,
+        result_payload: dict[str, Any],
+        person_composition_review: bool,
+    ):
+        return self._init_with_result_payload(
+            result_payload,
+            person_composition_review=bool(person_composition_review),
+        )
+
+    @objc.python_method
+    def _init_with_result_payload(
+        self,
+        result_payload: dict[str, Any],
+        *,
+        person_composition_review: bool,
+    ):
         style = (
             NSWindowStyleMaskTitled
             | NSWindowStyleMaskClosable
@@ -101,17 +122,23 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
         if self is None:
             return None
         self._queue_path, self._payload = load_or_create_recommendation_review(result_payload)
-        self._index = first_unreviewed_scene_index(self._payload)
+        self._person_composition_review = person_composition_review
+        self._index = (
+            first_unreviewed_person_composition_index(self._payload)
+            if self._person_composition_review
+            else first_unreviewed_scene_index(self._payload)
+        )
         self._primary_id = ""
         self._secondary_id = ""
         self._boundary = "correct"
+        self._person_composition = "unreviewed"
         self._failure_codes: set[str] = set()
         self._viewer_controller = PhotosMcpPhotoViewerController.alloc().init()
         self._is_rendering = False
         root = RecommendationReviewContentView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, *_WINDOW_SIZE))
         root._review_controller = self
         window.setContentView_(root)
-        window.setTitle_("추천 품질 검토")
+        window.setTitle_("인물 구성 검토" if self._person_composition_review else "추천 품질 검토")
         window.setMinSize_(NSMakeSize(*_MIN_SIZE))
         window.setFrameAutosaveName_("PhotosMcpRecommendationQualityReview")
         window.setCollectionBehavior_(NSWindowCollectionBehaviorFullScreenPrimary)
@@ -176,6 +203,10 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
         self._boundary = str(sender.identifier() or "correct")
         self.render()
 
+    def setPersonComposition_(self, sender) -> None:
+        self._person_composition = str(sender.identifier() or "unreviewed")
+        self.render()
+
     def toggleFailure_(self, sender) -> None:
         code = str(sender.identifier() or "")
         if code in self._failure_codes:
@@ -201,6 +232,10 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
             self.render()
 
     def skipScene_(self, _sender) -> None:
+        if self._person_composition_review:
+            self._current_item()["labels"]["person_composition"] = "uncertain"
+            self._persist_and_advance()
+            return
         self._current_item()["labels"].update(
             {
                 "review_status": "skipped",
@@ -212,6 +247,16 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
         self._persist_and_advance()
 
     def saveAndNext_(self, _sender) -> None:
+        if self._person_composition_review:
+            if self._person_composition == "unreviewed":
+                self._alert(
+                    "인물 구성을 선택하세요",
+                    "판단이 어려우면 ‘판단 보류’로 저장할 수 있습니다.",
+                )
+                return
+            self._current_item()["labels"]["person_composition"] = self._person_composition
+            self._persist_and_advance()
+            return
         if not self._primary_id:
             self._alert(
                 "가장 좋은 사진을 한 장 선택하세요",
@@ -254,10 +299,17 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
         self._primary_id = selected[0] if selected else ""
         self._secondary_id = selected[1] if len(selected) > 1 else ""
         self._boundary = str(labels.get("scene_boundary") or "correct")
+        self._person_composition = str(labels.get("person_composition") or "unreviewed")
         self._failure_codes = set(str(value) for value in labels.get("failure_codes") or [])
 
     @objc.python_method
     def _summary_text(self, summary: dict[str, Any]) -> str:
+        if self._person_composition_review:
+            return (
+                f"인물 구성 완료 {summary['person_composition_completed_scene_count']} / "
+                f"{summary['scene_count']}장면\n"
+                f"남음 {summary['person_composition_remaining_scene_count']}장면"
+            )
         top1 = summary.get("auto_top1_match_rate")
         top2 = summary.get("auto_primary_recall_at_2")
         top1_text = "계산 전" if top1 is None else f"{float(top1) * 100:.1f}%"
@@ -281,7 +333,13 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
             item = self._current_item()
             summary = summarize_recommendation_review(self._payload)
 
-            self._label(root, _MARGIN, height - 56.0, width - 2 * _MARGIN, 32.0, "추천 품질 검토", 22.0, True)
+            title = "인물 구성 검토" if self._person_composition_review else "추천 품질 검토"
+            helper = (
+                "주요 인물이 같은 사진인지 판단합니다. 배경 행인만 달라진 경우는 별도로 표시하세요."
+                if self._person_composition_review
+                else "사진을 클릭하면 1순위, Shift+숫자 또는 ‘2순위’ 버튼으로 두 번째 사진을 선택합니다."
+            )
+            self._label(root, _MARGIN, height - 56.0, width - 2 * _MARGIN, 32.0, title, 22.0, True)
             self._label(
                 root,
                 _MARGIN,
@@ -299,7 +357,7 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
                 height - 108.0,
                 width - _SIDEBAR_WIDTH - 3 * _MARGIN,
                 20.0,
-                "사진을 클릭하면 1순위, Shift+숫자 또는 ‘2순위’ 버튼으로 두 번째 사진을 선택합니다.",
+                helper,
                 10.0,
                 False,
                 secondary=True,
@@ -354,9 +412,15 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
             image_button.setBordered_(False)
             image_button.setTag_(index)
             image_button.setTarget_(self)
-            image_button.setAction_("selectPrimary:")
+            image_button.setAction_(
+                "openPhoto:" if self._person_composition_review else "selectPrimary:"
+            )
             image_button.setImageScaling_(NSImageScaleProportionallyUpOrDown)
-            image_button.setAccessibilityLabel_(f"사진 {index + 1}, 사람 평가 1순위로 선택")
+            image_button.setAccessibilityLabel_(
+                f"사진 {index + 1} 크게 보기"
+                if self._person_composition_review
+                else f"사진 {index + 1}, 사람 평가 1순위로 선택"
+            )
             preview = str(photo.get("preview_path") or "")
             image = cached_image(preview)
             if image is not None:
@@ -366,7 +430,9 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
             tile.addSubview_(image_button)
 
             human_label = (
-                "사람 1순위"
+                f"사진 {index + 1}"
+                if self._person_composition_review
+                else "사람 1순위"
                 if photo_id == self._primary_id
                 else "사람 2순위"
                 if photo_id == self._secondary_id
@@ -397,17 +463,18 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
                 "openPhoto:",
             )
             preview_button.setTag_(index)
-            second = self._button(
-                tile,
-                tile_width - 82.0,
-                20.0,
-                70.0,
-                30.0,
-                "2순위",
-                "toggleSecondary:",
-            )
-            second.setTag_(index)
-            second.setEnabled_(photo_id != self._primary_id)
+            if not self._person_composition_review:
+                second = self._button(
+                    tile,
+                    tile_width - 82.0,
+                    20.0,
+                    70.0,
+                    30.0,
+                    "2순위",
+                    "toggleSecondary:",
+                )
+                second.setTag_(index)
+                second.setEnabled_(photo_id != self._primary_id)
         return grid
 
     @objc.python_method
@@ -439,50 +506,80 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
             False,
             secondary=True,
         )
-        self._button(
-            panel,
-            18.0,
-            height - 140.0,
-            width - 36.0,
-            30.0,
-            "선택 모두 해제 (0)",
-            "clearPrimary:",
-        )
+        if self._person_composition_review:
+            self._label(panel, 18.0, height - 160.0, width - 36.0, 34.0, "주요 인물 구성", 12.0, True)
+            self._label(
+                panel,
+                18.0,
+                height - 184.0,
+                width - 36.0,
+                20.0,
+                "사람 이름 대신 사진 간 구성을 비교합니다.",
+                9.0,
+                False,
+                secondary=True,
+            )
+            row_y = height - 222.0
+            for code, title in (
+                ("same_primary_subjects", "주요 인물이 모두 같음"),
+                ("different_primary_subjects", "주요 인물 구성이 다름"),
+                ("background_people_only", "배경 행인만 다름"),
+                ("face_detection_unavailable", "얼굴 검출이 어려움"),
+                ("uncertain", "판단 보류"),
+            ):
+                button = self._button(
+                    panel, 18.0, row_y, width - 36.0, 28.0, title, "setPersonComposition:"
+                )
+                button.setButtonType_(NSButtonTypeRadio)
+                button.setIdentifier_(code)
+                button.setState_(1 if code == self._person_composition else 0)
+                row_y -= 34.0
+            save_title = "인물 구성 저장하고 다음 (Enter)"
+        else:
+            self._button(
+                panel,
+                18.0,
+                height - 140.0,
+                width - 36.0,
+                30.0,
+                "선택 모두 해제 (0)",
+                "clearPrimary:",
+            )
+            self._label(panel, 18.0, height - 184.0, width - 36.0, 20.0, "장면 묶음", 12.0, True)
+            row_y = height - 216.0
+            for code, title in (
+                ("correct", "같은 장면"),
+                ("over_merged", "서로 다른 장면"),
+                ("uncertain", "판단 보류"),
+            ):
+                button = self._button(panel, 18.0, row_y, width - 36.0, 28.0, title, "setBoundary:")
+                button.setIdentifier_(code)
+                button.setState_(1 if code == self._boundary else 0)
+                row_y -= 34.0
 
-        self._label(panel, 18.0, height - 184.0, width - 36.0, 20.0, "장면 묶음", 12.0, True)
-        row_y = height - 216.0
-        for code, title in (
-            ("correct", "같은 장면"),
-            ("over_merged", "서로 다른 장면"),
-            ("uncertain", "판단 보류"),
-        ):
-            button = self._button(panel, 18.0, row_y, width - 36.0, 28.0, title, "setBoundary:")
-            button.setIdentifier_(code)
-            button.setState_(1 if code == self._boundary else 0)
-            row_y -= 34.0
+            self._label(panel, 18.0, row_y - 4.0, width - 36.0, 20.0, "자동추천이 놓친 이유", 12.0, True)
+            row_y -= 36.0
+            for code, title in (
+                ("eyes_closed", "눈 감김"),
+                ("blur", "흐림"),
+                ("bad_expression", "표정"),
+                ("duplicate", "유사 사진 중복"),
+                ("other", "기타"),
+            ):
+                toggle = NSButton.alloc().initWithFrame_(NSMakeRect(16.0, row_y, width - 32.0, 25.0))
+                toggle.setButtonType_(NSButtonTypeSwitch)
+                toggle.setTitle_(title)
+                toggle.setState_(1 if code in self._failure_codes else 0)
+                toggle.setTarget_(self)
+                toggle.setAction_("toggleFailure:")
+                toggle.setIdentifier_(code)
+                toggle.setFont_(app_font(9.5))
+                toggle.setAccessibilityLabel_(f"자동추천 실패 이유: {title}")
+                panel.addSubview_(toggle)
+                row_y -= 29.0
+            save_title = "저장하고 다음 (Enter)"
 
-        self._label(panel, 18.0, row_y - 4.0, width - 36.0, 20.0, "자동추천이 놓친 이유", 12.0, True)
-        row_y -= 36.0
-        for code, title in (
-            ("eyes_closed", "눈 감김"),
-            ("blur", "흐림"),
-            ("bad_expression", "표정"),
-            ("duplicate", "유사 사진 중복"),
-            ("other", "기타"),
-        ):
-            toggle = NSButton.alloc().initWithFrame_(NSMakeRect(16.0, row_y, width - 32.0, 25.0))
-            toggle.setButtonType_(NSButtonTypeSwitch)
-            toggle.setTitle_(title)
-            toggle.setState_(1 if code in self._failure_codes else 0)
-            toggle.setTarget_(self)
-            toggle.setAction_("toggleFailure:")
-            toggle.setIdentifier_(code)
-            toggle.setFont_(app_font(9.5))
-            toggle.setAccessibilityLabel_(f"자동추천 실패 이유: {title}")
-            panel.addSubview_(toggle)
-            row_y -= 29.0
-
-        self._button(panel, 18.0, 76.0, width - 36.0, 36.0, "저장하고 다음 (Enter)", "saveAndNext:", primary=True)
+        self._button(panel, 18.0, 76.0, width - 36.0, 36.0, save_title, "saveAndNext:", primary=True)
         nav_width = (width - 46.0) / 2.0
         self._button(panel, 18.0, 36.0, nav_width, 30.0, "이전", "previousScene:")
         self._button(panel, 28.0 + nav_width, 36.0, nav_width, 30.0, "건너뛰기", "skipScene:")

@@ -20,7 +20,11 @@ from AppKit import (
     NSView,
 )
 
-from photos_mcp.application.result_presenter import result_category, result_item_failure
+from photos_mcp.application.result_presenter import (
+    recommendation_reason_summary,
+    result_category,
+    result_item_failure,
+)
 from photos_mcp.interfaces.appkit.shared.theme import accent_color, app_font
 
 
@@ -134,7 +138,7 @@ class PhotosMcpResultCollectionItem(NSCollectionViewItem):
             "recommended": "success",
             "review": "warning",
         }[category]
-        reason = failure or str(item.get("scene_description") or "분석 결과를 확인하세요.")
+        reason = failure or recommendation_reason_summary(item)
         score = float(item.get("total_score") or item.get("quality_score") or 0.0)
         image = None if failure else cached_image(str(item.get("preview_path") or ""))
         self._image_view.setImage_(image)

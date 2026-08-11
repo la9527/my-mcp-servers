@@ -55,6 +55,7 @@ from AppKit import (
 from Foundation import NSIndexPath, NSMakeSize, NSSet, NSUserDefaults
 
 from photos_mcp.application.result_presenter import (
+    recommendation_reason_summary,
     result_category,
     result_item_failure,
     sanitized_result_export_payload,
@@ -268,19 +269,30 @@ class PhotosMcpResultsController(NSWindowController):
             alert.runModal()
 
     def openRecommendationReview_(self, _sender) -> None:
+        self._open_recommendation_review(person_composition_review=False)
+
+    def openPersonCompositionReview_(self, _sender) -> None:
+        self._open_recommendation_review(person_composition_review=True)
+
+    @objc.python_method
+    def _open_recommendation_review(self, *, person_composition_review: bool) -> None:
         try:
             payload = {
                 "job_id": str(self._payload.get("job_id") or ""),
                 "items": [dict(item) for item in self._items],
             }
             self._recommendation_review_controller = (
-                PhotosMcpRecommendationReviewController.alloc().initWithResultPayload_(payload)
+                PhotosMcpRecommendationReviewController.alloc().initWithResultPayload_personCompositionReview_(
+                    payload,
+                    person_composition_review,
+                )
             )
             self._recommendation_review_controller.window().center()
             self._recommendation_review_controller.showWindow_(None)
             self._recommendation_review_controller.window().makeKeyAndOrderFront_(None)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            self._show_alert("추천 품질 검토를 열 수 없습니다", str(exc))
+            title = "인물 구성 검토를 열 수 없습니다" if person_composition_review else "추천 품질 검토를 열 수 없습니다"
+            self._show_alert(title, str(exc))
 
     def toggleItemSelection_(self, sender) -> None:
         if self._export_in_progress:
@@ -475,6 +487,11 @@ class PhotosMcpResultsController(NSWindowController):
             "추천 품질 검토",
             "openRecommendationReview:",
         )
+        self._person_composition_review_button = self._button(
+            root,
+            "인물 구성 검토",
+            "openPersonCompositionReview:",
+        )
         self._json_export_button = self._button(root, "결과 JSON", "exportResults:")
         self._export_button = self._button(root, "선택한 사진 내보내기", "exportSelected:", primary=True)
         self._close_button = self._button(root, "닫기", "closeWindow:", primary=True)
@@ -519,7 +536,8 @@ class PhotosMcpResultsController(NSWindowController):
             self._density_label.setFrame_(NSMakeRect(density_x + 40.0, toolbar_y + 7.0, 70.0, 20.0))
             self._density_larger.setFrame_(NSMakeRect(density_x + 114.0, toolbar_y, 36.0, 32.0))
 
-            body_y = 76.0
+            compact_footer = width < 1320.0
+            body_y = 118.0 if compact_footer else 76.0
             body_top = toolbar_y - 14.0
             body_height = max(240.0, body_top - body_y)
             self._scroll_view.setFrame_(NSMakeRect(margin, body_y, gallery_width, body_height))
@@ -532,6 +550,7 @@ class PhotosMcpResultsController(NSWindowController):
             self._layout_inspector(inspector_width, height - body_y - 32.0)
 
             footer_y = 24.0
+            action_y = 66.0 if compact_footer else footer_y
             self._finder_button.setFrame_(NSMakeRect(margin, footer_y, 150.0, 34.0))
             self._selection_label.setFrame_(NSMakeRect(margin + 166.0, footer_y + 7.0, 100.0, 20.0))
             self._select_all_button.setFrame_(NSMakeRect(margin + 270.0, footer_y, 86.0, 34.0))
@@ -539,9 +558,12 @@ class PhotosMcpResultsController(NSWindowController):
             self._recommendation_review_button.setFrame_(
                 NSMakeRect(margin + 460.0, footer_y, 150.0, 34.0)
             )
-            self._json_export_button.setFrame_(NSMakeRect(width - margin - 414.0, footer_y, 96.0, 34.0))
-            self._export_button.setFrame_(NSMakeRect(width - margin - 308.0, footer_y, 198.0, 34.0))
-            self._close_button.setFrame_(NSMakeRect(width - margin - 100.0, footer_y, 100.0, 34.0))
+            self._person_composition_review_button.setFrame_(
+                NSMakeRect(margin + 618.0, footer_y, 150.0, 34.0)
+            )
+            self._json_export_button.setFrame_(NSMakeRect(width - margin - 414.0, action_y, 96.0, 34.0))
+            self._export_button.setFrame_(NSMakeRect(width - margin - 308.0, action_y, 198.0, 34.0))
+            self._close_button.setFrame_(NSMakeRect(width - margin - 100.0, action_y, 100.0, 34.0))
             self._update_collection_layout(gallery_width)
             if anchor_index is not None and self._visible_items:
                 self._collection_view.layoutSubtreeIfNeeded()
@@ -654,10 +676,11 @@ class PhotosMcpResultsController(NSWindowController):
         quality = float(item.get("quality_score") or 0.0)
         meaningful = float(item.get("meaningful_score") or 0.0) * 10.0
         technical = float(item.get("technical_score") or 0.0)
+        reason = recommendation_reason_summary(item)
         self._inspector_metrics.setStringValue_(
             f"다시 분석 {'가능' if item.get('can_retry') else '불가'}"
             if failure
-            else f"종합 {score:.0f} · 품질 {quality:.0f} · 기술 {technical:.0f}\n의미 {meaningful:.0f}"
+            else f"추천 근거 · {reason}\n종합 {score:.0f} · 품질 {quality:.0f} · 기술 {technical:.0f} · 의미 {meaningful:.0f}"
         )
         self._inspector_event.setStringValue_(f"분류 · {str(item.get('event_type') or '기타')}")
         self._inspector_open.setEnabled_(True)
@@ -707,9 +730,9 @@ class PhotosMcpResultsController(NSWindowController):
         if hasattr(self, "_collection_view"):
             self._collection_view.reloadData()
         if hasattr(self, "_recommendation_review_button"):
-            self._recommendation_review_button.setEnabled_(
-                any(int(item.get("scene_cluster_size") or 1) > 1 for item in self._items)
-            )
+            enabled = any(int(item.get("scene_cluster_size") or 1) > 1 for item in self._items)
+            self._recommendation_review_button.setEnabled_(enabled)
+            self._person_composition_review_button.setEnabled_(enabled)
 
     @objc.python_method
     def _set_all_selection(self, selected: bool) -> None:

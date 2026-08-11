@@ -22,3 +22,6 @@ YYYY-MM-DD-<검증-대상>.md
 - [2026-08-10 추천 품질 사람 검토 UI 검증](08-recommendation-quality-review-ui-2026-08-10.md)
 - [2026-08-10 추천 품질 사람 기준선 및 shadow 점수 검증](09-recommendation-shadow-score-2026-08-10.md)
 - [2026-08-10 두 번째 추천 시각적 다양성 shadow 검증](10-recommendation-second-diversity-shadow-2026-08-10.md)
+- [2026-08-10 인물 구성 장면 분리와 얼굴 품질 shadow 검증](11-person-aware-scene-shadow-2026-08-10.md)
+- [2026-08-11 동일 인물 사진 pairwise VLM shadow 검증](12-person-pairwise-shadow-2026-08-11.md)
+- [2026-08-11 인물 구성 라벨링·SFace 보정 기반 검증](13-person-composition-calibration-foundation-2026-08-11.md)

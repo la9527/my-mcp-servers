@@ -42,6 +42,9 @@ aesthetic = [
 face = [
     "mediapipe>=0.10",
 ]
+face-identity = [
+    "opencv-python-headless>=4.10",
+]
 face-legacy = [
     "face-recognition>=1.3",
 ]
@@ -50,7 +53,7 @@ review = [
     "httpx>=0.27",
 ]
 all = [
-    "photos-mcp[app,apple,gcs,google,vlm,aesthetic,face,face-legacy,review]",
+    "photos-mcp[app,apple,gcs,google,vlm,aesthetic,face,face-identity,face-legacy,review]",
     "mediapipe>=0.10",
 ]
 dev = [

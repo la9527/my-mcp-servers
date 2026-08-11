@@ -13,7 +13,7 @@ from typing import Any
 from photos_mcp.infrastructure.runtime.paths import photos_mcp_home
 
 
-REVIEW_SCHEMA_VERSION = 1
+REVIEW_SCHEMA_VERSION = 2
 REVIEW_FAILURE_CODES = {
     "bad_expression",
     "blur",
@@ -22,6 +22,14 @@ REVIEW_FAILURE_CODES = {
     "other",
 }
 REVIEW_BOUNDARIES = {"correct", "over_merged", "uncertain"}
+PERSON_COMPOSITIONS = {
+    "unreviewed",
+    "same_primary_subjects",
+    "different_primary_subjects",
+    "background_people_only",
+    "face_detection_unavailable",
+    "uncertain",
+}
 
 
 def recommendation_review_path(job_id: str, *, root: Path | None = None) -> Path:
@@ -62,6 +70,7 @@ def _new_labels() -> dict[str, Any]:
         "scene_boundary": "correct",
         "best_photo_ids": [],
         "failure_codes": [],
+        "person_composition": "unreviewed",
         "note": "",
     }
 
@@ -137,7 +146,7 @@ def build_recommendation_review_queue(
 def validate_recommendation_review_queue(payload: dict[str, Any]) -> None:
     if not payload.get("private"):
         raise ValueError("개인 검토 큐 표시가 없습니다.")
-    if int(payload.get("schema_version") or 0) != REVIEW_SCHEMA_VERSION:
+    if int(payload.get("schema_version") or 0) not in {1, REVIEW_SCHEMA_VERSION}:
         raise ValueError("지원하지 않는 추천 검토 큐 버전입니다.")
     if not isinstance(payload.get("items"), list) or not payload["items"]:
         raise ValueError("비교할 복수 사진 장면이 없습니다.")
@@ -145,6 +154,10 @@ def validate_recommendation_review_queue(payload: dict[str, Any]) -> None:
         photos = scene.get("photos") if isinstance(scene, dict) else None
         if not isinstance(photos, list) or len(photos) < 2:
             raise ValueError("모든 검토 장면에는 사진이 두 장 이상 필요합니다.")
+        labels = scene.get("labels") or {}
+        person_composition = str(labels.get("person_composition") or "unreviewed")
+        if person_composition not in PERSON_COMPOSITIONS:
+            raise ValueError("지원하지 않는 인물 구성 라벨입니다.")
 
 
 def write_recommendation_review_queue(path: Path, payload: dict[str, Any]) -> None:
@@ -189,6 +202,20 @@ def first_unreviewed_scene_index(payload: dict[str, Any]) -> int:
     )
 
 
+def first_unreviewed_person_composition_index(payload: dict[str, Any]) -> int:
+    """Return the first scene that still needs a person-composition label."""
+
+    return next(
+        (
+            index
+            for index, item in enumerate(payload.get("items") or [])
+            if (item.get("labels") or {}).get("person_composition", "unreviewed")
+            == "unreviewed"
+        ),
+        0,
+    )
+
+
 def summarize_recommendation_review(payload: dict[str, Any]) -> dict[str, Any]:
     scenes = [item for item in payload.get("items") or [] if isinstance(item, dict)]
     completed = [
@@ -207,6 +234,12 @@ def summarize_recommendation_review(payload: dict[str, Any]) -> dict[str, Any]:
     auto_total = 0
     boundary_counts: Counter[str] = Counter()
     failure_counts: Counter[str] = Counter()
+    person_composition_counts: Counter[str] = Counter()
+    person_composition_pending = 0
+    for scene in scenes:
+        composition = str((scene.get("labels") or {}).get("person_composition") or "unreviewed")
+        person_composition_counts[composition] += 1
+        person_composition_pending += composition == "unreviewed"
     for scene in completed:
         labels = scene.get("labels") or {}
         human = [str(value) for value in labels.get("best_photo_ids") or [] if str(value)]
@@ -239,4 +272,7 @@ def summarize_recommendation_review(payload: dict[str, Any]) -> dict[str, Any]:
         "auto_recommendation_precision": round(selected_overlap / auto_total, 4) if auto_total else None,
         "scene_boundary_counts": dict(sorted(boundary_counts.items())),
         "failure_code_counts": dict(sorted(failure_counts.items())),
+        "person_composition_counts": dict(sorted(person_composition_counts.items())),
+        "person_composition_completed_scene_count": len(scenes) - person_composition_pending,
+        "person_composition_remaining_scene_count": person_composition_pending,
     }

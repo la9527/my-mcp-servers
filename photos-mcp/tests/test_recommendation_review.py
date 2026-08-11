@@ -6,6 +6,7 @@ import pytest
 
 from photos_mcp.application.recommendation_review import (
     build_recommendation_review_queue,
+    first_unreviewed_person_composition_index,
     first_unreviewed_scene_index,
     load_or_create_recommendation_review,
     recommendation_review_path,
@@ -81,6 +82,22 @@ def test_queue_refresh_preserves_human_labels() -> None:
 
     assert refreshed["items"][0]["labels"]["review_status"] == "completed"
     assert refreshed["items"][0]["labels"]["best_photo_ids"] == ["a-3"]
+    assert refreshed["items"][0]["labels"]["person_composition"] == "unreviewed"
+
+
+def test_queue_migrates_v1_labels_and_tracks_person_composition_progress() -> None:
+    existing = build_recommendation_review_queue(_result_payload())
+    existing["schema_version"] = 1
+    existing["items"][0]["labels"].pop("person_composition")
+
+    refreshed = build_recommendation_review_queue(_result_payload(), existing_queue=existing)
+    refreshed["items"][0]["labels"]["person_composition"] = "same_primary_subjects"
+
+    assert refreshed["schema_version"] == 2
+    assert first_unreviewed_person_composition_index(refreshed) == 0
+    summary = summarize_recommendation_review(refreshed)
+    assert summary["person_composition_completed_scene_count"] == 1
+    assert summary["person_composition_remaining_scene_count"] == 0
 
 
 def test_summary_reports_top1_top2_and_overlap_without_private_ids() -> None:
@@ -102,6 +119,7 @@ def test_summary_reports_top1_top2_and_overlap_without_private_ids() -> None:
     assert summary["human_choice_recall"] == 0.5
     assert summary["auto_recommendation_precision"] == 0.5
     assert summary["failure_code_counts"] == {"blur": 1}
+    assert summary["person_composition_counts"] == {"unreviewed": 1}
     assert "a-2" not in json.dumps(summary)
 
 
