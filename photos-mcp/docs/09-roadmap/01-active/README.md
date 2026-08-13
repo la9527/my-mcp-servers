@@ -6,6 +6,7 @@
 
 - [장면별 추천 품질 사람 검토](01-recommendation-quality-review-2026-08-10.md): 현재 자동추천과 사용자의 실제 1·2순위를 비교하고, 개인 검토 큐와 집계 지표를 이용해 다음 shadow score 실험의 기준선을 만든다.
 - [인물 구성 기반 장면 분리와 얼굴 품질 추천](02-person-aware-scene-ranking-shadow-2026-08-10.md): 같은 배경의 다른 사람을 별도 비교 그룹으로 나누고, 같은 사람의 연속 사진은 표정·시선·얼굴 품질로 순위를 검증한다. 전용 라벨 UI와 SFace 보정 도구는 구현됐으며 사람 기준선 수집이 다음 관문이다.
+- [Google Photos Picker 실연동](03-google-photos-picker-integration-2026-08-13.md): Google Photos에서 사용자가 직접 선택한 사진을 안전하게 분류하는 OAuth·Picker·AppKit·temporary cache 통합 계획이다. 현재 fake lifecycle과 정책 gate까지만 구현되어 있다.
 
 ## 인물 확인과 개인화
 
