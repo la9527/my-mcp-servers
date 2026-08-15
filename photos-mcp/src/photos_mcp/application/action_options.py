@@ -205,10 +205,10 @@ _register(ActionSpec(
 _register(ActionSpec(
     tool="photos_write",
     action="import_to_album",
-    allowed=_set("photo_paths", "target_album_name", "folder"),
+    allowed=_set("photo_paths", "target_album_name", "target_album_id", "folder"),
     required=_set("photo_paths", "target_album_name"),
     forbidden=_set("album_prefix", "results_json", "group_by_date"),
-    defaults={"folder": ""},
+    defaults={"target_album_id": "", "folder": ""},
 ))
 _register(ActionSpec(
     tool="photos_write",

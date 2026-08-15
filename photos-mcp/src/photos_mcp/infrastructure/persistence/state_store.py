@@ -14,6 +14,7 @@ from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 ACTIVE_JOB_STATUSES = {"pending", "running", "waiting_source", "waiting_model", "writing"}
 RECOVERY_JOB_STATUSES = {"awaiting_resume_approval"}
+HISTORICAL_JOB_STATUSES = TERMINAL_JOB_STATUSES | RECOVERY_JOB_STATUSES
 DAEMON_STATUSES = {"stopped", "starting", "ready", "busy", "degraded", "stopping"}
 CHECK_STATUSES = {"pending", "ok", "warning", "error"}
 DEFAULT_PHOTO_ASSET_READINESS_TTL_SECONDS = 300.0
@@ -53,6 +54,11 @@ def job_status_value(status: Any) -> str:
 
 def is_terminal_job_status(status: Any) -> bool:
     return job_status_value(status) in TERMINAL_JOB_STATUSES
+
+
+def is_historical_job_status(status: Any) -> bool:
+    """Return whether a record is safe to discard without stopping active work."""
+    return job_status_value(status) in HISTORICAL_JOB_STATUSES
 
 
 def is_active_job_status(status: Any) -> bool:
@@ -300,7 +306,13 @@ class PhotosMcpStateStore:
             return True
 
     def clear_synthetic_history(self, statuses: tuple[str, ...] | None = None) -> list[str]:
-        target_statuses = set(statuses or ("completed", "failed", "cancelled"))
+        """Remove completed history and user-discarded recovery prompts.
+
+        A recovery prompt is no longer active work after an app restart. It must
+        remain resumable until the user chooses to delete its history, but it
+        should not survive a whole-history cleanup forever.
+        """
+        target_statuses = set(statuses or HISTORICAL_JOB_STATUSES)
         deleted_run_ids: list[str] = []
         with self._lock:
             deleted_run_ids = self._run_repository.delete_runs(target_statuses)
@@ -313,12 +325,12 @@ class PhotosMcpStateStore:
         return deleted_run_ids
 
     def delete_synthetic_run(self, run_id: str) -> bool:
-        """Delete one terminal synthetic run from memory and durable storage."""
+        """Delete one completed, failed, cancelled, or recovery run."""
         with self._lock:
             payload = self._synthetic_runs.get(run_id)
-            if payload is None or not is_terminal_job_status(payload.get("status") or ""):
+            if payload is None or not is_historical_job_status(payload.get("status") or ""):
                 return False
-            if not self._run_repository.delete_run(run_id):
+            if not self._run_repository.delete_run(run_id, terminal_only=False):
                 return False
             self._synthetic_runs.pop(run_id, None)
             self._synthetic_tasks.pop(run_id, None)

@@ -113,6 +113,49 @@ async def test_album_only_bundle_uses_exact_album_uuid() -> None:
 
 
 @pytest.mark.asyncio
+async def test_external_file_bundle_imports_reviewed_files_into_apple_album(tmp_path) -> None:
+    first = tmp_path / "google-one.jpg"
+    second = tmp_path / "google-two.jpg"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    captured: dict[str, object] = {}
+
+    async def fake_vendor(_vendor, function_name, *_args, **_kwargs):
+        if function_name == "get_job_summary":
+            return {"source": "local", "request_options": {"origin_provider": "google_photos"}}
+        if function_name == "get_review_items":
+            return [
+                {"photo_id": str(first), "source_photo_path": str(first), "selected": True},
+                {"photo_id": str(second), "source_photo_path": str(second), "selected": True},
+            ]
+        raise AssertionError(function_name)
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"status": "completed", "imported": 2, "album": kwargs["target_album_name"]}
+
+    result = await handle_write(
+        state_store=None,
+        action="export_selected_bundle",
+        options={"run_id": "google-run", "target_album_name": "Google 추천"},
+        call_vendor_fn=fake_vendor,
+        photos_run_fn=fake_run,
+    )
+
+    assert result["status"] == "completed"
+    assert result["destination_receipts"]["apple_album"] == {
+        "status": "completed",
+        "imported": 2,
+        "album": "Google 추천",
+        "requested": 2,
+        "added": 2,
+        "import_mode": "external_file_import",
+    }
+    assert json.loads(captured["photo_paths_json"]) == [str(first.resolve()), str(second.resolve())]
+    assert captured["target_album_name"] == "Google 추천"
+
+
+@pytest.mark.asyncio
 async def test_bundle_uses_approved_photo_ids_even_after_current_selection_changes(tmp_path) -> None:
     captured: dict[str, object] = {}
 

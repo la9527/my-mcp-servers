@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
 import time
@@ -12,17 +13,47 @@ from photos_mcp.infrastructure.runtime.paths import photo_ranker_runtime_root
 MAX_REVIEW_RESULT_ITEMS = 1000
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactDeletionStats:
+    removed: bool = False
+    file_count: int = 0
+    bytes_reclaimed: int = 0
+
+
 def delete_job_artifacts(job_id: str, *, artifact_root: Path | None = None) -> bool:
     """Delete one job's generated previews/results without touching originals."""
     normalized = str(job_id or "").strip()
     if not normalized:
         return False
+    return delete_job_artifacts_with_stats(job_id, artifact_root=artifact_root).removed
+
+
+def delete_job_artifacts_with_stats(
+    job_id: str,
+    *,
+    artifact_root: Path | None = None,
+) -> ArtifactDeletionStats:
+    """Remove one managed artifact directory and report reclaimed storage."""
+    normalized = str(job_id or "").strip()
+    if not normalized:
+        return ArtifactDeletionStats()
     root = (artifact_root or (photo_ranker_runtime_root() / "artifacts")).resolve()
     candidate = (root / normalized).resolve()
     if candidate.parent != root or not candidate.exists():
-        return False
+        return ArtifactDeletionStats()
+
+    file_count = 0
+    bytes_reclaimed = 0
+    for path in candidate.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            bytes_reclaimed += path.stat().st_size
+            file_count += 1
+        except OSError:
+            continue
     shutil.rmtree(candidate)
-    return True
+    return ArtifactDeletionStats(True, file_count, bytes_reclaimed)
 
 
 def synthetic_review_result(payload: dict[str, Any], *, preview_path: str = "") -> dict[str, Any]:
@@ -96,6 +127,31 @@ class PhotoRankerJobStore:
                 normalized["result_available"] = result_count > 0
             merged_jobs.append(job_snapshot_from_payload(normalized))
         return merged_jobs
+
+    def source_paths_for_job(self, job_id: str) -> tuple[str, ...]:
+        """Return persisted source paths before the job rows are removed."""
+        assets = self.db.list_job_assets(job_id)
+        return tuple(
+            str(asset.get("source_photo_path") or "")
+            for asset in assets.values()
+            if str(asset.get("source_photo_path") or "")
+        )
+
+    def source_path_is_referenced(self, source_path: str) -> bool:
+        """Avoid deleting a shared managed cache file used by another job."""
+        normalized = str(source_path or "")
+        if not normalized:
+            return False
+        return normalized in self.referenced_source_paths()
+
+    def referenced_source_paths(self) -> set[str]:
+        """Return source cache paths still referenced by durable vendor jobs."""
+        paths: set[str] = set()
+        for job in self.db.list_jobs():
+            job_id = str(getattr(job, "id", "") or "")
+            if job_id:
+                paths.update(self.source_paths_for_job(job_id))
+        return paths
 
     def reconcile_orphaned_jobs_after_restart(self) -> list[str]:
         """Fail durable active jobs that are absent from the fresh process queue.
@@ -258,18 +314,23 @@ class PhotoRankerJobStore:
             self.db.save_job(job)
         return True
 
-    def delete_terminal_job(self, job_id: str) -> bool:
+    def delete_terminal_job(self, job_id: str, *, cleanup_artifacts: bool = True) -> bool:
         job = self.db.load_job(job_id) or self.queue.get_job(job_id)
         if not job or not is_terminal_job_status(getattr(job, "status", "")):
             return False
 
         removed_from_queue = self.queue.remove_job(job_id)
         removed_from_db = self.db.delete_job(job_id)
-        if removed_from_queue or removed_from_db:
+        if cleanup_artifacts and (removed_from_queue or removed_from_db):
             delete_job_artifacts(job_id)
         return removed_from_queue or removed_from_db
 
-    def clear_terminal_history(self, statuses: tuple[str, ...] | None = None) -> list[str]:
+    def clear_terminal_history(
+        self,
+        statuses: tuple[str, ...] | None = None,
+        *,
+        cleanup_artifacts: bool = True,
+    ) -> list[str]:
         target_statuses = statuses or ("completed", "failed", "cancelled")
         deleted_from_db = self.db.clear_job_history(statuses=target_statuses)
 
@@ -282,6 +343,7 @@ class PhotoRankerJobStore:
                 deleted_from_queue.append(job.id)
 
         deleted_job_ids = sorted(set(deleted_from_db) | set(deleted_from_queue))
-        for job_id in deleted_job_ids:
-            delete_job_artifacts(job_id)
+        if cleanup_artifacts:
+            for job_id in deleted_job_ids:
+                delete_job_artifacts(job_id)
         return deleted_job_ids

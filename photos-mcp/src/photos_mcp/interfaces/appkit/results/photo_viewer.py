@@ -228,6 +228,7 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         self._raw_preview_generation = 0
         self._pending_raw_previews: dict[str, tuple[int, str, str]] = {}
         self._image_load_generation = 0
+        self._window_title_prefix = "사진 크게 보기"
         window.setTitle_("사진 크게 보기")
         window.setMinSize_(NSMakeSize(720.0, 520.0))
         window.setCollectionBehavior_(NSWindowCollectionBehaviorFullScreenPrimary)
@@ -237,8 +238,15 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         return self
 
     @objc.python_method
-    def show_items(self, items: list[dict[str, Any]], selected_photo_id: str) -> None:
+    def show_items(
+        self,
+        items: list[dict[str, Any]],
+        selected_photo_id: str,
+        *,
+        title_prefix: str = "사진 크게 보기",
+    ) -> None:
         self._items = list(items)
+        self._window_title_prefix = title_prefix
         self._index = next(
             (
                 index
@@ -252,6 +260,10 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         window.center()
         window.makeKeyAndOrderFront_(None)
         window.makeFirstResponder_(self._image_view)
+
+    @objc.python_method
+    def show_scene_items(self, items: list[dict[str, Any]], selected_photo_id: str) -> None:
+        self.show_items(items, selected_photo_id, title_prefix="같은 장면 사진 비교")
 
     def closeWindow_(self, _sender) -> None:
         self.window().performClose_(None)
@@ -416,10 +428,18 @@ class PhotosMcpPhotoViewerController(NSWindowController):
         event_type = str(item.get("event_type") or "기타")
         self._info_scene.setStringValue_(scene)
         self._info_scene.setToolTip_(scene)
+        cluster_size = max(1, int(item.get("scene_cluster_size") or len(self._items) or 1))
+        cluster_rank = max(1, int(item.get("cluster_rank") or self._index + 1))
+        if self._window_title_prefix == "같은 장면 사진 비교" and cluster_size > 1:
+            self._info_title.setStringValue_(f"같은 장면 {cluster_size}장 중 {cluster_rank}위")
+        else:
+            self._info_title.setStringValue_("분석 요약")
         self._info_metrics.setStringValue_(
             f"종합 {score:.0f} · 품질 {quality:.0f} · 의미 {meaningful:.0f}\n분류 · {event_type}"
         )
-        self.window().setTitle_(f"사진 크게 보기 · {self._index + 1}/{len(self._items)}")
+        self.window().setTitle_(
+            f"{self._window_title_prefix} · {self._index + 1}/{len(self._items)}"
+        )
 
     @objc.python_method
     def zoom_by_factor_at_view_point(self, factor: float, view_point) -> None:

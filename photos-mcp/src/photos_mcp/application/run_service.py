@@ -610,6 +610,7 @@ async def photos_run(
     photo_paths_json: str = "[]",
     results_json: str = "[]",
     target_album_name: str = "",
+    target_album_id: str = "",
     writeback_mode: str = "review",
     exclude_screenshots: bool = False,
     background: bool = False,
@@ -893,6 +894,7 @@ async def photos_run(
                 "import_photos",
                 photo_paths,
                 album_name=target_album_name,
+                album_id=target_album_id,
                 folder=folder,
             )
         log_context(

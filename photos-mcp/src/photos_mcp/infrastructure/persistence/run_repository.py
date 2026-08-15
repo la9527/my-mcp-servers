@@ -393,6 +393,17 @@ class RunRepository:
             self._conn.execute("DELETE FROM mutation_receipts")
             self._conn.commit()
 
+    def discard_pre_execution_mutation(self, idempotency_key: str) -> None:
+        """Remove a plan/receipt that was blocked before any library write began."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM mutation_receipts WHERE idempotency_key = ?", (idempotency_key,)
+            )
+            self._conn.execute(
+                "DELETE FROM mutation_plans WHERE idempotency_key = ?", (idempotency_key,)
+            )
+            self._conn.commit()
+
     def _plan_row(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
             "token": str(row["token"]),

@@ -84,6 +84,11 @@ class PhotosMcpResultCollectionItem(NSCollectionViewItem):
         self._export_check.setTitle_("")
         self._export_check.setAccessibilityLabel_("내보내기 선택")
         root.addSubview_(self._export_check)
+        self._scene_button = NSButton.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 1.0, 1.0))
+        self._scene_button.setBezelStyle_(0)
+        self._scene_button.setFont_(app_font(9.5, "medium"))
+        self._scene_button.setAccessibilityLabel_("같은 장면의 다른 사진 보기")
+        root.addSubview_(self._scene_button)
 
     def prepareForReuse(self) -> None:
         objc.super(PhotosMcpResultCollectionItem, self).prepareForReuse()
@@ -99,13 +104,14 @@ class PhotosMcpResultCollectionItem(NSCollectionViewItem):
         root = self.view()
         width = float(root.bounds().size.width)
         height = float(root.bounds().size.height)
-        image_y = 82.0
-        image_height = max(92.0, height - 90.0)
+        image_y = 112.0
+        image_height = max(92.0, height - 120.0)
         self._image_view.setFrame_(NSMakeRect(7.0, image_y, max(1.0, width - 14.0), image_height))
         self._placeholder.setFrame_(NSMakeRect(14.0, image_y + image_height / 2.0 - 10.0, width - 28.0, 20.0))
-        self._badge.setFrame_(NSMakeRect(12.0, 58.0, max(70.0, width - 88.0), 18.0))
-        self._score.setFrame_(NSMakeRect(max(12.0, width - 64.0), 56.0, 52.0, 21.0))
-        self._reason.setFrame_(NSMakeRect(12.0, 12.0, max(1.0, width - 24.0), 38.0))
+        self._badge.setFrame_(NSMakeRect(12.0, 86.0, max(70.0, width - 88.0), 18.0))
+        self._score.setFrame_(NSMakeRect(max(12.0, width - 64.0), 84.0, 52.0, 21.0))
+        self._reason.setFrame_(NSMakeRect(12.0, 46.0, max(1.0, width - 24.0), 34.0))
+        self._scene_button.setFrame_(NSMakeRect(12.0, 12.0, max(1.0, width - 24.0), 28.0))
         self._export_check.setFrame_(NSMakeRect(max(8.0, width - 36.0), max(8.0, height - 36.0), 28.0, 28.0))
 
     @objc.python_method
@@ -128,7 +134,13 @@ class PhotosMcpResultCollectionItem(NSCollectionViewItem):
         cluster_size = max(1, int(item.get("scene_cluster_size") or 1))
         cluster_rank = max(1, int(item.get("cluster_rank") or 1))
         recommendation_slot = max(0, int(item.get("recommendation_slot") or 0))
-        if not failure and cluster_size > 1:
+        scene_gallery = bool(item.get("_scene_gallery"))
+        grouped_scene = scene_gallery and cluster_size > 1
+        if not failure and grouped_scene and category == "recommended":
+            category_label = f"BEST · 같은 장면 {cluster_size}장"
+        elif not failure and grouped_scene:
+            category_label = f"검토 대표 · 같은 장면 {cluster_size}장"
+        elif not failure and cluster_size > 1:
             if category == "recommended":
                 slot = recommendation_slot or min(cluster_rank, 2)
                 category_label = f"추천 {slot}/2 · 같은 장면 {cluster_size}장"
@@ -151,6 +163,17 @@ class PhotosMcpResultCollectionItem(NSCollectionViewItem):
         self._score.setTextColor_(status_color(tone))
         self._reason.setStringValue_(reason)
         self._reason.setToolTip_(reason)
+        alternative_count = int(item.get("_scene_alternative_count") or 0)
+        show_scene_button = scene_gallery and alternative_count > 0
+        self._scene_button.setHidden_(not show_scene_button)
+        self._scene_button.setTitle_(f"같은 장면 대안 {alternative_count}장 보기")
+        self._scene_button.setIdentifier_(str(item.get("photo_id") or ""))
+        self._scene_button.setTarget_(controller)
+        self._scene_button.setAction_("openSceneComparison:")
+        self._scene_button.setEnabled_(show_scene_button)
+        self._scene_button.setToolTip_(
+            "같은 장면으로 묶인 사진을 점수순으로 비교합니다." if show_scene_button else ""
+        )
         self.view().setAccessibilityLabel_(f"{category_label}, 점수 {score:.0f}, {reason}")
         self._apply_selection_style()
         self.viewDidLayout()

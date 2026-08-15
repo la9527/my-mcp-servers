@@ -1576,6 +1576,19 @@ async def set_all_photo_reviews(job_id: str, selected: bool) -> str:
 
 
 @mcp.tool()
+async def set_selected_photo_reviews(job_id: str, photo_ids_json: str = "[]") -> str:
+    """분류 결과에서 선택한 사진 집합만 일괄 저장합니다."""
+    photo_ids = json.loads(photo_ids_json)
+    if not isinstance(photo_ids, list):
+        raise ValueError("photo_ids_json must be a JSON array")
+    db = _get_job_db()
+    return json.dumps(
+        db.set_selected_photo_reviews(job_id, [str(photo_id) for photo_id in photo_ids]),
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
 async def export_selected_photos(
     job_id: str,
     output_dir: str,
@@ -2003,6 +2016,7 @@ async def import_photos(
     album_name: str = "",
     folder: str = "",
     skip_duplicates: bool = True,
+    album_id: str = "",
 ) -> str:
     """외부 사진을 Apple Photos 라이브러리에 가져옵니다.
 
@@ -2018,7 +2032,13 @@ async def import_photos(
     writer = _get_album_writer()
     paths = json.loads(photo_paths_json)
     try:
-        result = writer.import_photos(paths, album_name, folder, skip_duplicates)
+        result = writer.import_photos(
+            paths,
+            album_name,
+            folder,
+            skip_duplicates,
+            album_id=album_id,
+        )
     except Exception as exc:
         logger.exception("import_photos failed")
         return _format_album_writer_error("import_photos", exc)

@@ -68,7 +68,10 @@ from photos_mcp.application.result_presenter import (
     sanitized_result_export_payload,
     sorted_result_items,
 )
-from photos_mcp.app.lifecycle import PhotosMcpDaemonController
+from photos_mcp.app.lifecycle import (
+    JobHistoryDeletionProgress,
+    PhotosMcpDaemonController,
+)
 from photos_mcp.interfaces.appkit.classification.controller import PhotosMcpDirectClassificationController
 from photos_mcp.interfaces.appkit.main.controller import PhotosMcpMainWindowController
 from photos_mcp.interfaces.appkit.menu.presentation import (
@@ -89,14 +92,18 @@ from photos_mcp.application.preflight_service import (
     run_startup_checks,
 )
 from photos_mcp.interfaces.appkit.results.controller import PhotosMcpResultsController
-from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore, preflight_check_snapshot_from_payload
+from photos_mcp.infrastructure.persistence.state_store import (
+    HISTORICAL_JOB_STATUSES,
+    PhotosMcpStateStore,
+    preflight_check_snapshot_from_payload,
+)
 from photos_mcp.interfaces.appkit.shared.theme import accent_color, app_font
 from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
 
 _APP_CONTROLLER = None
 logger = logging.getLogger(__name__)
 
-_TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_HISTORICAL_JOB_STATUSES = frozenset(HISTORICAL_JOB_STATUSES)
 
 _POPOVER_WIDTH = 390.0
 _POPOVER_HEIGHT = 320.0
@@ -924,6 +931,13 @@ class PhotosMcpMenuController(NSObject):
         self._preflight_is_retry = False
         self._preflight_include_expensive = False
         self._preflight_check_keys: tuple[str, ...] | None = None
+        self._history_deletion_thread = None
+        self._history_deletion_progress = None
+        self._history_deletion_report = None
+        self._history_deletion_window = None
+        self._history_deletion_title = None
+        self._history_deletion_detail = None
+        self._history_deletion_indicator = None
         return self
 
     def install(self) -> None:
@@ -1031,10 +1045,7 @@ class PhotosMcpMenuController(NSObject):
     def deleteJob_(self, sender) -> None:
         job_id = self._sender_identifier(sender)
         if job_id:
-            deleted = self._daemon_controller.delete_job(job_id)
-            if deleted:
-                self._release_google_import_files((job_id,))
-            self.rebuildMenu()
+            self._start_history_deletion((job_id,))
 
     def deleteJobWithConfirmation_(self, sender) -> None:
         job_id = self._sender_identifier(sender)
@@ -1127,28 +1138,26 @@ class PhotosMcpMenuController(NSObject):
         self._results_controller.showWithResult_(payload)
 
     def clearCompletedJobs_(self, _sender) -> None:
-        self._daemon_controller.clear_job_history(("completed",))
-        self.rebuildMenu()
+        self._start_history_deletion(statuses=("completed",))
 
     def clearFailedJobs_(self, _sender) -> None:
-        self._daemon_controller.clear_job_history(("failed",))
-        self.rebuildMenu()
+        self._start_history_deletion(statuses=("failed",))
 
     def clearAllJobs_(self, _sender) -> None:
         self.clearJobHistoryWithConfirmation_(None)
 
     def clearJobHistoryWithConfirmation_(self, _sender) -> None:
         snapshot = self._state_store.snapshot()
-        terminal_count = sum(
-            str(job.get("status") or "") in _TERMINAL_JOB_STATUSES
+        historical_count = sum(
+            str(job.get("status") or "") in _HISTORICAL_JOB_STATUSES
             for job in snapshot.recent_jobs
         )
-        if terminal_count <= 0:
+        if historical_count <= 0:
             return
         alert = NSAlert.alloc().init()
-        alert.setMessageText_(f"전체 작업 기록 {terminal_count}건을 삭제할까요?")
+        alert.setMessageText_(f"전체 작업 기록 {historical_count}건을 삭제할까요?")
         alert.setInformativeText_(
-            "완료·실패·취소 기록과 Photos MCP가 만든 결과·미리보기·임시 Google 다운로드를 모두 삭제합니다. "
+            "완료·실패·취소·재개 확인 필요 기록과 Photos MCP가 만든 결과·미리보기·임시 Google 다운로드를 모두 삭제합니다. "
             "진행 중인 작업과 원본 사진은 삭제하지 않습니다."
         )
         alert.setAlertStyle_(NSAlertStyleCritical)
@@ -1157,9 +1166,144 @@ class PhotosMcpMenuController(NSObject):
         NSApp.activateIgnoringOtherApps_(True)
         if alert.runModal() != NSAlertFirstButtonReturn:
             return
-        deleted_job_ids = self._daemon_controller.clear_job_history()
-        self._release_google_import_files(tuple(deleted_job_ids))
+        self._start_history_deletion()
+
+    @objc.python_method
+    def _start_history_deletion(
+        self,
+        job_ids: tuple[str, ...] | None = None,
+        *,
+        statuses: tuple[str, ...] | None = None,
+    ) -> bool:
+        if self._history_deletion_thread is not None and self._history_deletion_thread.is_alive():
+            return False
+        self._history_deletion_progress = JobHistoryDeletionProgress("삭제 준비 중", 0, 0)
+        self._history_deletion_report = None
+        self._show_history_deletion_progress_window()
+        self._history_deletion_thread = Thread(
+            target=self._run_history_deletion_worker,
+            args=(job_ids, statuses),
+            name="photos-mcp-history-cleanup",
+            daemon=True,
+        )
+        self._history_deletion_thread.start()
+        return True
+
+    @objc.python_method
+    def _run_history_deletion_worker(
+        self,
+        job_ids: tuple[str, ...] | None,
+        statuses: tuple[str, ...] | None,
+    ) -> None:
+        def report_progress(progress: JobHistoryDeletionProgress) -> None:
+            self._history_deletion_progress = progress
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "historyDeletionProgressUpdated:",
+                None,
+                False,
+            )
+
+        self._history_deletion_report = self._daemon_controller.delete_job_history(
+            job_ids,
+            statuses=statuses,
+            progress_callback=report_progress,
+        )
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "historyDeletionFinished:",
+            None,
+            False,
+        )
+
+    def historyDeletionProgressUpdated_(self, _payload) -> None:
+        progress = self._history_deletion_progress
+        if progress is None or self._history_deletion_indicator is None:
+            return
+        total = max(1, int(progress.total))
+        self._history_deletion_indicator.setIndeterminate_(False)
+        self._history_deletion_indicator.setMinValue_(0.0)
+        self._history_deletion_indicator.setMaxValue_(float(total))
+        self._history_deletion_indicator.setDoubleValue_(float(progress.completed))
+        if self._history_deletion_title is not None:
+            self._history_deletion_title.setStringValue_(progress.phase)
+        if self._history_deletion_detail is not None:
+            if progress.total > 0:
+                detail = f"{progress.completed:,} / {progress.total:,}개 기록 · {progress.percent:.0f}%"
+            else:
+                detail = "삭제 대상을 확인하고 있습니다."
+            if progress.files_deleted:
+                detail += f" · 파일 {progress.files_deleted:,}개 정리"
+            self._history_deletion_detail.setStringValue_(detail)
+
+    def historyDeletionFinished_(self, _payload) -> None:
+        report = self._history_deletion_report
+        self._history_deletion_thread = None
+        if self._history_deletion_window is not None:
+            self._history_deletion_window.orderOut_(None)
         self.rebuildMenu()
+        if report is None:
+            return
+        alert = NSAlert.alloc().init()
+        if report.errors:
+            alert.setMessageText_("일부 작업 기록을 삭제하지 못했습니다")
+            detail = "\n".join(report.errors[:3])
+            alert.setInformativeText_(
+                f"삭제 {report.deleted_count}건 · 남은 항목 {len(report.skipped_job_ids)}건\n{detail}"
+            )
+            alert.setAlertStyle_(NSAlertStyleWarning)
+        elif report.deleted_count == 0:
+            alert.setMessageText_("삭제할 과거 작업 기록이 없습니다")
+            alert.setInformativeText_("진행 중인 작업은 보호되어 삭제하지 않았습니다.")
+            alert.setAlertStyle_(NSAlertStyleInformational)
+        else:
+            alert.setMessageText_(f"작업 기록 {report.deleted_count}건을 삭제했습니다")
+            reclaimed_mb = report.bytes_reclaimed / (1024 * 1024)
+            alert.setInformativeText_(
+                f"결과·미리보기·임시 파일 {report.files_deleted:,}개를 정리했고 {reclaimed_mb:.1f}MB를 확보했습니다."
+            )
+            alert.setAlertStyle_(NSAlertStyleInformational)
+        alert.addButtonWithTitle_("확인")
+        NSApp.activateIgnoringOtherApps_(True)
+        alert.runModal()
+
+    @objc.python_method
+    def _show_history_deletion_progress_window(self) -> None:
+        if self._history_deletion_window is None:
+            window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+                NSMakeRect(0.0, 0.0, 420.0, 156.0),
+                NSWindowStyleMaskTitled,
+                NSBackingStoreBuffered,
+                False,
+            )
+            window.setTitle_("작업 기록 삭제")
+            window.setReleasedWhenClosed_(False)
+            root = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 420.0, 156.0))
+            self._history_deletion_title = NSTextField.labelWithString_("삭제 준비 중")
+            self._history_deletion_title.setFrame_(NSMakeRect(28.0, 98.0, 364.0, 26.0))
+            self._history_deletion_title.setFont_(app_font(16.0, "semibold"))
+            root.addSubview_(self._history_deletion_title)
+            self._history_deletion_detail = NSTextField.labelWithString_("삭제 대상을 확인하고 있습니다.")
+            self._history_deletion_detail.setFrame_(NSMakeRect(28.0, 72.0, 364.0, 18.0))
+            self._history_deletion_detail.setFont_(app_font(11.0))
+            self._history_deletion_detail.setTextColor_(NSColor.secondaryLabelColor())
+            root.addSubview_(self._history_deletion_detail)
+            self._history_deletion_indicator = NSProgressIndicator.alloc().initWithFrame_(
+                NSMakeRect(28.0, 42.0, 364.0, 12.0)
+            )
+            self._history_deletion_indicator.setIndeterminate_(False)
+            self._history_deletion_indicator.setMinValue_(0.0)
+            self._history_deletion_indicator.setMaxValue_(1.0)
+            root.addSubview_(self._history_deletion_indicator)
+            note = NSTextField.labelWithString_("삭제가 시작되면 중단할 수 없습니다. 원본 사진은 삭제하지 않습니다.")
+            note.setFrame_(NSMakeRect(28.0, 16.0, 364.0, 18.0))
+            note.setFont_(app_font(9.5))
+            note.setTextColor_(NSColor.tertiaryLabelColor())
+            root.addSubview_(note)
+            window.setContentView_(root)
+            self._history_deletion_window = window
+        self.historyDeletionProgressUpdated_(None)
+        self._history_deletion_window.center()
+        self._history_deletion_window.makeKeyAndOrderFront_(None)
+        NSApp.activateIgnoringOtherApps_(True)
 
     @objc.python_method
     def _release_google_import_files(self, job_ids: tuple[str, ...]) -> int:

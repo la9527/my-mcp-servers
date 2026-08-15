@@ -11,6 +11,9 @@
 - [Google Photos OAuth 앱 설정](05-google-photos-oauth-app-settings-2026-08-15.md): OAuth Client ID·Redirect URI·선택적 Client secret을 앱에서 입력해 macOS Keychain에 저장하고 즉시 runtime에 반영한다. callback URL 자동 수신과 실제 계정 E2E는 후속 검증 대상이다.
 - [Google Photos 재선택과 작업 기록 정리](06-google-photos-reselection-and-job-history-cleanup-2026-08-15.md): 취소·제출 뒤 새 선택과 화면 초기화를 제공하고, 작업 기록 개별·전체 삭제 시 앱 생성 결과·미리보기·Google 임시 다운로드를 함께 안전하게 정리한다.
 - [소스 인식형 사진 분류와 Google Photos 자동 준비](07-source-aware-classification-workflow-2026-08-15.md): Apple·로컬·Google의 2단계를 소스별로 분리하고, Google Picker 콜백 뒤 사진만 자동 다운로드한 다음 공통 분석 방법과 실행 전 확인으로 합류시킨다.
+- [장면 대표 한 장 결과 갤러리](08-scene-best-only-result-gallery-2026-08-15.md): 같은 장면에서는 최고 점수 대표 사진만 먼저 보여주고, 나머지는 전용 비교 창에서 확인하도록 결과 탐색을 정리한다.
+- [작업 기록 신뢰성 있는 삭제와 진행 상태](09-job-history-reliable-deletion-2026-08-16.md): 실패·재개 확인 기록을 포함한 통합 삭제, 생성 캐시 정리, 대량 삭제 진행률과 안전 경계를 정의한다.
+- [Google Photos 원본 및 메타데이터 보존](10-google-photos-original-metadata-2026-08-16.md): Picker 원본 다운로드와 보조 JSON의 보존 범위, 위치 정보 제한과 Takeout 연계 원칙을 정의한다.
 
 ## 인물 확인과 개인화
 

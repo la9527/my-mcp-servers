@@ -64,6 +64,7 @@ def main() -> int:
             payload.get("album_name", ""),
             payload.get("folder", ""),
             payload.get("skip_duplicates", True),
+            album_id=payload.get("album_id", ""),
         )
     else:
         raise ValueError(f"Unsupported operation: {operation}")

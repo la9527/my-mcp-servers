@@ -57,8 +57,11 @@ from Foundation import NSIndexPath, NSMakeSize, NSSet, NSUserDefaults, NSURL
 
 from photos_mcp.application.result_presenter import (
     recommendation_reason_summary,
+    group_result_items,
+    recommended_scene_best_items,
     result_category,
     result_item_failure,
+    result_sort_key,
     sanitized_result_export_payload,
     sorted_result_items,
 )
@@ -100,6 +103,7 @@ _RESULT_MIN_WIDTH = 1100.0
 _RESULT_MIN_HEIGHT = 680.0
 _ITEM_IDENTIFIER = "PhotosMcpResultItem"
 _DENSITY_DEFAULTS_KEY = "PhotosMcpResultGalleryDensity"
+_VIEW_MODE_DEFAULTS_KEY = "PhotosMcpResultGalleryViewMode"
 _DENSITY_WIDTHS = (178.0, 208.0, 238.0, 276.0)
 _DEFAULT_DENSITY_INDEX = 2
 def initial_density_index(stored_value: Any) -> int:
@@ -135,11 +139,15 @@ class PhotosMcpResultsController(NSWindowController):
         self._payload: dict[str, Any] = {}
         self._items: list[dict[str, Any]] = []
         self._visible_items: list[dict[str, Any]] = []
+        self._scene_groups: list[dict[str, Any]] = []
+        self._scene_groups_by_id: dict[str, list[dict[str, Any]]] = {}
         self._viewer_items_by_id: dict[str, dict[str, Any]] = {}
         self._photo_id_by_export_token: dict[str, str] = {}
-        self._filter = "all"
-        self._selected_photo_id = ""
         defaults = NSUserDefaults.standardUserDefaults()
+        self._filter = "all"
+        stored_view_mode = str(defaults.objectForKey_(_VIEW_MODE_DEFAULTS_KEY) or "scene")
+        self._view_mode = stored_view_mode if stored_view_mode in {"scene", "photo"} else "scene"
+        self._selected_photo_id = ""
         stored_density = defaults.objectForKey_(_DENSITY_DEFAULTS_KEY)
         self._density_index = initial_density_index(stored_density)
         self._computed_columns = 3
@@ -159,6 +167,7 @@ class PhotosMcpResultsController(NSWindowController):
         self._google_upload_worker: Thread | None = None
         self._pending_google_upload: dict[str, Any] = {}
         self._selection_persist_error = ""
+        self._selection_preset = ""
         self._is_laying_out = False
         window.setTitle_("사진 분류 결과")
         window.setMinSize_(NSMakeSize(_RESULT_MIN_WIDTH, _RESULT_MIN_HEIGHT))
@@ -184,6 +193,7 @@ class PhotosMcpResultsController(NSWindowController):
         self._export_generation += 1
         self._export_in_progress = False
         self._selection_persist_error = ""
+        self._selection_preset = ""
         self._payload = dict(payload or {})
         self._items = sorted_result_items(self._payload)[:1000]
         self._photo_id_by_export_token = {}
@@ -191,12 +201,14 @@ class PhotosMcpResultsController(NSWindowController):
             token = f"result-{index}"
             item["_export_token"] = token
             self._photo_id_by_export_token[token] = str(item.get("photo_id") or "")
+        self._rebuild_scene_groups()
         private_items = hydrate_viewer_source_paths(self._payload, self._items)
         self._viewer_items_by_id = {
             str(item.get("photo_id") or ""): item for item in private_items
         }
         self._filter = "all"
-        self._selected_photo_id = str(self._items[0].get("photo_id") or "") if self._items else ""
+        display_items = self._display_items()
+        self._selected_photo_id = str(display_items[0].get("photo_id") or "") if display_items else ""
         self._reload_results(scroll_to_top=True)
         window = self.window()
         window.center()
@@ -209,10 +221,25 @@ class PhotosMcpResultsController(NSWindowController):
         value = self._sender_identifier(sender)
         if value:
             self._filter = value
-        filtered = self._filtered_items()
+        filtered = self._display_items()
         if filtered and not any(str(item.get("photo_id") or "") == self._selected_photo_id for item in filtered):
             self._selected_photo_id = str(filtered[0].get("photo_id") or "")
         if not filtered:
+            self._selected_photo_id = ""
+        self._reload_results(scroll_to_top=True)
+
+    def switchResultView_(self, sender) -> None:
+        view_mode = self._sender_identifier(sender)
+        if view_mode not in {"scene", "photo"} or view_mode == self._view_mode:
+            return
+        self._view_mode = view_mode
+        NSUserDefaults.standardUserDefaults().setObject_forKey_(view_mode, _VIEW_MODE_DEFAULTS_KEY)
+        display_items = self._display_items()
+        if display_items and not any(
+            str(item.get("photo_id") or "") == self._selected_photo_id for item in display_items
+        ):
+            self._selected_photo_id = str(display_items[0].get("photo_id") or "")
+        if not display_items:
             self._selected_photo_id = ""
         self._reload_results(scroll_to_top=True)
 
@@ -240,6 +267,25 @@ class PhotosMcpResultsController(NSWindowController):
                 for item in self._visible_items
             ]
             self._viewer_controller.show_items(viewer_items, self._selected_photo_id)
+
+    def openSceneComparison_(self, sender) -> None:
+        photo_id = self._sender_identifier(sender) or self._selected_photo_id
+        selected = next(
+            (item for item in self._items if str(item.get("photo_id") or "") == photo_id),
+            None,
+        )
+        if selected is None:
+            return
+        cluster_id = str(selected.get("scene_cluster_id") or photo_id)
+        members = self._scene_groups_by_id.get(cluster_id, [selected])
+        viewer_items = [
+            self._viewer_items_by_id.get(str(item.get("photo_id") or ""), item)
+            for item in members
+        ]
+        if len(viewer_items) < 2:
+            self._show_alert("같은 장면 사진이 없습니다", "이 사진은 별도 장면 그룹으로 분류되었습니다.")
+            return
+        self._viewer_controller.show_scene_items(viewer_items, photo_id)
 
     def revealSelected_(self, _sender) -> None:
         selected = self._selected_item()
@@ -363,14 +409,27 @@ class PhotosMcpResultsController(NSWindowController):
             if str(item.get("photo_id") or "") == photo_id:
                 item["selected"] = selected
                 break
+        self._selection_preset = ""
+        self._rebuild_scene_groups()
+        self._visible_items = self._display_items()
         self._refresh_selection_controls()
         self._persist_single_selection(photo_id, selected)
 
     def selectAllExport_(self, _sender) -> None:
-        self._set_all_selection(True)
+        self._set_all_selection(True, preset="")
 
     def clearAllExport_(self, _sender) -> None:
-        self._set_all_selection(False)
+        self._set_all_selection(False, preset="")
+
+    def selectRecommendedSceneBest_(self, _sender) -> None:
+        if self._export_in_progress:
+            return
+        selected_ids = {
+            str(item.get("photo_id") or "")
+            for item in recommended_scene_best_items(self._items)
+            if str(item.get("photo_id") or "")
+        }
+        self._set_selection_ids(selected_ids, preset="recommended_scene_best")
 
     def exportSelected_(self, _sender) -> None:
         result_generation = self._result_generation
@@ -477,11 +536,34 @@ class PhotosMcpResultsController(NSWindowController):
         self._filter_buttons: dict[str, Any] = {}
         for key in ("all", "recommended", "review"):
             self._filter_buttons[key] = self._button(root, "", "filterResults:", identifier=key)
+        self._scene_view_button = self._button(
+            root,
+            "장면별",
+            "switchResultView:",
+            identifier="scene",
+            accessibility_label="장면별 대표 사진 보기",
+        )
+        self._photo_view_button = self._button(
+            root,
+            "사진별",
+            "switchResultView:",
+            identifier="photo",
+            accessibility_label="사진별 전체 결과 보기",
+        )
         self._density_smaller = self._button(root, "−", "changeDensity:", identifier="smaller")
         self._density_label = self._label(root, "자동 3열", 9.5, bold=True)
         self._density_label.setAlignment_(1)
         self._density_larger = self._button(root, "+", "changeDensity:", identifier="larger")
         self._selection_label = self._label(root, "선택한 0장", 10.0, bold=True)
+        self._selection_hint_label = self._label(root, "", 8.8, bold=True)
+        self._selection_hint_label.setTextColor_(NSColor.systemGreenColor())
+        self._select_scene_best_button = self._button(
+            root,
+            "추천 장면 베스트 선택",
+            "selectRecommendedSceneBest:",
+            primary=True,
+            accessibility_label="추천 장면마다 최고 점수 사진 한 장 선택",
+        )
         self._select_all_button = self._button(root, "전체 선택", "selectAllExport:")
         self._clear_all_button = self._button(root, "전체 해제", "clearAllExport:")
 
@@ -591,13 +673,17 @@ class PhotosMcpResultsController(NSWindowController):
                 self._summary_labels[key].setFrame_(NSMakeRect(18.0, 18.0, tile_width - 36.0, 24.0))
 
             toolbar_y = tile_y - 48.0
+            view_mode_width = 150.0
             density_width = 150.0
-            filter_area_width = gallery_width - density_width - 10.0
+            filter_start_x = margin + view_mode_width + 12.0
+            filter_area_width = gallery_width - density_width - view_mode_width - 22.0
             filter_gap = 6.0
             filter_width = (filter_area_width - filter_gap * 2.0) / 3.0
+            self._scene_view_button.setFrame_(NSMakeRect(margin, toolbar_y, 72.0, 32.0))
+            self._photo_view_button.setFrame_(NSMakeRect(margin + 78.0, toolbar_y, 72.0, 32.0))
             for index, key in enumerate(("all", "recommended", "review")):
                 self._filter_buttons[key].setFrame_(
-                    NSMakeRect(margin + index * (filter_width + filter_gap), toolbar_y, filter_width, 32.0)
+                    NSMakeRect(filter_start_x + index * (filter_width + filter_gap), toolbar_y, filter_width, 32.0)
                 )
             density_x = margin + gallery_width - density_width
             self._density_smaller.setFrame_(NSMakeRect(density_x, toolbar_y, 36.0, 32.0))
@@ -621,16 +707,18 @@ class PhotosMcpResultsController(NSWindowController):
             action_y = 66.0 if compact_footer else footer_y
             self._finder_button.setFrame_(NSMakeRect(margin, footer_y, 150.0, 34.0))
             self._selection_label.setFrame_(NSMakeRect(margin + 166.0, footer_y + 7.0, 100.0, 20.0))
-            self._select_all_button.setFrame_(NSMakeRect(margin + 270.0, footer_y, 86.0, 34.0))
-            self._clear_all_button.setFrame_(NSMakeRect(margin + 362.0, footer_y, 86.0, 34.0))
+            self._selection_hint_label.setFrame_(NSMakeRect(margin + 166.0, 4.0, 190.0, 16.0))
+            self._select_scene_best_button.setFrame_(NSMakeRect(margin + 270.0, footer_y, 138.0, 34.0))
+            self._select_all_button.setFrame_(NSMakeRect(margin + 416.0, footer_y, 86.0, 34.0))
+            self._clear_all_button.setFrame_(NSMakeRect(margin + 508.0, footer_y, 86.0, 34.0))
             self._recommendation_review_button.setFrame_(
-                NSMakeRect(margin + 460.0, footer_y, 150.0, 34.0)
+                NSMakeRect(margin + 606.0, footer_y, 150.0, 34.0)
             )
             self._face_identity_review_button.setFrame_(
-                NSMakeRect(margin + 618.0, footer_y, 150.0, 34.0)
+                NSMakeRect(margin + 764.0, footer_y, 150.0, 34.0)
             )
             self._face_identity_grouping_review_button.setFrame_(
-                NSMakeRect(margin + 776.0, footer_y, 150.0, 34.0)
+                NSMakeRect(margin + 922.0, footer_y, 150.0, 34.0)
             )
             self._json_export_button.setFrame_(NSMakeRect(width - margin - 414.0, action_y, 96.0, 34.0))
             self._google_upload_button.setFrame_(
@@ -667,7 +755,7 @@ class PhotosMcpResultsController(NSWindowController):
         columns = int((gallery_width + spacing) // (preferred_width + spacing))
         self._computed_columns = max(3, min(6, columns))
         card_width = (gallery_width - spacing * (self._computed_columns - 1)) / self._computed_columns
-        card_height = max(220.0, card_width * 0.70 + 92.0)
+        card_height = max(250.0, card_width * 0.70 + 124.0)
         self._flow_layout.setItemSize_(NSMakeSize(card_width, card_height))
         self._flow_layout.invalidateLayout()
         self._density_label.setStringValue_(f"자동 {self._computed_columns}열")
@@ -676,16 +764,26 @@ class PhotosMcpResultsController(NSWindowController):
 
     @objc.python_method
     def _reload_results(self, *, scroll_to_top: bool) -> None:
-        self._visible_items = self._filtered_items()
+        self._visible_items = self._display_items()
         counts = self._category_counts()
         has_items = bool(self._items)
         self._title_label.setStringValue_("사진 분석 완료" if has_items else "표시할 사진 결과가 없습니다")
-        self._subtitle_label.setStringValue_(
-            f"사진 {len(self._items)}장을 분석했습니다 · 결과는 읽기 전용입니다."
-            if has_items
-            else "선택한 작업에 저장된 분석 결과가 없습니다."
-        )
-        self._summary_labels["recommended"].setStringValue_(f"추천  {counts['recommended']}")
+        if has_items and self._view_mode == "scene":
+            self._subtitle_label.setStringValue_(
+                f"사진 {len(self._items)}장을 분석했습니다 · 같은 장면은 가장 좋은 사진부터 보여줍니다."
+            )
+        else:
+            self._subtitle_label.setStringValue_(
+                f"사진 {len(self._items)}장을 분석했습니다 · 결과는 읽기 전용입니다."
+                if has_items
+                else "선택한 작업에 저장된 분석 결과가 없습니다."
+            )
+        if self._view_mode == "scene":
+            self._summary_labels["recommended"].setStringValue_(
+                f"추천 {counts['recommended']}장 · {self._scene_group_count_for_category('recommended')}개 장면"
+            )
+        else:
+            self._summary_labels["recommended"].setStringValue_(f"추천  {counts['recommended']}")
         self._summary_labels["review"].setStringValue_(f"검토 필요  {counts['review']}")
         labels = {
             "all": f"전체 {len(self._items)}",
@@ -695,6 +793,11 @@ class PhotosMcpResultsController(NSWindowController):
         for key, button in self._filter_buttons.items():
             button.setTitle_(labels[key])
             button.setState_(1 if self._filter == key else 0)
+        self._scene_view_button.setBezelStyle_(1 if self._view_mode == "scene" else 0)
+        self._photo_view_button.setBezelStyle_(1 if self._view_mode == "photo" else 0)
+        if hasattr(self._scene_view_button, "setBezelColor_"):
+            self._scene_view_button.setBezelColor_(accent_color())
+            self._photo_view_button.setBezelColor_(accent_color())
         self._scroll_view.setHidden_(not self._visible_items)
         self._empty_card.setHidden_(bool(self._visible_items))
         self._collection_view.reloadData()
@@ -794,6 +897,44 @@ class PhotosMcpResultsController(NSWindowController):
         return [item for item in self._items if result_category(item) == self._filter]
 
     @objc.python_method
+    def _rebuild_scene_groups(self) -> None:
+        self._scene_groups = group_result_items(self._items)
+        self._scene_groups_by_id = {
+            str(group["scene_cluster_id"]): list(group["items"])
+            for group in self._scene_groups
+        }
+
+    @objc.python_method
+    def _display_items(self) -> list[dict[str, Any]]:
+        if self._view_mode == "photo":
+            return self._filtered_items()
+
+        representatives: list[dict[str, Any]] = []
+        for group in self._scene_groups:
+            members = list(group["items"])
+            candidates = (
+                members
+                if self._filter == "all"
+                else [item for item in members if result_category(item) == self._filter]
+            )
+            if not candidates:
+                continue
+            representative = dict(candidates[0])
+            representative["_scene_gallery"] = True
+            representative["_scene_group_id"] = str(group["scene_cluster_id"])
+            representative["_scene_alternative_count"] = max(0, len(members) - 1)
+            representatives.append(representative)
+        return sorted(representatives, key=result_sort_key)
+
+    @objc.python_method
+    def _scene_group_count_for_category(self, category: str) -> int:
+        return sum(
+            1
+            for group in self._scene_groups
+            if any(result_category(item) == category for item in group["items"])
+        )
+
+    @objc.python_method
     def _category_counts(self) -> dict[str, int]:
         counts = {"recommended": 0, "review": 0}
         for item in self._items:
@@ -813,6 +954,16 @@ class PhotosMcpResultsController(NSWindowController):
             self._export_button.setEnabled_(count > 0 and not self._export_in_progress)
             self._select_all_button.setEnabled_(not self._export_in_progress)
             self._clear_all_button.setEnabled_(not self._export_in_progress)
+            recommended_scene_count = len(recommended_scene_best_items(self._items))
+            self._select_scene_best_button.setEnabled_(
+                recommended_scene_count > 0 and not self._export_in_progress
+            )
+            if self._selection_preset == "recommended_scene_best":
+                self._selection_hint_label.setStringValue_(
+                    f"추천 장면 {recommended_scene_count}개에서 베스트 {count}장 선택"
+                )
+            else:
+                self._selection_hint_label.setStringValue_("")
             is_google = self._is_google_result()
             self._google_upload_button.setHidden_(not is_google)
             self._google_upload_button.setTitle_(f"선택한 {count}장 Google 새 앨범")
@@ -997,11 +1148,14 @@ class PhotosMcpResultsController(NSWindowController):
                 NSWorkspace.sharedWorkspace().openURL_(url)
 
     @objc.python_method
-    def _set_all_selection(self, selected: bool) -> None:
+    def _set_all_selection(self, selected: bool, *, preset: str) -> None:
         if self._export_in_progress:
             return
         for item in self._items:
             item["selected"] = selected
+        self._selection_preset = preset
+        self._rebuild_scene_groups()
+        self._visible_items = self._display_items()
         self._refresh_selection_controls()
         run_id = str(self._payload.get("job_id") or self._payload.get("run_id") or "")
         generation = self._result_generation
@@ -1009,6 +1163,37 @@ class PhotosMcpResultsController(NSWindowController):
         def worker() -> None:
             try:
                 asyncio.run(call_vendor("photo-ranker", "set_all_photo_reviews", run_id, selected))
+            except Exception as exc:
+                self._selection_persist_error = str(exc)
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "selectionPersistFailed:", {"message": str(exc), "generation": generation}, False
+                )
+
+        self._selection_executor.submit(worker)
+
+    @objc.python_method
+    def _set_selection_ids(self, selected_ids: set[str], *, preset: str) -> None:
+        if self._export_in_progress:
+            return
+        for item in self._items:
+            item["selected"] = str(item.get("photo_id") or "") in selected_ids
+        self._selection_preset = preset
+        self._rebuild_scene_groups()
+        self._visible_items = self._display_items()
+        self._refresh_selection_controls()
+        run_id = str(self._payload.get("job_id") or self._payload.get("run_id") or "")
+        generation = self._result_generation
+
+        def worker() -> None:
+            try:
+                asyncio.run(
+                    call_vendor(
+                        "photo-ranker",
+                        "set_selected_photo_reviews",
+                        run_id,
+                        json.dumps(sorted(selected_ids)),
+                    )
+                )
             except Exception as exc:
                 self._selection_persist_error = str(exc)
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(

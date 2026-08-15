@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from photos_mcp.application.action_options import ActionValidationError, validate_action_options
@@ -105,6 +106,53 @@ def _safe_export_result(payload: Any) -> dict[str, Any]:
         "source_paths",
     ):
         result.pop(key, None)
+    return result
+
+
+def _external_source_paths(
+    selected_items: list[dict[str, Any]],
+    photo_ids: list[str],
+) -> list[str]:
+    """Resolve reviewed external files without accepting paths from the UI request."""
+    expected = set(photo_ids)
+    paths: list[str] = []
+    seen: set[str] = set()
+    for item in selected_items:
+        photo_id = str(item.get("photo_id") or "")
+        if photo_id not in expected:
+            continue
+        candidate = str(item.get("source_photo_path") or photo_id).strip()
+        path = Path(candidate)
+        if not candidate or not path.is_file():
+            continue
+        resolved = str(path.resolve())
+        if resolved not in seen:
+            paths.append(resolved)
+            seen.add(resolved)
+    return paths
+
+
+def _external_import_receipt(payload: Any, *, requested: int) -> dict[str, Any]:
+    """Normalize an Apple Photos file-import result as an export destination receipt."""
+    result = dict(payload) if isinstance(payload, dict) else {}
+    imported = int(result.get("imported") or 0)
+    errors = list(result.get("errors") or [])
+    has_error = bool(result.get("error") or result.get("error_code") or errors)
+    result.update(
+        {
+            "status": (
+                "completed"
+                if imported == requested and not has_error
+                else "failed" if imported == 0 else "partial"
+            ),
+            "requested": requested,
+            "added": imported,
+            "import_mode": "external_file_import",
+        }
+    )
+    # Paths and automation details are not needed by the result gallery receipt.
+    result.pop("errors", None)
+    result.pop("details", None)
     return result
 
 
@@ -324,13 +372,6 @@ async def handle_write(
                 run_id=run_id,
                 supported_sources=("apple", "local"),
             )
-        if wants_album and source != "apple":
-            return _unsupported_source_payload(
-                action=selected_action,
-                source=source or "unknown",
-                run_id=run_id,
-                supported_sources=("apple",),
-            )
 
         selected_items = await call_vendor_fn(
             "photo-ranker",
@@ -411,7 +452,7 @@ async def handle_write(
                     "requested": len(photo_ids),
                     "added": 0,
                 }
-            else:
+            elif source == "apple":
                 album_ids = local_success_ids or photo_ids
                 album_payload = await call_vendor_fn(
                     "photo-ranker",
@@ -436,6 +477,32 @@ async def handle_write(
                 safe_album.pop("errors", None)
                 safe_album.pop("details", None)
                 destinations["apple_album"] = safe_album
+            else:
+                # Google Photos and local-folder jobs hold external file paths, not
+                # Apple Photos UUIDs. Importing those exact reviewed files is the
+                # only safe way to create or populate an Apple Photos album.
+                source_paths = _external_source_paths(selected_items, photo_ids)
+                if not source_paths:
+                    destinations["apple_album"] = {
+                        "status": "failed",
+                        "requested": len(photo_ids),
+                        "added": 0,
+                        "reason": "selected_external_files_unavailable",
+                        "import_mode": "external_file_import",
+                    }
+                else:
+                    album_payload = await photos_run_fn(
+                        state_store=state_store,
+                        intent="import",
+                        photo_paths_json=json.dumps(source_paths, ensure_ascii=False),
+                        target_album_name=target_album_name,
+                        target_album_id=target_album_id,
+                        folder=str(opts.get("folder") or ""),
+                    )
+                    destinations["apple_album"] = _external_import_receipt(
+                        album_payload,
+                        requested=len(source_paths),
+                    )
 
         statuses = {str(item.get("status") or "") for item in destinations.values()}
         completed = bool(statuses) and statuses <= {"completed", "already_exists"}
@@ -507,6 +574,7 @@ async def handle_write(
             intent="import",
             photo_paths_json=json.dumps(_as_list(opts.get("photo_paths")), ensure_ascii=False),
             target_album_name=target_album_name,
+            target_album_id=str(opts.get("target_album_id") or ""),
             folder=str(opts.get("folder") or ""),
         )
         return _complete_payload(payload, action=selected_action, target_album_name=target_album_name)

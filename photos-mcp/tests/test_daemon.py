@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from photos_mcp.app.config import load_config
 from photos_mcp.app.lifecycle import PhotosMcpDaemonController
-from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
+from photos_mcp.infrastructure.persistence.state_store import (
+    JobSnapshot,
+    PhotosMcpStateStore,
+)
 
 
-def _build_controller() -> PhotosMcpDaemonController:
+def _build_controller(tmp_path: Path | None = None) -> PhotosMcpDaemonController:
     config = load_config()
+    repository_path = tmp_path / "jobs.db" if tmp_path is not None else None
     state_store = PhotosMcpStateStore(
         endpoint=config.endpoint,
         health_endpoint=config.health_endpoint,
+        repository_path=repository_path,
     )
     return PhotosMcpDaemonController(config, state_store)
 
@@ -82,28 +88,27 @@ def test_delete_job_rejects_non_terminal_status(monkeypatch) -> None:
 
 def test_clear_job_history_removes_terminal_queue_and_db_rows(monkeypatch) -> None:
     controller = _build_controller()
-    removed_ids = []
-    queue_jobs = [
-        SimpleNamespace(id="job-done", status=SimpleNamespace(value="completed")),
-        SimpleNamespace(id="job-running", status=SimpleNamespace(value="running")),
-        SimpleNamespace(id="job-failed", status=SimpleNamespace(value="failed")),
+    deleted_ids: list[str] = []
+    snapshots = [
+        JobSnapshot("job-done", "classify", "apple", "completed"),
+        JobSnapshot("job-running", "classify", "apple", "running"),
+        JobSnapshot("job-failed", "classify", "apple", "failed"),
     ]
-    queue = SimpleNamespace(
-        list_jobs=lambda: queue_jobs,
-        remove_job=lambda job_id: removed_ids.append(job_id) or True,
+    store = SimpleNamespace(
+        list_snapshots=lambda: snapshots,
+        source_paths_for_job=lambda _job_id: (),
+        delete_terminal_job=lambda job_id, cleanup_artifacts=False: deleted_ids.append(job_id) or True,
+        source_path_is_referenced=lambda _path: False,
     )
-    db = SimpleNamespace(
-        clear_job_history=lambda statuses: ["job-failed", "job-done"],
-    )
-    fake_module = SimpleNamespace(_get_job_queue=lambda: queue, _get_job_db=lambda: db)
 
-    monkeypatch.setattr("photos_mcp.app.lifecycle.load_vendor_server", lambda _name: fake_module)
+    monkeypatch.setattr("photos_mcp.app.lifecycle.PhotoRankerJobStore", lambda _module: store)
+    monkeypatch.setattr("photos_mcp.app.lifecycle.load_vendor_server", lambda _name: SimpleNamespace())
     monkeypatch.setattr(controller, "refresh_jobs_once", lambda: None)
 
-    deleted_ids = controller.clear_job_history(("completed", "failed"))
+    cleared_ids = controller.clear_job_history(("completed", "failed"))
 
+    assert cleared_ids == ["job-done", "job-failed"]
     assert deleted_ids == ["job-done", "job-failed"]
-    assert removed_ids == ["job-done", "job-failed"]
 
 
 def test_clear_job_history_removes_terminal_synthetic_runs_from_state(monkeypatch) -> None:
@@ -134,11 +139,16 @@ def test_clear_job_history_removes_terminal_synthetic_runs_from_state(monkeypatc
         }
     )
 
-    queue = SimpleNamespace(list_jobs=lambda: [])
-    db = SimpleNamespace(clear_job_history=lambda statuses: [])
-    fake_module = SimpleNamespace(_get_job_queue=lambda: queue, _get_job_db=lambda: db)
+    store = SimpleNamespace(
+        list_snapshots=lambda: [],
+        source_paths_for_job=lambda _job_id: (),
+        delete_terminal_job=lambda _job_id, cleanup_artifacts=False: False,
+        source_path_is_referenced=lambda _path: False,
+    )
 
-    monkeypatch.setattr("photos_mcp.app.lifecycle.load_vendor_server", lambda _name: fake_module)
+    monkeypatch.setattr("photos_mcp.app.lifecycle.PhotoRankerJobStore", lambda _module: store)
+    monkeypatch.setattr("photos_mcp.app.lifecycle.load_vendor_server", lambda _name: SimpleNamespace())
+    monkeypatch.setattr(controller, "refresh_jobs_once", lambda: None)
 
     deleted_ids = controller.clear_job_history(("completed",))
     snapshot = controller._state_store.snapshot()
@@ -146,3 +156,104 @@ def test_clear_job_history_removes_terminal_synthetic_runs_from_state(monkeypatc
     assert deleted_ids == ["analyze-done"]
     assert [job["job_id"] for job in snapshot.recent_jobs] == []
     assert [job["job_id"] for job in snapshot.active_jobs] == ["analyze-running"]
+
+
+def test_history_cleanup_deletes_recovery_records_and_reports_progress(tmp_path, monkeypatch) -> None:
+    controller = _build_controller(tmp_path)
+    controller._state_store.upsert_synthetic_run(
+        {
+            "run_id": "resume-needed",
+            "job_id": "resume-needed",
+            "request_kind": "photos_run",
+            "source": "apple",
+            "status": "awaiting_resume_approval",
+            "summary_available": True,
+            "result_available": False,
+            "started_at": "2026-08-01T00:00:00+00:00",
+        }
+    )
+    store = SimpleNamespace(
+        list_snapshots=lambda: [],
+        source_paths_for_job=lambda _job_id: (),
+        delete_terminal_job=lambda _job_id, cleanup_artifacts=False: False,
+        source_path_is_referenced=lambda _path: False,
+    )
+    progress = []
+
+    monkeypatch.setattr("photos_mcp.app.lifecycle.PhotoRankerJobStore", lambda _module: store)
+    monkeypatch.setattr("photos_mcp.app.lifecycle.load_vendor_server", lambda _name: SimpleNamespace())
+    monkeypatch.setattr(controller, "refresh_jobs_once", lambda: None)
+    monkeypatch.setattr(controller, "_release_google_import_files", lambda _job_id: (0, 0))
+    monkeypatch.setattr(controller, "_release_orphaned_managed_files", lambda _store: (0, 0))
+
+    report = controller.delete_job_history(progress_callback=progress.append)
+
+    assert report.deleted_job_ids == ("resume-needed",)
+    assert controller._state_store.run_repository.get_run("resume-needed") is None
+    assert progress[0].completed == 0
+    assert progress[-1].completed == progress[-1].total == 1
+
+
+def test_history_cleanup_reports_monotonic_progress_for_one_thousand_records(monkeypatch) -> None:
+    controller = _build_controller()
+    deleted_ids: list[str] = []
+    snapshots = [
+        JobSnapshot(f"bulk-{index:04d}", "classify", "apple", "completed")
+        for index in range(1000)
+    ]
+    store = SimpleNamespace(
+        list_snapshots=lambda: snapshots,
+        source_paths_for_job=lambda _job_id: (),
+        delete_terminal_job=lambda job_id, cleanup_artifacts=False: deleted_ids.append(job_id) or True,
+        source_path_is_referenced=lambda _path: False,
+    )
+    progress = []
+
+    monkeypatch.setattr("photos_mcp.app.lifecycle.PhotoRankerJobStore", lambda _module: store)
+    monkeypatch.setattr("photos_mcp.app.lifecycle.load_vendor_server", lambda _name: SimpleNamespace())
+    monkeypatch.setattr(controller, "refresh_jobs_once", lambda: None)
+    monkeypatch.setattr(controller, "_release_google_import_files", lambda _job_id: (0, 0))
+    monkeypatch.setattr(controller, "_release_orphaned_managed_files", lambda _store: (0, 0))
+    monkeypatch.setattr(
+        "photos_mcp.app.lifecycle.delete_job_artifacts_with_stats",
+        lambda _job_id: SimpleNamespace(file_count=0, bytes_reclaimed=0, removed=False),
+    )
+
+    report = controller.delete_job_history(progress_callback=progress.append)
+
+    completed = [item.completed for item in progress]
+    assert report.deleted_count == 1000
+    assert deleted_ids == [f"bulk-{index:04d}" for index in range(1000)]
+    assert completed == sorted(completed)
+    assert progress[-1].completed == progress[-1].total == 1000
+
+
+def test_full_history_cleanup_removes_only_unreferenced_managed_cache(tmp_path, monkeypatch) -> None:
+    controller = _build_controller(tmp_path)
+    runtime_root = tmp_path / "runtime"
+    artifact_root = runtime_root / "artifacts"
+    terminal_cache = runtime_root / "terminal-cache"
+    (artifact_root / "old-job").mkdir(parents=True)
+    (artifact_root / "old-job" / "preview.jpg").write_bytes(b"preview")
+    (artifact_root / "active-job").mkdir(parents=True)
+    (artifact_root / "active-job" / "preview.jpg").write_bytes(b"active")
+    terminal_cache.mkdir(parents=True)
+    stale = terminal_cache / "stale.jpg"
+    retained = terminal_cache / "retained.jpg"
+    stale.write_bytes(b"stale")
+    retained.write_bytes(b"retained")
+    store = SimpleNamespace(
+        list_snapshots=lambda: [JobSnapshot("active-job", "classify", "apple", "running")],
+        referenced_source_paths=lambda: {str(retained)},
+    )
+
+    monkeypatch.setattr("photos_mcp.app.lifecycle.photo_ranker_runtime_root", lambda: runtime_root)
+
+    files_deleted, bytes_reclaimed = controller._release_orphaned_managed_files(store)
+
+    assert files_deleted == 2
+    assert bytes_reclaimed == len(b"preview") + len(b"stale")
+    assert not (artifact_root / "old-job").exists()
+    assert (artifact_root / "active-job" / "preview.jpg").exists()
+    assert not stale.exists()
+    assert retained.exists()

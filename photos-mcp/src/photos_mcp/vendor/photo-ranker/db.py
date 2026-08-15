@@ -617,6 +617,61 @@ class JobDB:
         }
 
     @_synchronized
+    def set_selected_photo_reviews(self, job_id: str, photo_ids: list[str]) -> dict:
+        """Persist a selected subset without overwriting tags, notes, or source paths."""
+        selected_ids = tuple(dict.fromkeys(str(photo_id) for photo_id in photo_ids if str(photo_id)))
+        self._conn.execute(
+            """
+            INSERT INTO job_assets
+                (job_id, photo_id, selected, selection_overridden)
+            SELECT job_id, photo_id, 0, 1
+            FROM photo_results
+            WHERE job_id = ?
+            ON CONFLICT(job_id, photo_id) DO UPDATE SET
+                selected = 0,
+                selection_overridden = 1
+            """,
+            (job_id,),
+        )
+        if selected_ids:
+            placeholders = ", ".join("?" for _ in selected_ids)
+            self._conn.execute(
+                f"""
+                UPDATE job_assets
+                SET selected = 1,
+                    selection_overridden = 1
+                WHERE job_id = ?
+                  AND photo_id IN ({placeholders})
+                  AND EXISTS (
+                      SELECT 1
+                      FROM photo_results
+                      WHERE photo_results.job_id = job_assets.job_id
+                        AND photo_results.photo_id = job_assets.photo_id
+                  )
+                """,
+                (job_id, *selected_ids),
+            )
+        counts = self._conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(job_assets.selected), 0) AS selected
+            FROM photo_results
+            JOIN job_assets
+              ON job_assets.job_id = photo_results.job_id
+             AND job_assets.photo_id = photo_results.photo_id
+            WHERE photo_results.job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        self._conn.commit()
+        return {
+            "job_id": job_id,
+            "total": int(counts["total"]),
+            "selected": int(counts["selected"]),
+        }
+
+    @_synchronized
     def list_job_assets(self, job_id: str) -> dict[str, dict]:
         """Load preview/source/review metadata for a job."""
         rows = self._conn.execute(

@@ -15,6 +15,16 @@ from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
 DEFAULT_APPROVAL_TTL_SECONDS = 900.0
 _DEFAULT_REPOSITORY = RunRepository()
+_PRE_EXECUTION_BLOCK_CODES = {
+    "export_destination_required",
+    "no_selected_photos",
+    "resume_receipt_destination_mismatch",
+    "resume_receipt_not_found",
+    "resume_receipt_photo_set_mismatch",
+    "resume_receipt_run_mismatch",
+    "selected_external_files_unavailable",
+    "unsupported_source_for_write",
+}
 
 
 def _utcnow_iso() -> str:
@@ -68,6 +78,14 @@ def _plan_summary(action: str, options: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _is_pre_execution_block(receipt: dict[str, Any]) -> bool:
+    """Only discard durable records when the saved result proves no write ran."""
+    result = receipt.get("result")
+    if not isinstance(result, dict) or str(result.get("status") or "") != "blocked":
+        return False
+    return str(result.get("error_code") or "") in _PRE_EXECUTION_BLOCK_CODES
+
+
 def require_mutation_approval(
     tool: str,
     action: str,
@@ -95,6 +113,9 @@ def require_mutation_approval(
     repo.expire_mutation_plans()
 
     previous_receipt = repo.get_mutation_receipt(idempotency_key)
+    if previous_receipt and _is_pre_execution_block(previous_receipt):
+        repo.discard_pre_execution_mutation(idempotency_key)
+        previous_receipt = None
     if previous_receipt:
         if previous_receipt.get("status") in {"started", "reconciling", "partial", "failed"}:
             return {
@@ -267,6 +288,18 @@ def finalize_mutation_receipt(
     payload = dict(result or {})
     destination_receipts = dict(payload.get("destination_receipts") or {})
     explicit_status = str(payload.get("status") or "")
+    if explicit_status == "blocked":
+        finalized.update(
+            {
+                "status": "blocked",
+                "result": payload,
+                "confirmed_photo_ids": [],
+                "unconfirmed_photo_ids": [],
+                "reconciliation_required": False,
+                "destination_receipts": destination_receipts,
+            }
+        )
+        return finalized
     failed = int(payload.get("failed") or payload.get("failure_count") or 0)
     added_value = payload.get(
         "added",

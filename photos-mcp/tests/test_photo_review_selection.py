@@ -95,6 +95,28 @@ def test_set_all_clears_every_result(tmp_path) -> None:
     db.close()
 
 
+def test_selected_subset_replaces_selection_without_losing_review_details(tmp_path) -> None:
+    JobDB = _load_job_db_class()
+    db = JobDB(tmp_path / "jobs.db")
+    db.save_photo_results("job-1", [_result("one"), _result("two"), _result("three")])
+    db.save_job_asset("job-1", "two", "/preview/two.jpg", "/source/two.heic")
+    db.update_photo_review("job-1", "two", tags=["family"], selected=True, note="keep")
+
+    counts = db.set_selected_photo_reviews("job-1", ["two", "three", "missing"])
+
+    assert counts == {"job_id": "job-1", "total": 3, "selected": 2}
+    assets = db.list_job_assets("job-1")
+    assert {photo_id: asset["selected"] for photo_id, asset in assets.items()} == {
+        "one": False,
+        "two": True,
+        "three": True,
+    }
+    assert assets["two"]["tags"] == ["family"]
+    assert assets["two"]["note"] == "keep"
+    assert assets["two"]["source_photo_path"] == "/source/two.heic"
+    db.close()
+
+
 def test_set_all_preserves_tags_notes_and_paths(tmp_path) -> None:
     JobDB = _load_job_db_class()
     db = JobDB(tmp_path / "jobs.db")
@@ -246,4 +268,17 @@ async def test_set_all_photo_reviews_tool_returns_counts(monkeypatch, tmp_path) 
     payload = json.loads(await server.set_all_photo_reviews("job-1", True))
 
     assert payload == {"job_id": "job-1", "total": 2, "selected": 2}
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_set_selected_photo_reviews_tool_returns_counts(monkeypatch, tmp_path) -> None:
+    server = _load_server_module()
+    db = server.JobDB(tmp_path / "jobs.db")
+    db.save_photo_results("job-1", [_result("one"), _result("two")])
+    monkeypatch.setattr(server, "_get_job_db", lambda: db)
+
+    payload = json.loads(await server.set_selected_photo_reviews("job-1", '["two"]'))
+
+    assert payload == {"job_id": "job-1", "total": 2, "selected": 1}
     db.close()

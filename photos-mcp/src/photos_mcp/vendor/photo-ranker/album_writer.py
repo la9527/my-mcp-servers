@@ -484,6 +484,8 @@ class AlbumWriter:
         album_name: str = "",
         folder: str = "",
         skip_duplicates: bool = True,
+        *,
+        album_id: str = "",
     ) -> dict:
         """Import external photos into Photos library.
 
@@ -504,6 +506,7 @@ class AlbumWriter:
                     "album_name": album_name,
                     "folder": folder,
                     "skip_duplicates": skip_duplicates,
+                    "album_id": album_id,
                 },
             )
             return dict(result)
@@ -528,8 +531,18 @@ class AlbumWriter:
 
         # Import with optional album
         target_album = None
-        if album_name:
-            album_info = self.create_album(album_name, folder)
+        if album_id:
+            target_album = self._resolve_album_by_uuid(album_id)
+            if target_album is None:
+                return {
+                    "imported": 0,
+                    "album": album_name,
+                    "album_id": album_id,
+                    "errors": ["Target album was not found"],
+                }
+            self._validate_album_name(album_id, album_name, str(target_album.name))
+        elif album_name:
+            self.create_album(album_name, folder)
             target_album = self._lib.album(album_name)
 
         try:
@@ -553,6 +566,7 @@ class AlbumWriter:
         return {
             "imported": count,
             "album": album_name,
+            "album_id": str(getattr(target_album, "uuid", "") or album_id),
             "errors": errors,
         }
 

@@ -47,6 +47,7 @@ from photos_mcp.interfaces.appkit.shared.theme import (
     sidebar_background_color,
     subtle_border_color,
 )
+from photos_mcp.infrastructure.persistence.state_store import HISTORICAL_JOB_STATUSES
 from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
 
 
@@ -55,7 +56,7 @@ _WINDOW_HEIGHT = 780.0
 _SIDEBAR_WIDTH = 220.0
 _CONTENT_MARGIN = 32.0
 _CLASSIFICATION_TOP_INSET = 20.0
-_TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_HISTORICAL_JOB_STATUSES = frozenset(HISTORICAL_JOB_STATUSES)
 
 _SYSTEM_SYMBOLS = {
     "home": "house",
@@ -408,7 +409,7 @@ class PhotosMcpMainWindowController(NSWindowController):
             "clearJobHistoryWithConfirmation:",
         )
         clear_button.setEnabled_(
-            any(job.status in _TERMINAL_JOB_STATUSES for job in jobs)
+            any(job.status in _HISTORICAL_JOB_STATUSES for job in jobs)
         )
         server = self._card(parent, margin + usable - 148.0, top - 54.0, 148.0, 38.0, "neutral")
         self._status_dot(server, 16.0, 19.0, "success", "서버 실행 중")

@@ -5,7 +5,11 @@ from mcp.server.fastmcp.exceptions import ToolError
 from apple_terminal_helper import TerminalHelperError
 
 from photos_mcp.app.config import load_config
-from photos_mcp.application.mutation_approval import finalize_mutation_receipt
+from photos_mcp.application.mutation_approval import (
+    finalize_mutation_receipt,
+    require_mutation_approval,
+)
+from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 from photos_mcp.interfaces.mcp.server import build_server
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
@@ -191,3 +195,42 @@ def test_mutation_receipt_redacts_terminal_helper_payloads() -> None:
     assert receipt["error_code"] == "terminal_helper_timeout"
     assert receipt["error"] == "Apple Photos helper operation failed"
     assert "/private" not in str(receipt)
+
+
+def test_pre_execution_blocked_receipt_allows_a_fresh_approval(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "runs.sqlite3")
+    options = {"run_id": "run-1", "target_album_name": "다시 시도"}
+    plan = {"action": "export_selected_bundle", "run_id": "run-1", "photo_ids": ["p-1"]}
+
+    first, _ = require_mutation_approval(
+        "photos_write",
+        "export_selected_bundle",
+        options,
+        repository=repository,
+        mutation_plan=plan,
+    )
+    assert first is not None
+    assert repository.decide_mutation_plan(first["approval_token"], "approved")
+    assert repository.consume_mutation_plan(first["approval_token"])
+    repository.save_mutation_receipt(
+        finalize_mutation_receipt(
+            {
+                "receipt_id": "receipt-blocked",
+                "idempotency_key": first["idempotency_key"],
+                "requested_photo_ids": ["p-1"],
+            },
+            {"status": "blocked", "error_code": "unsupported_source_for_write"},
+        )
+    )
+
+    retried, _ = require_mutation_approval(
+        "photos_write",
+        "export_selected_bundle",
+        options,
+        repository=repository,
+        mutation_plan=plan,
+    )
+
+    assert retried is not None
+    assert retried["status"] == "awaiting_approval"
+    assert retried["approval_token"] != first["approval_token"]
