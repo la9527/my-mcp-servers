@@ -84,13 +84,14 @@ class MemoryStore:
 def test_authorization_request_uses_pkce_state_and_picker_scope() -> None:
     request = create_authorization_request(
         client_id="client-id",
-        redirect_uri="photos-mcp:/oauth/google",
+        redirect_uri="http://127.0.0.1:43129/oauth/google",
     )
     query = parse_qs(urlparse(request.authorization_url).query)
 
     assert query["code_challenge_method"] == ["S256"]
     assert query["state"] == [request.state]
     assert query["access_type"] == ["offline"]
+    assert query["redirect_uri"] == ["http://127.0.0.1:43129/oauth/google"]
     assert "photospicker.mediaitems.readonly" in query["scope"][0]
     assert 43 <= len(request.code_verifier) <= 128
 

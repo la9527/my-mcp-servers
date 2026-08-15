@@ -8,6 +8,9 @@
 - [인물 구성 기반 장면 분리와 얼굴 품질 추천](02-person-aware-scene-ranking-shadow-2026-08-10.md): 자동 승격 판정 pipeline까지 구현했다. strict veto는 87장면에서 +1.1495%p에 그쳐 운영 반영 없이 shadow를 유지하며, 독립 holdout 5쌍의 사람 라벨이 남아 있다.
 - [Google Photos Picker 실연동](03-google-photos-picker-integration-2026-08-13.md): OAuth·Picker REST·temporary cache·분류 bridge·새 앱 생성 앨범 업로드와 복구 backend까지 자동 구현·계약 검증을 마쳤다. 실제 계정 OAuth 동의·Picker 선택·앨범 확인은 사용자 E2E가 남아 있다.
 - [Google Photos 입력·결과 앨범 AppKit UX](04-google-photos-appkit-ux-2026-08-13.md): source 선택, browser Picker 대기, 결과 앨범 업로드 승인 흐름을 구현하고 controller 테스트를 완료했다. 실제 계정 화면 검증은 Google 외부 설정 후 진행한다.
+- [Google Photos OAuth 앱 설정](05-google-photos-oauth-app-settings-2026-08-15.md): OAuth Client ID·Redirect URI·선택적 Client secret을 앱에서 입력해 macOS Keychain에 저장하고 즉시 runtime에 반영한다. callback URL 자동 수신과 실제 계정 E2E는 후속 검증 대상이다.
+- [Google Photos 재선택과 작업 기록 정리](06-google-photos-reselection-and-job-history-cleanup-2026-08-15.md): 취소·제출 뒤 새 선택과 화면 초기화를 제공하고, 작업 기록 개별·전체 삭제 시 앱 생성 결과·미리보기·Google 임시 다운로드를 함께 안전하게 정리한다.
+- [소스 인식형 사진 분류와 Google Photos 자동 준비](07-source-aware-classification-workflow-2026-08-15.md): Apple·로컬·Google의 2단계를 소스별로 분리하고, Google Picker 콜백 뒤 사진만 자동 다운로드한 다음 공통 분석 방법과 실행 전 확인으로 합류시킨다.
 
 ## 인물 확인과 개인화
 

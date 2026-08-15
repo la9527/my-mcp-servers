@@ -55,6 +55,14 @@ class PhotosMcpDaemonController:
         logger.info("daemon starting host=%s port=%s", self._config.host, self._config.port)
         mcp = build_server(config=self._config, state_store=self._state_store)
         app = build_http_app(config=self._config, state_store=self._state_store, mcp=mcp)
+        job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
+        reconciled_job_ids = job_store.reconcile_orphaned_jobs_after_restart()
+        if reconciled_job_ids:
+            logger.warning(
+                "reconciled %d orphaned jobs after restart: %s",
+                len(reconciled_job_ids),
+                ", ".join(reconciled_job_ids),
+            )
         config = uvicorn.Config(
             app,
             host=self._config.host,
@@ -136,6 +144,9 @@ class PhotosMcpDaemonController:
 
     def delete_job(self, job_id: str) -> bool:
         try:
+            if self._state_store.delete_synthetic_run(job_id):
+                logger.info("deleted terminal synthetic run %s", job_id)
+                return True
             job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
             deleted = job_store.delete_terminal_job(job_id)
             if deleted:

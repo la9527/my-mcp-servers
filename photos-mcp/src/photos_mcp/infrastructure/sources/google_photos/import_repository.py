@@ -84,6 +84,34 @@ class GoogleImportLeaseRepository:
             self._connection.commit()
             return int(cursor.rowcount)
 
+    def reset_materialized(self, session_id: str) -> int:
+        """Return an unconsumed cache lease to the retryable prepared state."""
+        with self._lock:
+            cursor = self._connection.execute(
+                """
+                UPDATE google_import_leases
+                SET job_id = '', state = 'materialized'
+                WHERE session_id = ? AND state != 'released'
+                """,
+                (session_id,),
+            )
+            self._connection.commit()
+            return int(cursor.rowcount)
+
+    def list_unreleased_session_ids(self) -> tuple[str, ...]:
+        """List newest prepared sessions first without exposing Picker content URLs."""
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT session_id, MAX(rowid) AS latest_rowid
+                FROM google_import_leases
+                WHERE state != 'released'
+                GROUP BY session_id
+                ORDER BY latest_rowid DESC
+                """
+            ).fetchall()
+        return tuple(str(row["session_id"]) for row in rows)
+
     def list_session(self, session_id: str) -> tuple[GoogleImportLease, ...]:
         return self._list("session_id", session_id)
 
@@ -97,6 +125,23 @@ class GoogleImportLeaseRepository:
                 (session_id,),
             )
             self._connection.commit()
+
+    def release_job_files(self, job_id: str, *, cache_root: str | Path) -> int:
+        """Remove leased Picker files only when they belong to the managed cache."""
+        root = Path(cache_root).expanduser().resolve()
+        leases = self.list_job(job_id)
+        released = 0
+        session_ids: set[str] = set()
+        for lease in leases:
+            candidate = Path(lease.local_path).expanduser().resolve()
+            if candidate == root or root not in candidate.parents:
+                continue
+            candidate.unlink(missing_ok=True)
+            released += 1
+            session_ids.add(lease.session_id)
+        for session_id in session_ids:
+            self.mark_released(session_id)
+        return released
 
     def close(self) -> None:
         with self._lock:

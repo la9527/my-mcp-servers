@@ -59,15 +59,15 @@ async def test_oauth_connection_validates_callback_and_persists_refresh_token() 
     service = GoogleOAuthConnectionService(
         account_id="default",
         client_id="client-id",
-        redirect_uri="photos-mcp:/oauth/google",
+        redirect_uri="http://127.0.0.1/oauth/google",
         credential_repository=repository,
         transport=transport,
     )
 
-    authorization_url = service.begin()
+    authorization_url = service.begin(redirect_uri="http://127.0.0.1:43129/oauth/google")
     state = parse_qs(urlparse(authorization_url).query)["state"][0]
     status = await service.complete_callback(
-        f"photos-mcp:/oauth/google?code=one-time-code&state={state}"
+        f"http://127.0.0.1:43129/oauth/google?code=one-time-code&state={state}"
     )
 
     assert status.configured is True
@@ -84,16 +84,16 @@ async def test_oauth_connection_rejects_state_and_callback_mismatch_without_netw
     service = GoogleOAuthConnectionService(
         account_id="default",
         client_id="client-id",
-        redirect_uri="photos-mcp:/oauth/google",
+        redirect_uri="http://127.0.0.1/oauth/google",
         credential_repository=repository,
         transport=transport,
     )
-    service.begin()
+    service.begin(redirect_uri="http://127.0.0.1:43129/oauth/google")
 
     with pytest.raises(PermissionError, match="주소"):
-        await service.complete_callback("other-app:/oauth/google?code=x&state=x")
+        await service.complete_callback("http://127.0.0.1:43130/oauth/google?code=x&state=x")
     with pytest.raises(PermissionError, match="state"):
-        await service.complete_callback("photos-mcp:/oauth/google?code=x&state=forged")
+        await service.complete_callback("http://127.0.0.1:43129/oauth/google?code=x&state=forged")
     assert transport.calls == []
 
 
@@ -105,14 +105,16 @@ async def test_incremental_oauth_keeps_existing_refresh_token_when_google_omits_
     service = GoogleOAuthConnectionService(
         account_id="default",
         client_id="client-id",
-        redirect_uri="photos-mcp:/oauth/google",
+        redirect_uri="http://127.0.0.1/oauth/google",
         credential_repository=repository,
         transport=transport,
     )
-    state = parse_qs(urlparse(service.begin()).query)["state"][0]
+    state = parse_qs(
+        urlparse(service.begin(redirect_uri="http://127.0.0.1:43129/oauth/google")).query
+    )["state"][0]
 
     status = await service.complete_callback(
-        f"photos-mcp:/oauth/google?code=incremental&state={state}"
+        f"http://127.0.0.1:43129/oauth/google?code=incremental&state={state}"
     )
 
     assert repository.load_refresh_token("default") == "existing-refresh"
@@ -125,7 +127,7 @@ def test_runtime_composition_uses_durable_state_and_bounded_cache(tmp_path: Path
     runtime = build_google_photos_runtime(
         settings=GooglePhotosRuntimeSettings(
             client_id="client-id",
-            redirect_uri="photos-mcp:/oauth/google",
+            redirect_uri="http://127.0.0.1/oauth/google",
         ),
         transport=QueueTransport(),
         credential_store=MemoryStore(),

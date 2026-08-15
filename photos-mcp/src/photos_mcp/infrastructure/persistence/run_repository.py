@@ -259,6 +259,21 @@ class RunRepository:
             self._conn.commit()
         return run_ids
 
+    def delete_run(self, run_id: str, *, terminal_only: bool = True) -> bool:
+        """Delete one workflow run and its events after status validation."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT status FROM workflow_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            if terminal_only and str(row["status"] or "") in ACTIVE_RUN_STATUSES:
+                return False
+            self._conn.execute("DELETE FROM run_events WHERE run_id = ?", (run_id,))
+            self._conn.execute("DELETE FROM workflow_runs WHERE run_id = ?", (run_id,))
+            self._conn.commit()
+        return True
+
     def recover_interrupted_runs(self) -> list[str]:
         recovered: list[str] = []
         recovered_at = _utcnow_iso()

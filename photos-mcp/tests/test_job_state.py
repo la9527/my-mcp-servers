@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
-from photos_mcp.infrastructure.persistence.job_state import PhotoRankerJobStore, synthetic_review_result
+from photos_mcp.infrastructure.persistence.job_state import (
+    PhotoRankerJobStore,
+    delete_job_artifacts,
+    synthetic_review_result,
+)
 
 
 @dataclass
@@ -16,6 +21,8 @@ class _Job:
     status: _Status
     request_options: dict | None = None
     result_summary: dict | None = None
+    finished_at: float | None = None
+    error_message: str | None = None
 
     def to_dict(self) -> dict:
         return {"id": self.id, "status": self.status.value, "source": "apple"}
@@ -111,6 +118,25 @@ def test_photo_ranker_job_store_lists_merged_snapshots_with_queue_precedence() -
     assert snapshots["queue-only"].status == "pending"
 
 
+def test_reconcile_orphaned_jobs_after_restart_fails_only_db_active_jobs() -> None:
+    orphaned_pending = _Job("orphaned-pending", _Status("pending"))
+    orphaned_running = _Job("orphaned-running", _Status("running"))
+    restored = _Job("restored", _Status("pending"))
+    completed = _Job("completed", _Status("completed"))
+    db = _DB([orphaned_pending, orphaned_running, restored, completed])
+    store = PhotoRankerJobStore(_Module(db, _Queue([restored])))
+
+    reconciled = store.reconcile_orphaned_jobs_after_restart()
+
+    assert reconciled == ["orphaned-pending", "orphaned-running"]
+    assert orphaned_pending.status.value == "failed"
+    assert orphaned_running.status.value == "failed"
+    assert orphaned_pending.error_message == "app_restarted_before_completion"
+    assert orphaned_pending.finished_at is not None
+    assert restored.status.value == "pending"
+    assert completed.status.value == "completed"
+
+
 def test_completed_snapshot_uses_persisted_result_count_for_availability() -> None:
     db = _DB([_Job("with-result", _Status("completed")), _Job("empty", _Status("completed"))])
     db.results["with-result"] = [{"photo_id": "photo-1"}]
@@ -167,6 +193,22 @@ def test_photo_ranker_job_store_only_deletes_terminal_jobs() -> None:
     assert store.delete_terminal_job("done") is True
     assert queue.removed == ["done"]
     assert db.deleted == ["done"]
+
+
+def test_delete_job_artifacts_removes_only_direct_managed_job_directory(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    job_root = artifact_root / "job-1"
+    original = tmp_path / "original.jpg"
+    (job_root / "previews").mkdir(parents=True)
+    (job_root / "previews" / "one.jpg").write_bytes(b"preview")
+    original.write_bytes(b"original")
+
+    assert delete_job_artifacts("job-1", artifact_root=artifact_root) is True
+    assert not job_root.exists()
+    assert original.read_bytes() == b"original"
+    assert delete_job_artifacts("../outside", artifact_root=artifact_root) is False
 
 
 def test_photo_ranker_job_store_clears_terminal_history_in_db_and_queue() -> None:

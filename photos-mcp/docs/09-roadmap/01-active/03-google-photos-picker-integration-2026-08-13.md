@@ -39,7 +39,7 @@ Photos MCP에 Google Photos를 연결하는 범위는 **사용자가 Google Phot
 | 원격 위임 | 요청 서명, Touch ID/passkey 위임 profile, picker link relay | 후속 별도 범위 |
 | 실제 계정 E2E | OAuth 동의, 실제 Picker 선택, 실제 앨범 생성과 UI 확인 | 사용자 직접 동작 필요 |
 
-fake adapter는 빠른 회귀 검증용으로 유지하며, production runtime은 환경 변수와 macOS Keychain을 이용해 실제 REST adapter를 조립한다. 저장 DB와 cache는 각각 `0600`, `0700` 권한으로 제한한다. 실제 Google 계정 E2E는 사용자가 OAuth 동의와 Picker 선택을 직접 완료해야 하므로 자동 완료 범위에 포함하지 않는다.
+fake adapter는 빠른 회귀 검증용으로 유지하며, production runtime은 앱 설정 Keychain을 우선하고 기존 환경 변수는 fallback으로만 사용해 실제 REST adapter를 조립한다. 저장 DB와 cache는 각각 `0600`, `0700` 권한으로 제한한다. 실제 Google 계정 E2E는 사용자가 OAuth 동의와 Picker 선택을 직접 완료해야 하므로 자동 완료 범위에 포함하지 않는다. 설정 저장 구조와 callback 경계는 [OAuth 앱 설정 문서](05-google-photos-oauth-app-settings-2026-08-15.md)에 정리한다.
 
 ### 자동 구현 판정
 
@@ -284,7 +284,7 @@ Ambient API는 Google Photos의 선택된 media source를 ambient device(스마�
 - 최초 연결에는 `photospicker.mediaitems.readonly`만 요청한다.
 - refresh token과 account ID는 `GooglePickerCredentialRepository`를 통해 macOS Keychain에 저장한다.
 - client ID는 설정 파일 또는 환경 변수에만 두고 repository·작업 로그에 넣지 않는다.
-- OAuth는 Code + PKCE와 state를 검증한다. macOS 앱에서는 `ASWebAuthenticationSession` callback을 우선 사용하고, backend 단독 테스트에서는 loopback localhost callback adapter를 사용한다.
+- OAuth는 Code + PKCE와 state를 검증한다. macOS 앱은 인증마다 `127.0.0.1` 임시 포트에 loopback callback을 열어 browser 승인 결과를 자동 수신한다. 커스텀 URI scheme과 수동 URL 복사·붙여넣기 방식은 사용하지 않는다.
 
 Google의 공식 설정 안내는 API 활성화와 OAuth client ID를 요구하고, Google Photos API가 service account를 지원하지 않는다고 명시한다. [앱 설정](https://developers.google.com/photos/overview/configure-your-app), [권한 scope](https://developers.google.com/photos/overview/authorization)
 

@@ -79,6 +79,8 @@ class PhotosMcpLocalPhotoItem(NSCollectionViewItem):
         self._placeholder.setHidden_(False)
         self._check_button.setState_(NSControlStateValueOff)
         self._check_button.setIdentifier_("")
+        self._check_button.setHidden_(False)
+        self._check_button.setEnabled_(True)
 
     def setSelected_(self, selected: bool) -> None:
         objc.super(PhotosMcpLocalPhotoItem, self).setSelected_(selected)
@@ -102,6 +104,11 @@ class PhotosMcpLocalPhotoItem(NSCollectionViewItem):
         self.view().setAccessibilityLabel_(photo.name)
         self._check_button.setTarget_(controller)
         self._check_button.setIdentifier_(photo.path)
+        preview_only = bool(
+            hasattr(controller, "is_read_only_preview") and controller.is_read_only_preview()
+        )
+        self._check_button.setHidden_(preview_only)
+        self._check_button.setEnabled_(not preview_only)
         self._check_button.setState_(
             NSControlStateValueOn if controller.is_photo_checked(photo.path) else NSControlStateValueOff
         )

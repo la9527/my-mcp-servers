@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 import json
+import logging
 from pathlib import Path
 import os
 from typing import Any
@@ -29,6 +30,8 @@ ClassificationStarter = Callable[
     [tuple[str, ...], str, str, int],
     Awaitable[dict[str, Any]],
 ]
+PreparationProgress = Callable[[dict[str, Any]], None]
+logger = logging.getLogger(__name__)
 
 
 async def start_google_materialized_classification(
@@ -41,15 +44,17 @@ async def start_google_materialized_classification(
 ) -> dict[str, Any]:
     if not paths:
         raise ValueError("Google Photos classification requires materialized photos")
-    root = os.path.commonpath([str(Path(path).resolve().parent) for path in paths])
+    effective_limit = min(max(1, int(limit)), len(paths))
+    selected_paths = paths[:effective_limit]
+    root = os.path.commonpath([str(Path(path).resolve().parent) for path in selected_paths])
     return await photos_run(
         state_store=state_store,
         intent="classify" if mode == "classify" else "curate",
         source="local",
         source_path=root,
-        selected_photo_ids_json=json.dumps(list(paths), ensure_ascii=False),
+        selected_photo_ids_json=json.dumps(list(selected_paths), ensure_ascii=False),
         selection_profile=selection_profile,
-        limit=min(max(1, int(limit)), len(paths)),
+        limit=effective_limit,
         background=mode != "classify",
         origin_provider="google_photos",
         face_analysis_enabled=False,
@@ -65,12 +70,14 @@ class GooglePhotosImportService:
         leases: GoogleImportLeaseRepository,
         classification_starter: ClassificationStarter,
         max_concurrent_downloads: int = 3,
+        state_store=None,
     ) -> None:
         self._selection = selection
         self._content = content_adapter
         self._leases = leases
         self._classification_starter = classification_starter
         self._max_concurrent_downloads = max(1, min(int(max_concurrent_downloads), 3))
+        self._state_store = state_store
 
     async def start_selection(
         self,
@@ -88,16 +95,17 @@ class GooglePhotosImportService:
     async def cancel_selection(self, session_id: str) -> PickingSession:
         return await self._selection.cancel(session_id)
 
-    async def classify_ready_selection(
+    async def prepare_ready_selection(
         self,
         source: SourceDescriptor,
         session_id: str,
         *,
-        selection_profile: str = "general",
-        mode: str = "classify",
         max_pixels: int = 4096,
         limit: int = 1000,
+        progress_callback: PreparationProgress | None = None,
     ) -> dict[str, Any]:
+        """Download Picker-selected photos without starting an analysis job."""
+
         session = self._selection.get(session_id)
         if session is None or session.state is not PickingSessionState.READY:
             raise RuntimeError("Google Photos selection is not ready")
@@ -106,35 +114,122 @@ class GooglePhotosImportService:
             face_clustering=False,
         )
         assets = await self._selection.consume(session_id)
-        photos = tuple(asset for asset in assets if asset.media_type == "photo")[:limit]
-        excluded_video_count = len(assets) - len(photos)
+        all_photos = tuple(asset for asset in assets if asset.media_type == "photo")
+        photos = all_photos[:limit]
+        excluded_video_count = len(assets) - len(all_photos)
         semaphore = asyncio.Semaphore(self._max_concurrent_downloads)
+        total_photo_count = len(photos)
 
-        async def materialize(asset) -> MaterializedPhotoContent:
-            async with semaphore:
-                return await self._content.materialize(source, asset, max_pixels=max_pixels)
-
-        materialized = tuple(await asyncio.gather(*(materialize(asset) for asset in photos)))
-        for content in materialized:
-            self._leases.save(
-                GoogleImportLease(
-                    session_id=session_id,
-                    asset_key=content.asset.stable_key,
-                    local_path=str(content.local_path),
-                    mime_type=content.mime_type,
+        def report(state: str, completed: int) -> None:
+            if progress_callback is None:
+                return
+            percent = 100.0 if total_photo_count == 0 else (completed / total_photo_count) * 100.0
+            try:
+                progress_callback(
+                    {
+                        "state": state,
+                        "session_id": session_id,
+                        "selected_item_count": len(assets),
+                        "total_photo_count": total_photo_count,
+                        "completed_photo_count": completed,
+                        "excluded_video_count": excluded_video_count,
+                        "progress_percent": percent,
+                    }
                 )
-            )
-        paths = tuple(str(content.local_path) for content in materialized)
+            except Exception:
+                # UI progress must never interrupt content preparation.
+                return
+
+        async def materialize(index: int, asset) -> tuple[int, MaterializedPhotoContent]:
+            async with semaphore:
+                content = await self._content.materialize(source, asset, max_pixels=max_pixels)
+                return index, content
+
+        report("downloading", 0)
+        tasks = [asyncio.create_task(materialize(index, asset)) for index, asset in enumerate(photos)]
+        completed: list[tuple[int, MaterializedPhotoContent]] = []
+        try:
+            for pending in asyncio.as_completed(tasks):
+                index, content = await pending
+                self._leases.save(
+                    GoogleImportLease(
+                        session_id=session_id,
+                        asset_key=content.asset.stable_key,
+                        local_path=str(content.local_path),
+                        mime_type=content.mime_type,
+                    )
+                )
+                completed.append((index, content))
+                report("downloading", len(completed))
+        except Exception:
+            for task in tasks:
+                task.cancel()
+            settled = await asyncio.gather(*tasks, return_exceptions=True)
+            releasable = {
+                str(content.local_path): content
+                for item in settled
+                if isinstance(item, tuple)
+                for content in (item[1],)
+            }
+            for _, content in completed:
+                releasable[str(content.local_path)] = content
+            for content in releasable.values():
+                await self._content.release(content)
+            self._leases.mark_released(session_id)
+            report("failed", len(completed))
+            raise
+        completed.sort(key=lambda item: item[0])
+        paths = tuple(str(content.local_path) for _, content in completed)
+        report("completed", len(paths))
+        return {
+            "status": "prepared",
+            "origin_provider": "google_photos",
+            "session_id": session_id,
+            "selected_item_count": len(assets),
+            "total_photo_count": total_photo_count,
+            "materialized_photo_count": len(paths),
+            "excluded_video_count": excluded_video_count,
+            "paths": paths,
+            "face_analysis_enabled": False,
+        }
+
+    async def classify_prepared_selection(
+        self,
+        session_id: str,
+        *,
+        selection_profile: str = "general",
+        mode: str = "classify",
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Submit an explicitly confirmed analysis for already downloaded photos."""
+
+        leases = tuple(lease for lease in self._leases.list_session(session_id) if lease.state != "released")
+        paths = tuple(lease.local_path for lease in leases if Path(lease.local_path).is_file())
+        if not paths:
+            raise RuntimeError("Google Photos prepared selection is empty")
         try:
             result = await self._classification_starter(
                 paths,
                 selection_profile,
                 mode,
-                len(paths),
+                min(max(1, int(limit)), len(paths)),
             )
         except Exception:
-            await self.release_session(session_id)
+            logger.exception(
+                "Google Photos classification submission failed session_id=%s photos=%d",
+                session_id,
+                len(paths),
+            )
             raise
+        if result.get("error") or result.get("error_code") or result.get("status") == "failed":
+            detail = str(result.get("error") or result.get("detail") or "Google Photos classification failed")
+            logger.warning(
+                "Google Photos classification rejected session_id=%s photos=%d detail=%s",
+                session_id,
+                len(paths),
+                detail,
+            )
+            raise RuntimeError(detail)
         job_id = str(result.get("job_id") or result.get("run_id") or "")
         if not job_id:
             await self.release_session(session_id)
@@ -144,18 +239,82 @@ class GooglePhotosImportService:
             **result,
             "origin_provider": "google_photos",
             "materialized_photo_count": len(paths),
-            "excluded_video_count": excluded_video_count,
             "face_analysis_enabled": False,
+        }
+
+    def recover_latest_prepared_selection(self) -> dict[str, Any]:
+        """Recover downloaded photos that were never attached to a real job."""
+        known_job_ids: set[str] = set()
+        if self._state_store is not None:
+            snapshot = self._state_store.snapshot()
+            known_job_ids.update(str(item.get("job_id") or "") for item in snapshot.active_jobs)
+            known_job_ids.update(str(item.get("job_id") or "") for item in snapshot.recent_jobs)
+            known_job_ids.discard("")
+
+        for session_id in self._leases.list_unreleased_session_ids():
+            leases = self._leases.list_session(session_id)
+            existing = tuple(lease for lease in leases if Path(lease.local_path).is_file())
+            if not existing:
+                continue
+            bound_job_ids = {lease.job_id for lease in existing if lease.job_id}
+            if bound_job_ids & known_job_ids:
+                continue
+            self._leases.reset_materialized(session_id)
+            session = self._selection.get(session_id)
+            selected_item_count = int(session.item_count) if session is not None else len(existing)
+            paths = tuple(lease.local_path for lease in existing)
+            return {
+                "status": "prepared",
+                "origin_provider": "google_photos",
+                "session_id": session_id,
+                "selected_item_count": selected_item_count,
+                "total_photo_count": len(paths),
+                "materialized_photo_count": len(paths),
+                "excluded_video_count": max(0, selected_item_count - len(paths)),
+                "paths": paths,
+                "face_analysis_enabled": False,
+                "recovered": True,
+            }
+        return {}
+
+    async def classify_ready_selection(
+        self,
+        source: SourceDescriptor,
+        session_id: str,
+        *,
+        selection_profile: str = "general",
+        mode: str = "classify",
+        max_pixels: int = 4096,
+        limit: int = 1000,
+        progress_callback: PreparationProgress | None = None,
+    ) -> dict[str, Any]:
+        """Compatibility wrapper for callers that still expect prepare-and-submit."""
+
+        prepared = await self.prepare_ready_selection(
+            source,
+            session_id,
+            max_pixels=max_pixels,
+            limit=limit,
+            progress_callback=progress_callback,
+        )
+        result = await self.classify_prepared_selection(
+            session_id,
+            selection_profile=selection_profile,
+            mode=mode,
+            limit=limit,
+        )
+        return {
+            **result,
+            "selected_item_count": prepared["selected_item_count"],
+            "excluded_video_count": prepared["excluded_video_count"],
         }
 
     async def release_job(self, job_id: str) -> int:
         leases = self._leases.list_job(job_id)
-        session_ids = {lease.session_id for lease in leases}
-        for lease in leases:
-            Path(lease.local_path).unlink(missing_ok=True)
-        for session_id in session_ids:
-            self._leases.mark_released(session_id)
-        return len(leases)
+        if not leases:
+            return 0
+        cache_root = Path(leases[0].local_path).parent
+        return self._leases.release_job_files(job_id, cache_root=cache_root)
 
     async def release_session(self, session_id: str) -> int:
         leases = self._leases.list_session(session_id)

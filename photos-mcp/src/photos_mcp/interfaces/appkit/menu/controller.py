@@ -96,6 +96,8 @@ from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
 _APP_CONTROLLER = None
 logger = logging.getLogger(__name__)
 
+_TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
 _POPOVER_WIDTH = 390.0
 _POPOVER_HEIGHT = 320.0
 _SIDE_MARGIN = 12.0
@@ -908,7 +910,9 @@ class PhotosMcpMenuController(NSObject):
         self._results_controller = None
         self._direct_classification_controller = None
         self._local_photo_selection_controller = None
+        self._google_photo_preview_controller = None
         self._google_photos_controller = None
+        self._google_photos_settings_controller = None
         self._google_photos_runtime = None
         self._timer = None
         self._startup_timer = None
@@ -960,8 +964,12 @@ class PhotosMcpMenuController(NSObject):
             self._direct_classification_controller.shutdown()
         if self._local_photo_selection_controller is not None:
             self._local_photo_selection_controller.shutdown()
+        if self._google_photo_preview_controller is not None:
+            self._google_photo_preview_controller.shutdown()
         if self._google_photos_controller is not None:
             self._google_photos_controller.shutdown()
+        if self._google_photos_settings_controller is not None:
+            self._google_photos_settings_controller.closeWindow_(None)
         if self._google_photos_runtime is not None:
             self._google_photos_runtime.close()
             self._google_photos_runtime = None
@@ -1023,8 +1031,28 @@ class PhotosMcpMenuController(NSObject):
     def deleteJob_(self, sender) -> None:
         job_id = self._sender_identifier(sender)
         if job_id:
-            self._daemon_controller.delete_job(job_id)
+            deleted = self._daemon_controller.delete_job(job_id)
+            if deleted:
+                self._release_google_import_files((job_id,))
             self.rebuildMenu()
+
+    def deleteJobWithConfirmation_(self, sender) -> None:
+        job_id = self._sender_identifier(sender)
+        if not job_id:
+            return
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("이 작업 기록을 삭제할까요?")
+        alert.setInformativeText_(
+            "작업 기록과 Photos MCP가 만든 결과·미리보기·임시 Google 다운로드를 삭제합니다. "
+            "Apple 사진, 로컬 원본과 Google Photos 원본은 변경하지 않습니다."
+        )
+        alert.setAlertStyle_(NSAlertStyleWarning)
+        alert.addButtonWithTitle_("기록 삭제")
+        alert.addButtonWithTitle_("취소")
+        NSApp.activateIgnoringOtherApps_(True)
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            return
+        self.deleteJob_(sender)
 
     def approveMutation_(self, sender) -> None:
         token = self._sender_identifier(sender)
@@ -1107,8 +1135,61 @@ class PhotosMcpMenuController(NSObject):
         self.rebuildMenu()
 
     def clearAllJobs_(self, _sender) -> None:
-        self._daemon_controller.clear_job_history()
+        self.clearJobHistoryWithConfirmation_(None)
+
+    def clearJobHistoryWithConfirmation_(self, _sender) -> None:
+        snapshot = self._state_store.snapshot()
+        terminal_count = sum(
+            str(job.get("status") or "") in _TERMINAL_JOB_STATUSES
+            for job in snapshot.recent_jobs
+        )
+        if terminal_count <= 0:
+            return
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(f"전체 작업 기록 {terminal_count}건을 삭제할까요?")
+        alert.setInformativeText_(
+            "완료·실패·취소 기록과 Photos MCP가 만든 결과·미리보기·임시 Google 다운로드를 모두 삭제합니다. "
+            "진행 중인 작업과 원본 사진은 삭제하지 않습니다."
+        )
+        alert.setAlertStyle_(NSAlertStyleCritical)
+        alert.addButtonWithTitle_("전체 기록 삭제")
+        alert.addButtonWithTitle_("취소")
+        NSApp.activateIgnoringOtherApps_(True)
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            return
+        deleted_job_ids = self._daemon_controller.clear_job_history()
+        self._release_google_import_files(tuple(deleted_job_ids))
         self.rebuildMenu()
+
+    @objc.python_method
+    def _release_google_import_files(self, job_ids: tuple[str, ...]) -> int:
+        if not job_ids:
+            return 0
+        from photos_mcp.infrastructure.runtime.paths import (
+            photos_mcp_cache_root,
+            photos_mcp_runtime_root,
+        )
+        from photos_mcp.infrastructure.sources.google_photos.import_repository import (
+            GoogleImportLeaseRepository,
+        )
+
+        cache_root = photos_mcp_cache_root() / "google-photos-imports"
+        repository = (
+            self._google_photos_runtime.import_leases
+            if self._google_photos_runtime is not None
+            else GoogleImportLeaseRepository(
+                photos_mcp_runtime_root() / "google-photos" / "import-leases.sqlite3"
+            )
+        )
+        owns_repository = self._google_photos_runtime is None
+        try:
+            return sum(
+                repository.release_job_files(job_id, cache_root=cache_root)
+                for job_id in job_ids
+            )
+        finally:
+            if owns_repository:
+                repository.close()
 
     def runPreflightChecks_(self, sender) -> None:
         self._preflight_retry_attempts = 0
@@ -1158,7 +1239,7 @@ class PhotosMcpMenuController(NSObject):
             build_google_photos_runtime,
         )
 
-        settings = GooglePhotosRuntimeSettings.from_environment()
+        settings = GooglePhotosRuntimeSettings.from_app_configuration()
         if not settings.configured:
             return None
         self._google_photos_runtime = build_google_photos_runtime(
@@ -1166,6 +1247,44 @@ class PhotosMcpMenuController(NSObject):
             state_store=self._state_store,
         )
         return self._google_photos_runtime
+
+    @objc.python_method
+    def showGooglePhotosSettings(self):
+        from photos_mcp.interfaces.appkit.google_photos.settings_controller import (
+            PhotosMcpGooglePhotosSettingsController,
+        )
+
+        if self._google_photos_settings_controller is None:
+            self._google_photos_settings_controller = (
+                PhotosMcpGooglePhotosSettingsController.alloc().initWithMenuController_repository_(
+                    self,
+                    None,
+                )
+            )
+        self._google_photos_settings_controller.showWindow_(None)
+        return self._google_photos_settings_controller
+
+    @objc.python_method
+    def googlePhotosOAuthSettingsDidSave_(self, previous, current) -> None:
+        changed = (
+            previous.client_id != current.client_id
+            or previous.client_secret != current.client_secret
+        )
+        if changed and previous.configured:
+            from photos_mcp.infrastructure.credentials.keychain import KeychainCredentialStore
+            from photos_mcp.infrastructure.sources.google_photos.oauth import (
+                GooglePickerCredentialRepository,
+            )
+
+            GooglePickerCredentialRepository(KeychainCredentialStore()).revoke_local_credential(
+                current.account_id
+            )
+        if self._google_photos_runtime is not None:
+            self._google_photos_runtime.close()
+            self._google_photos_runtime = None
+        runtime = self.googlePhotosRuntime()
+        if self._google_photos_controller is not None:
+            self._google_photos_controller.replaceRuntime_(runtime)
 
     @objc.python_method
     def showGooglePhotosConnection(self, *, require_upload_scope: bool = False):

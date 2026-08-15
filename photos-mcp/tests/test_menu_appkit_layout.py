@@ -372,6 +372,76 @@ def test_main_window_job_and_environment_tabs_render_in_same_window() -> None:
     )
 
 
+def test_main_window_job_selection_preserves_scroll_position() -> None:
+    NSApplication.sharedApplication()
+    snapshot = _snapshot()
+    snapshot.recent_jobs = [
+        {**snapshot.recent_jobs[0], "job_id": f"done-{index}"}
+        for index in range(18)
+    ]
+    controller = PhotosMcpMainWindowController.alloc().initWithMenuController_(
+        _menu_controller(snapshot)
+    )
+    controller.showTab_("jobs")
+    scroll = controller._job_scroll_view
+    clip = scroll.contentView()
+    max_origin_y = float(scroll.documentView().frame().size.height) - float(
+        clip.bounds().size.height
+    )
+    expected_offset = 234.0
+    clip.scrollToPoint_(NSMakePoint(0.0, max_origin_y - expected_offset))
+    scroll.reflectScrolledClipView_(clip)
+
+    controller.selectJob_(SimpleNamespace(identifier=lambda: "done-9"))
+
+    rebuilt_scroll = controller._job_scroll_view
+    rebuilt_clip = rebuilt_scroll.contentView()
+    rebuilt_max_origin_y = float(
+        rebuilt_scroll.documentView().frame().size.height
+    ) - float(rebuilt_clip.bounds().size.height)
+    actual_offset = rebuilt_max_origin_y - float(rebuilt_clip.bounds().origin.y)
+    assert controller._selected_job_id == "done-9"
+    assert actual_offset == pytest.approx(expected_offset)
+
+
+def test_main_window_job_removal_selects_adjacent_row_and_preserves_scroll() -> None:
+    NSApplication.sharedApplication()
+    snapshot = _snapshot()
+    snapshot.recent_jobs = [
+        {**snapshot.recent_jobs[0], "job_id": f"done-{index}"}
+        for index in range(18)
+    ]
+    controller = PhotosMcpMainWindowController.alloc().initWithMenuController_(
+        _menu_controller(snapshot)
+    )
+    controller.showTab_("jobs")
+    removed_id = controller._job_visible_ids[9]
+    expected_selected_id = controller._job_visible_ids[10]
+    controller._selected_job_id = removed_id
+    scroll = controller._job_scroll_view
+    clip = scroll.contentView()
+    max_origin_y = float(scroll.documentView().frame().size.height) - float(
+        clip.bounds().size.height
+    )
+    expected_offset = 312.0
+    clip.scrollToPoint_(NSMakePoint(0.0, max_origin_y - expected_offset))
+    scroll.reflectScrolledClipView_(clip)
+    snapshot.recent_jobs = [
+        job for job in snapshot.recent_jobs if job["job_id"] != removed_id
+    ]
+
+    controller.refreshWithSnapshot_(snapshot)
+
+    rebuilt_scroll = controller._job_scroll_view
+    rebuilt_clip = rebuilt_scroll.contentView()
+    rebuilt_max_origin_y = float(
+        rebuilt_scroll.documentView().frame().size.height
+    ) - float(rebuilt_clip.bounds().size.height)
+    actual_offset = rebuilt_max_origin_y - float(rebuilt_clip.bounds().origin.y)
+    assert controller._selected_job_id == expected_selected_id
+    assert actual_offset == pytest.approx(expected_offset)
+
+
 def test_main_window_job_filters_and_selection_update_detail_panel() -> None:
     NSApplication.sharedApplication()
     snapshot = _snapshot()
@@ -1879,6 +1949,160 @@ def test_direct_classification_album_and_period_controls_build_command() -> None
     assert command.selection_profile == "landscape"
     assert command.limit == 25
     assert controller._limit_popup.itemTitles()[-1] == "1000장"
+    controller.shutdown()
+
+
+def test_direct_classification_local_source_replaces_apple_scope_and_keeps_common_options(tmp_path) -> None:
+    NSApplication.sharedApplication()
+    photos = []
+    for index in range(3):
+        path = tmp_path / f"photo-{index}.jpg"
+        path.write_bytes(b"photo")
+        photos.append(str(path))
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+
+    controller.localPhotoSelectionPrepared_({"paths": photos})
+    controller._limit_popup.selectItemWithTitle_("10장")
+    command = controller.commandFromControls()
+
+    assert controller._selected_source == "local"
+    assert controller._album_popup.isHidden() is True
+    assert controller._source_scope_title.isHidden() is False
+    assert controller._source_scope_status.stringValue() == "분석 가능 3장"
+    assert command.source == "local"
+    assert command.selected_photo_ids == tuple(photos)
+    assert command.limit == 10
+    controller.shutdown()
+
+
+def test_direct_classification_source_change_clears_previous_apple_preview() -> None:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+    controller._summary_candidate.setStringValue_("200장 이상")
+    controller._summary_download.setStringValue_("1장")
+    controller._run_button.setEnabled_(True)
+
+    controller._set_selected_source("local", request_preview=False)
+
+    assert controller._summary_candidate.stringValue() == "확인 필요"
+    assert controller._summary_download.stringValue() == "-"
+    assert controller._run_button.isEnabled() is False
+    assert controller._progress_status_labels[2].stringValue() == "진행 중"
+    controller.shutdown()
+
+
+def test_direct_classification_source_cards_select_without_opening_editors() -> None:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+
+    controller._local_card_button.performClick_(None)
+    assert controller._selected_source == "local"
+    assert controller._source_scope_title.stringValue() == "로컬 사진을 선택해 주세요"
+    controller._google_card_button.performClick_(None)
+    assert controller._selected_source == "google_photos"
+    assert controller._source_scope_title.stringValue() == "Google Photos에서 사진을 선택해 주세요"
+    controller._apple_card_button.performClick_(None)
+    assert controller._selected_source == "apple"
+    assert controller._apple_source_button.isHidden() is True
+    assert controller._local_card_button.accessibilityLabel() == "로컬 폴더 소스로 선택"
+    assert controller._google_card_button.accessibilityLabel() == "Google Photos 소스로 선택"
+    controller.shutdown()
+
+
+def test_direct_classification_google_source_uses_prepared_paths_and_video_summary(tmp_path) -> None:
+    NSApplication.sharedApplication()
+    photos = []
+    for index in range(2):
+        path = tmp_path / f"google-{index}.jpg"
+        path.write_bytes(b"photo")
+        photos.append(str(path))
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+
+    controller.googlePhotosSelectionPrepared_(
+        {
+            "session_id": "session-1",
+            "paths": photos,
+            "materialized_photo_count": 2,
+            "excluded_video_count": 4,
+        }
+    )
+    command = controller.commandFromControls()
+
+    assert controller._selected_source == "google_photos"
+    assert controller._source_scope_detail.stringValue() == "사진 2장 준비됨 · 동영상 4개 제외 · 임시 저장"
+    assert controller._source_scope_status.stringValue() == "다운로드 완료 2 / 2"
+    assert controller._source_progress.isHidden() is False
+    assert controller._source_preview_button.isHidden() is False
+    assert command.source == "local"
+    assert command.selected_photo_ids == tuple(photos)
+    controller.shutdown()
+
+
+def test_direct_classification_google_progress_is_visible_before_preparation() -> None:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+    controller.selectGoogleSource_(None)
+
+    controller.googlePhotosPreparationProgress_(
+        {
+            "state": "downloading",
+            "total_photo_count": 10,
+            "completed_photo_count": 4,
+            "excluded_video_count": 2,
+            "progress_percent": 40.0,
+        }
+    )
+
+    assert controller._source_scope_title.stringValue() == "Google Photos 사진 다운로드 중"
+    assert controller._source_scope_status.stringValue() == "다운로드 4 / 10 · 40%"
+    assert controller._source_progress.doubleValue() == 4.0
+    assert controller._source_preview_button.isHidden() is True
+    assert controller._run_button.isEnabled() is False
+    controller.shutdown()
+
+
+def test_local_browser_read_only_preview_filters_paths_and_hides_classification_controls(tmp_path) -> None:
+    NSApplication.sharedApplication()
+    first = tmp_path / "first.jpg"
+    second = tmp_path / "second.jpg"
+    other = tmp_path / "other.jpg"
+    for path in (first, second, other):
+        path.write_bytes(b"photo")
+    allowed = (str(first.resolve()), str(second.resolve()))
+    controller = PhotosMcpLocalPhotoSelectionController.alloc().initWithMenuController_service_sourcePath_selectedPhotoIds_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+        str(tmp_path),
+        allowed,
+    )
+    controller._photos = [
+        LocalPhoto(str(path.resolve()), path.name, path.stat().st_mtime, path.stat().st_size, 100, 100)
+        for path in (first, second, other)
+    ]
+
+    controller.enableReadOnlyPreviewMode_({"title": "Google Photos 미리보기", "paths": allowed})
+
+    assert controller.window().title() == "Google Photos 미리보기"
+    assert [photo.path for photo in controller._visible_photos()] == list(allowed)
+    assert controller._settings_card.isHidden() is True
+    assert controller._select_all_button.isHidden() is True
+    assert controller._run_button.isEnabled() is False
+    assert controller.is_read_only_preview() is True
     controller.shutdown()
 
 

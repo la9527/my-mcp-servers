@@ -221,8 +221,9 @@ class DirectClassificationService:
                 analyze_ready_count=selected_count,
                 download_required_count=0,
                 requested_limit=command.limit,
-                run_count=selected_count,
+                run_count=min(selected_count, command.limit),
                 scan_limit=selected_count,
+                requires_confirmation=selected_count > command.limit,
                 message="선택한 로컬 사진만 읽기 전용으로 분석합니다.",
             )
         scan_limit = min(max(command.limit * 4, 100), self._scope_scan_limit)

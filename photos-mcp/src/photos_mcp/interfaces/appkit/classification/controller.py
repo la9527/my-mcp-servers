@@ -26,6 +26,7 @@ from AppKit import (
     NSLineBreakByTruncatingTail,
     NSMakeRect,
     NSPopUpButton,
+    NSProgressIndicator,
     NSSegmentedControl,
     NSSegmentStyleRounded,
     NSTextField,
@@ -44,8 +45,10 @@ from photos_mcp.application.classification_service import (
     ClassificationScopePreview,
     ClassificationValidationError,
     DirectClassificationService,
+    common_local_source_path,
 )
 from photos_mcp.interfaces.appkit.shared.theme import accent_color, app_font, panel_background_color, subtle_border_color
+from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
 _WINDOW_WIDTH = 860.0
@@ -110,6 +113,10 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         self._preview_loading = False
         self._running = False
         self._run_accepted = False
+        self._selected_source = "apple"
+        self._local_selected_paths: tuple[str, ...] = ()
+        self._google_prepared: dict[str, Any] = {}
+        self._google_preparation_progress: dict[str, Any] = {}
         self._layout_width = _WINDOW_WIDTH
         self._embedded = False
         self._embedded_view = None
@@ -127,7 +134,23 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         window.setReleasedWhenClosed_(False)
         window.setDelegate_(self)
         self._build_window()
+        self._recover_google_prepared_selection()
         return self
+
+    @objc.python_method
+    def _recover_google_prepared_selection(self) -> None:
+        if not isinstance(getattr(self._menu_controller, "_state_store", None), PhotosMcpStateStore):
+            return
+        runtime_factory = getattr(self._menu_controller, "googlePhotosRuntime", None)
+        if not callable(runtime_factory):
+            return
+        try:
+            runtime = runtime_factory()
+            payload = runtime.importer.recover_latest_prepared_selection() if runtime is not None else {}
+        except Exception:
+            return
+        if payload:
+            self.googlePhotosSelectionPrepared_(payload)
 
     def showWindow_(self, _sender) -> None:
         window = self.window()
@@ -232,6 +255,16 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         self._album_status_label = self._add_label(
             apple_card, 86.0, 20.0, source_width - 102.0, 19.0, "연결 확인 중", secondary=True, size=9.0
         )
+        self._apple_card_button = self._add_source_card_button(
+            apple_card,
+            source_width,
+            "Apple 사진 소스로 선택",
+            "selectAppleSource:",
+        )
+        self._apple_source_button = self._add_button(
+            apple_card, source_width - 78.0, 21.0, 66.0, 34.0, "사용", "selectAppleSource:"
+        )
+        self._apple_source_button.setHidden_(True)
 
         local_x = 16.0 + source_width + source_gap
         local_card = self._add_card(source_section, local_x, source_y, source_width, source_height)
@@ -242,6 +275,12 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         )
         self._local_description_label = self._add_label(
             local_card, 68.0, 22.0, source_width - 154.0, 18.0, "여러 폴더에서 직접 선택", secondary=True, size=9.0
+        )
+        self._local_card_button = self._add_source_card_button(
+            local_card,
+            source_width,
+            "로컬 폴더 소스로 선택",
+            "selectLocalSource:",
         )
         self._local_folder_button = self._add_button(
             local_card, source_width - 78.0, 21.0, 66.0, 34.0, "열기", "openLocalPhotoBrowser:"
@@ -260,6 +299,12 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         )
         self._google_description_label = self._add_label(
             google_card, 68.0, 22.0, source_width - 154.0, 18.0, "직접 선택한 사진 가져오기", secondary=True, size=9.0
+        )
+        self._google_card_button = self._add_source_card_button(
+            google_card,
+            source_width,
+            "Google Photos 소스로 선택",
+            "selectGoogleSource:",
         )
         self._google_photos_button = self._add_button(
             google_card, source_width - 78.0, 21.0, 66.0, 34.0, "선택", "openGooglePhotosPicker:"
@@ -315,6 +360,46 @@ class PhotosMcpDirectClassificationController(NSWindowController):
             size=8.3,
         )
         self._set_period_controls_enabled(False)
+
+        self._source_scope_title = self._add_label(
+            scope, 20.0, 111.0, column_width - 154.0, 24.0, "선택한 사진이 없습니다", bold=True, size=11.5
+        )
+        self._source_scope_detail = self._add_label(
+            scope, 20.0, 78.0, column_width - 40.0, 36.0, "사진을 선택해 주세요.", secondary=True, size=9.2
+        )
+        self._source_scope_detail.setLineBreakMode_(0)
+        self._source_scope_status = self._add_label(
+            scope, 20.0, 38.0, column_width - 154.0, 24.0, "준비 필요", bold=True, size=10.2
+        )
+        self._source_progress = NSProgressIndicator.alloc().initWithFrame_(
+            NSMakeRect(20.0, 65.0, column_width - 40.0, 10.0)
+        )
+        self._source_progress.setIndeterminate_(False)
+        self._source_progress.setMinValue_(0.0)
+        self._source_progress.setMaxValue_(1.0)
+        self._source_progress.setDisplayedWhenStopped_(True)
+        self._source_progress.setHidden_(True)
+        scope.addSubview_(self._source_progress)
+        self._source_preview_button = self._add_button(
+            scope,
+            column_width - 250.0,
+            31.0,
+            110.0,
+            32.0,
+            "다운로드 사진 보기",
+            "previewPreparedGooglePhotos:",
+        )
+        self._source_preview_button.setHidden_(True)
+        self._source_scope_button = self._add_button(
+            scope, column_width - 130.0, 31.0, 110.0, 32.0, "선택 수정", "editSelectedSource:"
+        )
+        for view in (
+            self._source_scope_title,
+            self._source_scope_detail,
+            self._source_scope_status,
+            self._source_scope_button,
+        ):
+            view.setHidden_(True)
 
         options = self._add_card(
             root, _CONTENT_X + column_width + gap, section_y, column_width, section_height, accent="step3"
@@ -413,6 +498,8 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         )
         self._run_button.setEnabled_(False)
         self._wire_focus_chain()
+        self._apply_source_scope_visibility()
+        self._update_source_scope_summary()
         self._update_step_states()
         self._layout_content(self._layout_width)
 
@@ -424,10 +511,27 @@ class PhotosMcpDirectClassificationController(NSWindowController):
     def refreshScope_(self, _sender) -> None:
         self._request_preview()
 
+    def selectAppleSource_(self, _sender) -> None:
+        self._set_selected_source("apple")
+
+    def selectLocalSource_(self, _sender) -> None:
+        self._set_selected_source("local", request_preview=bool(self._local_selected_paths))
+
+    def selectGoogleSource_(self, _sender) -> None:
+        self._set_selected_source("google_photos", request_preview=bool(self._google_prepared))
+
+    def editSelectedSource_(self, _sender) -> None:
+        if self._selected_source == "local":
+            self.openLocalPhotoBrowser_(None)
+        elif self._selected_source == "google_photos":
+            self.openGooglePhotosPicker_(None)
+
     def openLocalPhotoBrowser_(self, _sender) -> None:
         """Open the in-app local browser instead of a detached Finder picker."""
+        self._set_selected_source("local", request_preview=False)
         controller = getattr(self._menu_controller, "_local_photo_selection_controller", None)
         if controller is not None and controller.window().isVisible():
+            controller.enableSelectionHandoffMode_(self)
             controller.focusWindow()
             self._update_local_browser_button(True)
             return
@@ -440,11 +544,13 @@ class PhotosMcpDirectClassificationController(NSWindowController):
             self._menu_controller,
             self._service,
         )
+        controller.enableSelectionHandoffMode_(self)
         self._menu_controller._local_photo_selection_controller = controller
         controller.showWindow_(None)
         self._update_local_browser_button(True)
 
     def openGooglePhotosPicker_(self, _sender) -> None:
+        self._set_selected_source("google_photos", request_preview=False)
         if hasattr(self._menu_controller, "showGooglePhotosConnection"):
             self._menu_controller.showGooglePhotosConnection()
             return
@@ -458,6 +564,192 @@ class PhotosMcpDirectClassificationController(NSWindowController):
             )
             self._menu_controller._google_photos_controller = controller
         controller.showWindow_(None)
+
+    def localPhotoSelectionPrepared_(self, payload) -> None:
+        data = dict(payload or {})
+        self._local_selected_paths = tuple(str(path) for path in data.get("paths") or () if str(path))
+        self._set_selected_source("local", request_preview=False)
+        self._update_source_scope_summary()
+        self._request_preview()
+
+    def googlePhotosSelectionPrepared_(self, payload) -> None:
+        self._google_prepared = dict(payload or {})
+        count = int(self._google_prepared.get("materialized_photo_count") or 0)
+        total = int(self._google_prepared.get("total_photo_count") or count)
+        self._google_preparation_progress = {
+            "state": "completed",
+            "session_id": str(self._google_prepared.get("session_id") or ""),
+            "selected_item_count": int(self._google_prepared.get("selected_item_count") or 0),
+            "total_photo_count": total,
+            "completed_photo_count": count,
+            "excluded_video_count": int(self._google_prepared.get("excluded_video_count") or 0),
+            "progress_percent": 100.0,
+        }
+        self._set_selected_source("google_photos", request_preview=False)
+        self._update_source_scope_summary()
+        self._request_preview()
+
+    def googlePhotosPreparationProgress_(self, payload) -> None:
+        self._google_preparation_progress = dict(payload or {})
+        if self._selected_source == "google_photos":
+            self._update_source_scope_summary()
+            self._update_step_states()
+
+    @objc.python_method
+    def _set_selected_source(self, source: str, *, request_preview: bool = True) -> None:
+        if source not in {"apple", "local", "google_photos"}:
+            return
+        self._selected_source = source
+        self._preview_generation += 1
+        self._last_preview = None
+        self._last_preview_command = None
+        self._preview_error = False
+        self._preview_loading = False
+        self._summary_candidate.setStringValue_("확인 필요")
+        self._summary_run.setStringValue_(f"{self._selected_limit()}장")
+        self._summary_download.setStringValue_("-")
+        self._preview_primary.setStringValue_("분석할 사진을 선택해 주세요")
+        self._preview_primary.setTextColor_(NSColor.labelColor())
+        self._preview_secondary.setStringValue_("선택한 소스의 사진 준비 상태를 확인합니다.")
+        self._run_button.setEnabled_(False)
+        self._apply_source_scope_visibility()
+        self._update_source_scope_summary()
+        selected_border = self._step_color(1).CGColor()
+        normal_border = subtle_border_color().CGColor()
+        for key, card in (
+            ("apple", self._apple_card),
+            ("local", self._local_card),
+            ("google_photos", self._google_card),
+        ):
+            card.layer().setBorderColor_(selected_border if key == source else normal_border)
+            card.layer().setBorderWidth_(1.4 if key == source else 1.0)
+        # The entire Apple card is the source selector; no separate "use" action is required.
+        self._apple_source_button.setHidden_(True)
+        self._local_folder_button.setTitle_("수정" if source == "local" and self._local_selected_paths else "열기")
+        self._google_photos_button.setTitle_("다시 선택" if source == "google_photos" and self._google_prepared else "선택")
+        self._update_step_states()
+        if request_preview:
+            self._request_preview()
+
+    @objc.python_method
+    def _apply_source_scope_visibility(self) -> None:
+        apple = self._selected_source == "apple"
+        for view in (
+            self._album_field_label,
+            self._album_popup,
+            self._period_checkbox,
+            self._start_field,
+            self._date_separator_label,
+            self._end_field,
+            self._recent_button,
+            self._year_button,
+            self._period_helper_label,
+        ):
+            view.setHidden_(not apple)
+        for view in (
+            self._source_scope_title,
+            self._source_scope_detail,
+            self._source_scope_status,
+            self._source_scope_button,
+        ):
+            view.setHidden_(apple)
+
+    @objc.python_method
+    def _update_source_scope_summary(self) -> None:
+        self._source_progress.setHidden_(True)
+        self._source_preview_button.setHidden_(True)
+        if self._selected_source == "local":
+            count = len(self._local_selected_paths)
+            self._source_scope_title.setStringValue_("선택한 로컬 사진" if count else "로컬 사진을 선택해 주세요")
+            self._source_scope_detail.setStringValue_(
+                f"여러 폴더에서 누적 선택한 사진 {count}장" if count else "폴더를 탐색해 분석할 사진을 선택합니다."
+            )
+            self._source_scope_status.setStringValue_(f"분석 가능 {count}장" if count else "준비 필요")
+            self._source_scope_button.setTitle_("선택 수정" if count else "사진 선택")
+        elif self._selected_source == "google_photos":
+            paths = tuple(
+                str(path)
+                for path in self._google_prepared.get("paths") or ()
+                if str(path) and Path(str(path)).is_file()
+            )
+            count = len(paths)
+            progress = self._google_preparation_progress
+            completed = int(progress.get("completed_photo_count") or 0)
+            total = int(progress.get("total_photo_count") or 0)
+            videos = int(
+                progress.get("excluded_video_count")
+                or self._google_prepared.get("excluded_video_count")
+                or 0
+            )
+            if count:
+                total = max(total, count)
+                self._source_scope_title.setStringValue_("Google Photos 선택 완료")
+                self._source_scope_detail.setStringValue_(
+                    f"사진 {count}장 준비됨 · 동영상 {videos}개 제외 · 임시 저장"
+                )
+                self._source_scope_status.setStringValue_(f"다운로드 완료 {count} / {total}")
+                self._source_scope_button.setTitle_("새 사진 선택")
+                self._source_preview_button.setHidden_(False)
+                self._source_progress.setMinValue_(0.0)
+                self._source_progress.setMaxValue_(float(max(1, total)))
+                self._source_progress.setDoubleValue_(float(count))
+                self._source_progress.setHidden_(False)
+            elif total:
+                self._source_scope_title.setStringValue_("Google Photos 사진 다운로드 중")
+                self._source_scope_detail.setStringValue_(
+                    f"사진 {completed}/{total}장 다운로드 · 동영상 {videos}개 제외"
+                )
+                self._source_scope_status.setStringValue_(
+                    f"다운로드 {completed} / {total} · {float(progress.get('progress_percent') or 0.0):.0f}%"
+                )
+                self._source_scope_button.setTitle_("진행 보기")
+                self._source_progress.setMinValue_(0.0)
+                self._source_progress.setMaxValue_(float(max(1, total)))
+                self._source_progress.setDoubleValue_(float(completed))
+                self._source_progress.setHidden_(False)
+            else:
+                self._source_scope_title.setStringValue_("Google Photos에서 사진을 선택해 주세요")
+                self._source_scope_detail.setStringValue_(
+                    "브라우저 선택이 끝나면 사진 다운로드가 자동으로 시작됩니다."
+                )
+                self._source_scope_status.setStringValue_("준비 필요")
+                self._source_scope_button.setTitle_("사진 선택")
+
+    def previewPreparedGooglePhotos_(self, _sender) -> None:
+        paths = tuple(
+            str(path)
+            for path in self._google_prepared.get("paths") or ()
+            if str(path) and Path(str(path)).is_file()
+        )
+        if not paths:
+            self._update_source_scope_summary()
+            return
+        controller = getattr(self._menu_controller, "_google_photo_preview_controller", None)
+        if controller is not None and controller.window().isVisible():
+            controller.focusWindow()
+            return
+        if controller is not None:
+            controller.shutdown()
+        from photos_mcp.interfaces.appkit.local_browser.controller import PhotosMcpLocalPhotoSelectionController
+
+        controller = PhotosMcpLocalPhotoSelectionController.alloc().initWithMenuController_service_sourcePath_selectedPhotoIds_(
+            self._menu_controller,
+            self._service,
+            common_local_source_path(paths),
+            paths,
+        )
+        controller.enableReadOnlyPreviewMode_(
+            {
+                "title": "Google Photos 다운로드 미리보기",
+                "paths": paths,
+            }
+        )
+        self._menu_controller._google_photo_preview_controller = controller
+        controller.showWindow_(None)
+
+    @objc.python_method
+    def _selected_limit(self) -> int:
+        return int(str(self._limit_popup.titleOfSelectedItem() or "50장").replace("장", ""))
 
     def localPhotoBrowserDidClose_(self, _sender) -> None:
         self._update_local_browser_button(False)
@@ -610,24 +902,42 @@ class PhotosMcpDirectClassificationController(NSWindowController):
             self.window().performClose_(None)
 
     def commandFromControls(self) -> ClassificationCommand:
+        profile = {"일반": "general", "인물": "person", "풍경": "landscape"}.get(
+            str(self._profile_popup.titleOfSelectedItem() or "일반"), "general"
+        )
+        limit_text = str(self._limit_popup.titleOfSelectedItem() or "50장")
+        common = {
+            "mode": "classify" if self._mode_control.selectedSegment() == 0 else "select_best",
+            "selection_profile": profile,
+            "exclude_screenshots": self._exclude_checkbox.state() == NSControlStateValueOn,
+            "limit": int(limit_text.replace("장", "")),
+        }
+        if self._selected_source != "apple":
+            paths = (
+                self._local_selected_paths
+                if self._selected_source == "local"
+                else tuple(str(path) for path in self._google_prepared.get("paths") or () if str(path))
+            )
+            if not paths:
+                raise ClassificationValidationError("분석할 사진을 먼저 선택해 주세요.")
+            selected_paths = paths[: common["limit"]]
+            return ClassificationCommand(
+                source="local",
+                source_path=common_local_source_path(selected_paths),
+                selected_photo_ids=selected_paths,
+                **common,
+            ).validate()
         album_item = self._album_popup.selectedItem()
         album = ""
         if album_item is not None and self._album_popup.indexOfSelectedItem() > 0:
             represented = album_item.representedObject()
             album = str(represented or str(album_item.title()).rsplit(" (", 1)[0])
         period_enabled = self._period_checkbox.state() == NSControlStateValueOn
-        profile = {"일반": "general", "인물": "person", "풍경": "landscape"}.get(
-            str(self._profile_popup.titleOfSelectedItem() or "일반"), "general"
-        )
-        limit_text = str(self._limit_popup.titleOfSelectedItem() or "50장")
         return ClassificationCommand(
             album=album,
             date_from=str(self._start_field.stringValue()).strip() if period_enabled else "",
             date_to=str(self._end_field.stringValue()).strip() if period_enabled else "",
-            mode="classify" if self._mode_control.selectedSegment() == 0 else "select_best",
-            selection_profile=profile,
-            exclude_screenshots=self._exclude_checkbox.state() == NSControlStateValueOn,
-            limit=int(limit_text.replace("장", "")),
+            **common,
         ).validate()
 
     @objc.python_method
@@ -650,7 +960,7 @@ class PhotosMcpDirectClassificationController(NSWindowController):
 
     @objc.python_method
     def _request_preview(self) -> None:
-        if not self._albums_loaded:
+        if self._selected_source == "apple" and not self._albums_loaded:
             return
         try:
             command = self.commandFromControls()
@@ -698,7 +1008,21 @@ class PhotosMcpDirectClassificationController(NSWindowController):
     @objc.python_method
     def _run_worker(self, command: ClassificationCommand) -> None:
         try:
-            self._pending_run_payload = self._run_async(self._service.execute(command))
+            if self._selected_source == "google_photos":
+                runtime = getattr(self._menu_controller, "googlePhotosRuntime", lambda: None)()
+                session_id = str(self._google_prepared.get("session_id") or "")
+                if runtime is None or not session_id:
+                    raise RuntimeError("Google Photos 준비 세션을 찾을 수 없습니다.")
+                self._pending_run_payload = self._run_async(
+                    runtime.importer.classify_prepared_selection(
+                        session_id,
+                        selection_profile=command.selection_profile,
+                        mode=command.mode,
+                        limit=command.limit,
+                    )
+                )
+            else:
+                self._pending_run_payload = self._run_async(self._service.execute(command))
         except Exception as exc:
             self._pending_run_payload = {"status": "failed", "error": str(exc)}
         self.performSelectorOnMainThread_withObject_waitUntilDone_("classificationStarted:", None, False)
@@ -858,24 +1182,29 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         source_width = (content_width - 32.0 - (source_gap * 2.0)) / 3.0
         for index, card in enumerate((self._apple_card, self._local_card, self._google_card)):
             card.setFrame_(NSMakeRect(16.0 + (index * (source_width + source_gap)), 14.0, source_width, 78.0))
+        for selector in (
+            self._apple_card_button,
+            self._local_card_button,
+            self._google_card_button,
+        ):
+            selector.setFrame_(NSMakeRect(0.0, 0.0, source_width, 78.0))
 
         source_button_width = min(86.0, max(66.0, source_width * 0.30))
         source_button_x = source_width - source_button_width - 12.0
         source_text_width = max(70.0, source_button_x - 80.0)
-        apple_text_width = max(90.0, source_width - 102.0)
         for symbol in (
             self._apple_source_symbol,
             self._local_source_symbol,
             self._google_source_symbol,
         ):
             symbol.setFrame_(NSMakeRect(14.0, 17.0, 44.0, 44.0))
-        self._set_label_centered_on_y(self._apple_title_label, 68.0, 49.0, apple_text_width)
+        self._set_label_centered_on_y(self._apple_title_label, 68.0, 49.0, source_text_width)
         self._apple_status_dot.setFrame_(NSMakeRect(70.0, 25.0, 8.0, 8.0))
         self._set_label_centered_on_y(
             self._album_status_label,
             86.0,
             29.0,
-            max(72.0, source_width - 102.0),
+            max(72.0, source_button_x - 86.0),
         )
         for title, description in (
             (self._local_title_label, self._local_description_label),
@@ -885,6 +1214,7 @@ class PhotosMcpDirectClassificationController(NSWindowController):
             self._set_label_centered_on_y(description, 68.0, 29.0, source_text_width)
         self._local_folder_button.setFrame_(NSMakeRect(source_button_x, 24.0, source_button_width, 30.0))
         self._google_photos_button.setFrame_(NSMakeRect(source_button_x, 24.0, source_button_width, 30.0))
+        self._apple_source_button.setFrame_(NSMakeRect(source_button_x, 24.0, source_button_width, 30.0))
 
         gap = 16.0
         column_width = (content_width - gap) / 2.0
@@ -916,6 +1246,12 @@ class PhotosMcpDirectClassificationController(NSWindowController):
             quick_action_center_y,
             max(90.0, column_width - 220.0),
         )
+        self._source_scope_title.setFrame_(NSMakeRect(20.0, 111.0, max(180.0, column_width - 154.0), 24.0))
+        self._source_scope_detail.setFrame_(NSMakeRect(20.0, 82.0, max(220.0, column_width - 40.0), 28.0))
+        self._source_progress.setFrame_(NSMakeRect(20.0, 66.0, max(120.0, column_width - 40.0), 10.0))
+        self._source_scope_status.setFrame_(NSMakeRect(20.0, 38.0, max(90.0, column_width - 274.0), 24.0))
+        self._source_preview_button.setFrame_(NSMakeRect(column_width - 266.0, 31.0, 126.0, 32.0))
+        self._source_scope_button.setFrame_(NSMakeRect(column_width - 130.0, 31.0, 110.0, 32.0))
 
         self._mode_control.setFrame_(NSMakeRect(18.0, 112.0, column_width - 36.0, 34.0))
         self._set_label_centered_on_y(self._profile_field_label, 18.0, 88.0, 80.0)
@@ -1058,6 +1394,15 @@ class PhotosMcpDirectClassificationController(NSWindowController):
 
     @objc.python_method
     def _update_step_states(self) -> None:
+        source_scope_ready = (
+            self._albums_loaded
+            if self._selected_source == "apple"
+            else bool(
+                self._local_selected_paths
+                if self._selected_source == "local"
+                else self._google_prepared.get("paths")
+            )
+        )
         command_valid = False
         try:
             current_command = self.commandFromControls()
@@ -1074,10 +1419,12 @@ class PhotosMcpDirectClassificationController(NSWindowController):
 
         if self._run_accepted:
             states = {1: "complete", 2: "complete", 3: "complete", 4: "complete"}
-        elif self._album_error:
+        elif self._selected_source == "apple" and self._album_error:
             states = {1: "error", 2: "pending", 3: "pending", 4: "pending"}
-        elif not self._albums_loaded:
+        elif self._selected_source == "apple" and not self._albums_loaded:
             states = {1: "current", 2: "pending", 3: "pending", 4: "pending"}
+        elif not source_scope_ready:
+            states = {1: "complete", 2: "current", 3: "pending", 4: "pending"}
         elif self._preview_error:
             states = {1: "complete", 2: "error", 3: "pending", 4: "pending"}
         elif getattr(self, "_preview_loading", False):
@@ -1218,6 +1565,25 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         if primary and hasattr(button, "setBezelColor_"):
             button.setBezelColor_(accent_color())
         self._configure_control(button, title)
+        parent.addSubview_(button)
+        return button
+
+    @objc.python_method
+    def _add_source_card_button(
+        self,
+        parent: Any,
+        width: float,
+        accessibility_label: str,
+        selector: str,
+    ) -> Any:
+        """Add a full-card hit target below the card's explicit edit button."""
+
+        button = NSButton.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, width, 78.0))
+        button.setTitle_("")
+        button.setBordered_(False)
+        button.setTarget_(self)
+        button.setAction_(selector)
+        self._configure_control(button, accessibility_label)
         parent.addSubview_(button)
         return button
 

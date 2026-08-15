@@ -235,6 +235,8 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._inspector_mode = "photo"
         self._density_index = _DEFAULT_DENSITY_INDEX
         self._view_mode = "grid"
+        self._read_only_preview_mode = False
+        self._preview_only_paths: set[str] = set()
         self._initial_split_installed = False
         self._normalizing_split_view = False
         self._inspector_width_preference = 360.0
@@ -276,10 +278,12 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self.window().makeKeyAndOrderFront_(None)
 
     def windowWillClose_(self, _notification) -> None:
+        if getattr(self._menu_controller, "_google_photo_preview_controller", None) == self:
+            self._menu_controller._google_photo_preview_controller = None
         if getattr(self._menu_controller, "_local_photo_selection_controller", None) == self:
             self._menu_controller._local_photo_selection_controller = None
         direct = getattr(self._menu_controller, "_direct_classification_controller", None)
-        if direct is not None and hasattr(direct, "localPhotoBrowserDidClose_"):
+        if not self._read_only_preview_mode and direct is not None and hasattr(direct, "localPhotoBrowserDidClose_"):
             direct.localPhotoBrowserDidClose_(None)
         self.shutdown()
 
@@ -838,9 +842,9 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._inspector_title.setFrame_(NSMakeRect(margin, height - 46.0, max(1.0, width - margin * 2), 28.0))
         self._inspector_mode_control.setFrame_(NSMakeRect(margin, height - 88.0, max(1.0, width - margin * 2), 30.0))
         card_y = 38.0
-        card_height = max(236.0, min(270.0, height * 0.34))
-        scroll_y = card_y + card_height + 14.0
-        scroll_height = max(120.0, height - scroll_y - 106.0)
+        card_height = 0.0 if self._read_only_preview_mode else max(236.0, min(270.0, height * 0.34))
+        scroll_y = 42.0 if self._read_only_preview_mode else card_y + card_height + 14.0
+        scroll_height = max(120.0, height - scroll_y - (72.0 if self._read_only_preview_mode else 106.0))
         scroll_frame = NSMakeRect(margin, scroll_y, max(1.0, width - margin * 2), scroll_height)
         self._photo_scroll.setFrame_(scroll_frame)
         self._selection_scroll.setFrame_(scroll_frame)
@@ -1135,6 +1139,8 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._set_photo_checked(str(sender.identifier() or ""), False, allow_external=True)
 
     def clearAllSelection_(self, _sender) -> None:
+        if self._read_only_preview_mode:
+            return
         self._selected_paths.clear()
         self._selected_photos.clear()
         self._refresh_visible_checkboxes()
@@ -1451,12 +1457,16 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._single_apply_fit_zoom()
 
     def toggleFocusedPhotoCheck_(self, sender) -> None:
+        if self._read_only_preview_mode:
+            return
         self._set_photo_checked(
             self._focused_path,
             sender.state() == NSControlStateValueOn,
         )
 
     def toggleFocusedPhotoFromKeyboard_(self, _sender) -> None:
+        if self._read_only_preview_mode:
+            return
         if not self._focused_path:
             return
         self._set_photo_checked(
@@ -1467,6 +1477,8 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self.window().makeFirstResponder_(responder)
 
     def toggleGridPhotoFromKeyboard_(self, sender) -> None:
+        if self._read_only_preview_mode:
+            return
         selected_indexes = list(sender.selectionIndexPaths() or [])
         visible = self._visible_photos()
         if selected_indexes:
@@ -1621,6 +1633,8 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._update_collection_layout()
 
     def selectAllPhotos_(self, _sender) -> None:
+        if self._read_only_preview_mode:
+            return
         for photo in self._visible_photos():
             self._selected_paths.add(photo.path)
             self._selected_photos[photo.path] = photo
@@ -1629,6 +1643,8 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._sync_collection_selection()
 
     def clearSelection_(self, _sender) -> None:
+        if self._read_only_preview_mode:
+            return
         visible_paths = {photo.path for photo in self._visible_photos()}
         self._selected_paths.difference_update(visible_paths)
         for path in visible_paths:
@@ -1637,11 +1653,15 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._sync_collection_selection()
 
     def togglePhotoCheck_(self, sender) -> None:
+        if self._read_only_preview_mode:
+            return
         path = str(sender.identifier() or "")
         self._set_photo_checked(path, sender.state() == NSControlStateValueOn)
 
     @objc.python_method
     def _set_photo_checked(self, path: str, checked: bool, *, allow_external: bool = False) -> None:
+        if self._read_only_preview_mode:
+            return
         photo = next((item for item in self._photos if item.path == path), None)
         if not path or (photo is None and not allow_external):
             return
@@ -1662,6 +1682,18 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
 
     def startClassification_(self, _sender) -> None:
         if not self._selected_paths or self._thread_alive(self._run_worker):
+            return
+        delegate = getattr(self, "_selection_delegate", None)
+        if delegate is not None and hasattr(delegate, "localPhotoSelectionPrepared_"):
+            paths = tuple(sorted(self._selected_paths))
+            delegate.localPhotoSelectionPrepared_(
+                {
+                    "paths": paths,
+                    "source_path": common_local_source_path(paths),
+                    "photo_count": len(paths),
+                }
+            )
+            self.window().orderOut_(None)
             return
         limit = self._selection_limit()
         profile = {"일반": "general", "인물": "person", "풍경": "landscape"}.get(
@@ -1684,6 +1716,45 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._run_status.setStringValue_("선택한 사진 분류 작업을 시작하고 있습니다.")
         self._run_worker = Thread(target=self._run_worker_main, args=(command,), name="photos-mcp-local-browser-run", daemon=True)
         self._run_worker.start()
+
+    def enableSelectionHandoffMode_(self, delegate) -> None:
+        """Use this browser only to prepare a selection for the shared wizard."""
+
+        self._selection_delegate = delegate
+        self._settings_title.setStringValue_("선택 확정")
+        for view in (self._mode, self._profile_label, self._profile, self._limit_label, self._limit):
+            view.setEnabled_(False)
+        self._run_status.setStringValue_("분석 방법은 메인 사진 분류 화면에서 선택합니다.")
+        self._sync_collection_selection()
+
+    def enableReadOnlyPreviewMode_(self, payload) -> None:
+        """Show only an explicit path allow-list without classification actions."""
+
+        data = dict(payload or {})
+        paths = {
+            str(Path(path).expanduser().resolve())
+            for path in data.get("paths") or ()
+            if str(path) and Path(path).expanduser().is_file()
+        }
+        self._read_only_preview_mode = True
+        self._preview_only_paths = paths
+        self._selected_paths.clear()
+        self._selected_photos.clear()
+        self.window().setTitle_(str(data.get("title") or "다운로드한 사진 미리보기"))
+        self._inspector_title.setStringValue_("사진 정보")
+        self._inspector_mode_control.setHidden_(True)
+        self._selection_scroll.setHidden_(True)
+        self._settings_card.setHidden_(True)
+        self._single_check_button.setHidden_(True)
+        self._select_all_button.setHidden_(True)
+        self._clear_button.setHidden_(True)
+        self._run_status.setStringValue_("임시 다운로드 파일을 읽기 전용으로 표시합니다.")
+        self._sync_collection_selection()
+        self._layout_panes()
+
+    @objc.python_method
+    def is_read_only_preview(self) -> bool:
+        return self._read_only_preview_mode
 
     @objc.python_method
     def _run_worker_main(self, command: ClassificationCommand) -> None:
@@ -1808,11 +1879,24 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
     @objc.python_method
     def _visible_photos(self) -> list[LocalPhoto]:
         query = str(self._search_field.stringValue() or "").strip().casefold()
-        return self._photos if not query else [photo for photo in self._photos if query in photo.name.casefold()]
+        photos = self._photos
+        if self._read_only_preview_mode:
+            photos = [photo for photo in photos if photo.path in self._preview_only_paths]
+        return photos if not query else [photo for photo in photos if query in photo.name.casefold()]
 
     @objc.python_method
     def _sync_collection_selection(self) -> None:
         visible = self._visible_photos()
+        if self._read_only_preview_mode:
+            self._selection_label.setStringValue_(f"다운로드한 사진 {len(visible)}장 · 읽기 전용")
+            self._selected_count.setStringValue_(f"사진 {len(self._preview_only_paths)}장")
+            self._run_button.setEnabled_(False)
+            self._select_all_button.setHidden_(True)
+            self._clear_button.setHidden_(True)
+            self._run_status.setStringValue_("임시 다운로드 파일을 읽기 전용으로 표시합니다.")
+            self._update_inspector()
+            self._sync_view_mode()
+            return
         selected_count = len(self._selected_paths)
         visible_selected_count = sum(photo.path in self._selected_paths for photo in visible)
         folder_count = self._selected_folder_count()
@@ -1826,16 +1910,20 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._selected_count.setStringValue_(f"분류 대상 {selected_count}장")
         self._inspector_mode_control.setLabel_forSegment_(f"선택 목록 {selected_count}", 1)
         limit = self._selection_limit()
+        handoff = getattr(self, "_selection_delegate", None) is not None
         within_limit = selected_count <= limit
-        can_run = bool(selected_count) and within_limit and not self._thread_alive(self._run_worker)
+        can_run = bool(selected_count) and (handoff or within_limit) and not self._thread_alive(self._run_worker)
         self._run_button.setEnabled_(can_run)
-        run_title = f"선택한 {selected_count}장 분류" if selected_count else "사진을 선택하세요"
+        if handoff:
+            run_title = f"선택한 {selected_count}장 사용" if selected_count else "사진을 선택하세요"
+        else:
+            run_title = f"선택한 {selected_count}장 분류" if selected_count else "사진을 선택하세요"
         self._run_button.setTitle_(run_title)
         self._run_button.setAccessibilityLabel_(run_title)
         self._run_button.setToolTip_(run_title)
         self._select_all_button.setEnabled_(bool(visible))
         self._clear_button.setEnabled_(bool(visible_selected_count))
-        if selected_count > limit:
+        if selected_count > limit and not handoff:
             over = selected_count - limit
             self._run_status.setStringValue_(
                 f"최대 {limit}장보다 {over}장 많습니다. 선택을 줄이거나 최대 처리 수를 늘리세요."

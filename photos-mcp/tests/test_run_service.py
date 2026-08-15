@@ -108,6 +108,25 @@ async def test_curate_structured_vendor_error_becomes_terminal_failure(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_background_curate_error_does_not_create_synthetic_job_id(monkeypatch) -> None:
+    async def fake_call_vendor(*_args, **_kwargs):
+        return {"error": "selected photo count exceeds limit"}
+
+    monkeypatch.setattr(run_service, "call_vendor", fake_call_vendor)
+
+    payload = await photos_run(
+        intent="curate",
+        source="local",
+        source_path="/tmp",
+        background=True,
+    )
+
+    assert payload["status"] == "failed"
+    assert payload["error"] == "selected photo count exceeds limit"
+    assert "job_id" not in payload
+
+
+@pytest.mark.asyncio
 async def test_waiting_analyze_stops_when_thumbnail_probe_never_returns(monkeypatch, tmp_path) -> None:
     async def unavailable_probe(*_args, **_kwargs):
         return {"local_path_available": False}

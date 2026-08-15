@@ -29,6 +29,9 @@ from photos_mcp.infrastructure.sources.google_photos.oauth import (
     GoogleOAuthTokenProvider,
     GooglePickerCredentialRepository,
 )
+from photos_mcp.infrastructure.sources.google_photos.settings import (
+    GooglePhotosOAuthSettingsRepository,
+)
 from photos_mcp.infrastructure.sources.google_photos.picker import GooglePhotosPickerAdapter
 from photos_mcp.infrastructure.sources.google_photos.session_repository import PickerSessionRepository
 from photos_mcp.infrastructure.sources.google_photos.upload_repository import GoogleUploadReceiptRepository
@@ -38,7 +41,7 @@ from photos_mcp.infrastructure.sources.google_photos.upload_repository import Go
 class GooglePhotosRuntimeSettings:
     client_id: str = ""
     client_secret: str = ""
-    redirect_uri: str = "photos-mcp:/oauth/google"
+    redirect_uri: str = ""
     account_id: str = "default"
 
     @classmethod
@@ -48,15 +51,40 @@ class GooglePhotosRuntimeSettings:
             client_secret=os.environ.get("PHOTOS_MCP_GOOGLE_CLIENT_SECRET", "").strip(),
             redirect_uri=os.environ.get(
                 "PHOTOS_MCP_GOOGLE_REDIRECT_URI",
-                "photos-mcp:/oauth/google",
+                "",
             ).strip(),
             account_id=os.environ.get("PHOTOS_MCP_GOOGLE_ACCOUNT_ID", "default").strip()
             or "default",
         )
 
+    @classmethod
+    def from_app_configuration(
+        cls,
+        *,
+        settings_repository: GooglePhotosOAuthSettingsRepository | None = None,
+    ) -> "GooglePhotosRuntimeSettings":
+        """Prefer values saved by the app, then keep environment configuration compatible."""
+
+        environment = cls.from_environment()
+        repository = settings_repository or GooglePhotosOAuthSettingsRepository(
+            KeychainCredentialStore()
+        )
+        try:
+            configured = repository.load(environment.account_id)
+        except RuntimeError:
+            return environment
+        if configured is None:
+            return environment
+        return cls(
+            client_id=configured.client_id,
+            client_secret=configured.client_secret,
+            redirect_uri=configured.redirect_uri,
+            account_id=environment.account_id,
+        )
+
     @property
     def configured(self) -> bool:
-        return bool(self.client_id and self.redirect_uri)
+        return bool(self.client_id)
 
 
 @dataclass(slots=True)
@@ -137,6 +165,7 @@ def build_google_photos_runtime(
         content_adapter=content,
         leases=leases,
         classification_starter=start_classification,
+        state_store=state_store,
     )
     library = GooglePhotosLibraryClient(
         access_token=token_provider.access_token,

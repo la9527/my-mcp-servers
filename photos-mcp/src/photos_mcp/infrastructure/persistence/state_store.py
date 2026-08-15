@@ -312,6 +312,20 @@ class PhotosMcpStateStore:
                 self._sync_busy_state_locked()
         return deleted_run_ids
 
+    def delete_synthetic_run(self, run_id: str) -> bool:
+        """Delete one terminal synthetic run from memory and durable storage."""
+        with self._lock:
+            payload = self._synthetic_runs.get(run_id)
+            if payload is None or not is_terminal_job_status(payload.get("status") or ""):
+                return False
+            if not self._run_repository.delete_run(run_id):
+                return False
+            self._synthetic_runs.pop(run_id, None)
+            self._synthetic_tasks.pop(run_id, None)
+            self._last_updated_at = _utcnow_iso()
+            self._sync_busy_state_locked()
+            return True
+
     def get_recovery_plan(self, run_id: str) -> dict[str, Any]:
         with self._lock:
             payload = self._synthetic_runs.get(run_id)

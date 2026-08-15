@@ -55,6 +55,7 @@ _WINDOW_HEIGHT = 780.0
 _SIDEBAR_WIDTH = 220.0
 _CONTENT_MARGIN = 32.0
 _CLASSIFICATION_TOP_INSET = 20.0
+_TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 _SYSTEM_SYMBOLS = {
     "home": "house",
@@ -108,6 +109,9 @@ class PhotosMcpMainWindowController(NSWindowController):
         self._selected_tab = "home"
         self._job_filter = "all"
         self._selected_job_id = ""
+        self._job_scroll_view = None
+        self._job_scroll_offset_from_top = 0.0
+        self._job_visible_ids: tuple[str, ...] = ()
         self._snapshot = menu_controller._state_store.snapshot()
         self._is_rebuilding = False
         self._render_signature = None
@@ -147,6 +151,8 @@ class PhotosMcpMainWindowController(NSWindowController):
     def showTab_(self, tab: str) -> None:
         if tab not in {"home", "classification", "jobs", "environment"}:
             tab = "home"
+        if self._selected_tab == "jobs" and tab != "jobs":
+            self._remember_job_scroll_position()
         self._selected_tab = tab
         self._snapshot = self._menu_controller._state_store.snapshot()
         self.rebuild()
@@ -161,11 +167,14 @@ class PhotosMcpMainWindowController(NSWindowController):
             return
         self._is_rebuilding = True
         try:
+            if self._selected_tab == "jobs":
+                self._remember_job_scroll_position()
             root = self.window().contentView()
             root.setWantsLayer_(True)
             root.layer().setBackgroundColor_(NSColor.windowBackgroundColor().CGColor())
             for subview in list(root.subviews()):
                 subview.removeFromSuperview()
+            self._job_scroll_view = None
 
             width = float(root.bounds().size.width)
             height = float(root.bounds().size.height)
@@ -202,6 +211,20 @@ class PhotosMcpMainWindowController(NSWindowController):
             build_job_history_view_models(snapshot),
             int(time.time() // 60),
         )
+
+    @objc.python_method
+    def _remember_job_scroll_position(self) -> None:
+        scroll = self._job_scroll_view
+        if scroll is None or scroll.documentView() is None:
+            return
+        clip = scroll.contentView()
+        max_origin_y = max(
+            0.0,
+            float(scroll.documentView().frame().size.height)
+            - float(clip.bounds().size.height),
+        )
+        origin_y = min(max(float(clip.bounds().origin.y), 0.0), max_origin_y)
+        self._job_scroll_offset_from_top = max_origin_y - origin_y
 
     @objc.python_method
     def _build_sidebar(self, parent: Any, width: float, height: float) -> None:
@@ -374,6 +397,19 @@ class PhotosMcpMainWindowController(NSWindowController):
             self._selected_job_id = jobs[0].job_id
         self._label(parent, margin, top - 34.0, usable - 160.0, 38.0, "작업 기록", bold=True, size=28.0)
         self._label(parent, margin, top - 64.0, usable - 160.0, 22.0, "진행 중인 작업과 완료된 사진 분석 결과를 확인합니다.", secondary=True, size=12.2)
+        clear_button = self._button(
+            parent,
+            margin + usable - 294.0,
+            top - 54.0,
+            132.0,
+            38.0,
+            "전체 기록 삭제",
+            self._menu_controller,
+            "clearJobHistoryWithConfirmation:",
+        )
+        clear_button.setEnabled_(
+            any(job.status in _TERMINAL_JOB_STATUSES for job in jobs)
+        )
         server = self._card(parent, margin + usable - 148.0, top - 54.0, 148.0, 38.0, "neutral")
         self._status_dot(server, 16.0, 19.0, "success", "서버 실행 중")
         self._label(server, 38.0, 10.0, 96.0, 20.0, "서버 실행 중", bold=True, size=11.5)
@@ -413,7 +449,14 @@ class PhotosMcpMainWindowController(NSWindowController):
             or (self._job_filter == "failed" and job.tone == "error")
         ]
         if filtered_jobs and not any(job.job_id == self._selected_job_id for job in filtered_jobs):
-            self._selected_job_id = filtered_jobs[0].job_id
+            try:
+                previous_index = self._job_visible_ids.index(self._selected_job_id)
+            except ValueError:
+                previous_index = 0
+            self._selected_job_id = filtered_jobs[
+                min(previous_index, len(filtered_jobs) - 1)
+            ].job_id
+        self._job_visible_ids = tuple(job.job_id for job in filtered_jobs)
 
         gap = 14.0
         list_width = (usable - gap) * 0.57
@@ -454,10 +497,15 @@ class PhotosMcpMainWindowController(NSWindowController):
         scroll.setDocumentView_(document)
         list_card.addSubview_(scroll)
         scroll.layoutSubtreeIfNeeded()
+        max_origin_y = max(0.0, document_height - scroll_height)
         scroll.contentView().scrollToPoint_(
-            NSMakePoint(0.0, max(0.0, document_height - scroll_height))
+            NSMakePoint(
+                0.0,
+                max(0.0, max_origin_y - self._job_scroll_offset_from_top),
+            )
         )
         scroll.reflectScrolledClipView_(scroll.contentView())
+        self._job_scroll_view = scroll
 
         detail = self._card(parent, margin + list_width + gap, panel_y, detail_width, panel_height, "neutral")
         self._label(detail, 18.0, panel_height - 34.0, detail_width - 36.0, 22.0, "작업 상세", bold=True, size=15.0)
@@ -480,13 +528,20 @@ class PhotosMcpMainWindowController(NSWindowController):
             progress = self._label(detail_card, 110.0, panel_height - 244.0, detail_width - 158.0, 18.0, progress_text, bold=True, size=10.5)
             progress.setAlignment_(2)
             if selected_job.result_available:
-                self._button(detail, 18.0, 14.0, detail_width - 36.0, 32.0, "결과 보기", self._menu_controller, "showJobResult:", identifier=selected_job.job_id, primary=True)
+                button_width = (detail_width - 44.0) / 2.0
+                self._button(detail, 18.0, 14.0, button_width, 32.0, "결과 보기", self._menu_controller, "showJobResult:", identifier=selected_job.job_id, primary=True)
+                self._button(detail, 26.0 + button_width, 14.0, button_width, 32.0, "기록 삭제", self._menu_controller, "deleteJobWithConfirmation:", identifier=selected_job.job_id)
             elif selected_job.can_cancel:
                 self._button(detail, 18.0, 14.0, detail_width - 36.0, 32.0, "작업 취소", self._menu_controller, "cancelJob:", identifier=selected_job.job_id)
+            else:
+                self._button(detail, 18.0, 14.0, detail_width - 36.0, 32.0, "기록 삭제", self._menu_controller, "deleteJobWithConfirmation:", identifier=selected_job.job_id)
 
     def filterJobs_(self, sender) -> None:
         identifier = sender.identifier() if sender is not None and hasattr(sender, "identifier") else None
         self._job_filter = str(identifier or "all")
+        self._job_scroll_view = None
+        self._job_scroll_offset_from_top = 0.0
+        self._job_visible_ids = ()
         self.rebuild()
 
     def selectJob_(self, sender) -> None:

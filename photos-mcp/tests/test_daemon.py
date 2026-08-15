@@ -16,6 +16,37 @@ def _build_controller() -> PhotosMcpDaemonController:
     return PhotosMcpDaemonController(config, state_store)
 
 
+def test_start_reconciles_orphaned_vendor_jobs_before_serving(monkeypatch) -> None:
+    controller = _build_controller()
+    reconciled: list[str] = []
+    fake_job_store = SimpleNamespace(
+        reconcile_orphaned_jobs_after_restart=lambda: reconciled.append("called") or []
+    )
+    fake_server = SimpleNamespace(started=False, should_exit=False)
+
+    monkeypatch.setattr(
+        "photos_mcp.app.lifecycle.PhotoRankerJobStore",
+        lambda _module: fake_job_store,
+    )
+    monkeypatch.setattr(
+        "photos_mcp.app.lifecycle.load_vendor_server",
+        lambda _name: SimpleNamespace(),
+    )
+    monkeypatch.setattr("photos_mcp.app.lifecycle.build_server", lambda **_kwargs: object())
+    monkeypatch.setattr("photos_mcp.app.lifecycle.build_http_app", lambda **_kwargs: object())
+    monkeypatch.setattr("photos_mcp.app.lifecycle.uvicorn.Server", lambda _config: fake_server)
+
+    def serve() -> None:
+        fake_server.started = True
+
+    monkeypatch.setattr(controller, "_serve", serve)
+    monkeypatch.setattr(controller, "refresh_jobs_once", lambda: None)
+    monkeypatch.setattr(controller, "_start_job_poller", lambda: None)
+
+    assert controller.start() is True
+    assert reconciled == ["called"]
+
+
 def test_cancel_job_persists_queue_state(monkeypatch) -> None:
     controller = _build_controller()
     saved_jobs = []

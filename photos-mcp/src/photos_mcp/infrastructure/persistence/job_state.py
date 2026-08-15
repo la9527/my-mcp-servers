@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+from pathlib import Path
+import shutil
+import time
 from typing import Any
 
 from photos_mcp.infrastructure.persistence.state_store import JobSnapshot, is_terminal_job_status, job_snapshot_from_payload, job_status_value
+from photos_mcp.infrastructure.runtime.paths import photo_ranker_runtime_root
 
 
 MAX_REVIEW_RESULT_ITEMS = 1000
+
+
+def delete_job_artifacts(job_id: str, *, artifact_root: Path | None = None) -> bool:
+    """Delete one job's generated previews/results without touching originals."""
+    normalized = str(job_id or "").strip()
+    if not normalized:
+        return False
+    root = (artifact_root or (photo_ranker_runtime_root() / "artifacts")).resolve()
+    candidate = (root / normalized).resolve()
+    if candidate.parent != root or not candidate.exists():
+        return False
+    shutil.rmtree(candidate)
+    return True
 
 
 def synthetic_review_result(payload: dict[str, Any], *, preview_path: str = "") -> dict[str, Any]:
@@ -79,6 +96,35 @@ class PhotoRankerJobStore:
                 normalized["result_available"] = result_count > 0
             merged_jobs.append(job_snapshot_from_payload(normalized))
         return merged_jobs
+
+    def reconcile_orphaned_jobs_after_restart(self) -> list[str]:
+        """Fail durable active jobs that are absent from the fresh process queue.
+
+        The vendor queue is intentionally in-memory. After an app restart, a
+        pending or running DB row cannot continue unless it was explicitly
+        restored into that queue. Leaving such rows active keeps PhotosMcp busy
+        forever and can also keep an on-demand Linux runtime awake.
+        """
+        queue_job_ids = {str(job.id) for job in self.queue.list_jobs()}
+        reconciled: list[str] = []
+        finished_at = time.time()
+        for job in self.db.list_jobs():
+            job_id = str(getattr(job, "id", "") or "")
+            if not job_id or job_id in queue_job_ids:
+                continue
+            if job_status_value(getattr(job, "status", "")) not in {"pending", "running"}:
+                continue
+
+            status = getattr(job, "status", "")
+            try:
+                job.status = type(status)("failed")
+            except (TypeError, ValueError):
+                job.status = "failed"
+            job.finished_at = finished_at
+            job.error_message = "app_restarted_before_completion"
+            self.db.save_job(job)
+            reconciled.append(job_id)
+        return reconciled
 
     def get_review_result(self, job_id: str, *, top_n: int = 24) -> dict[str, Any]:
         """Return local review data without exposing source photo paths to the UI."""
@@ -219,6 +265,8 @@ class PhotoRankerJobStore:
 
         removed_from_queue = self.queue.remove_job(job_id)
         removed_from_db = self.db.delete_job(job_id)
+        if removed_from_queue or removed_from_db:
+            delete_job_artifacts(job_id)
         return removed_from_queue or removed_from_db
 
     def clear_terminal_history(self, statuses: tuple[str, ...] | None = None) -> list[str]:
@@ -233,4 +281,7 @@ class PhotoRankerJobStore:
             if self.queue.remove_job(job.id):
                 deleted_from_queue.append(job.id)
 
-        return sorted(set(deleted_from_db) | set(deleted_from_queue))
+        deleted_job_ids = sorted(set(deleted_from_db) | set(deleted_from_queue))
+        for job_id in deleted_job_ids:
+            delete_job_artifacts(job_id)
+        return deleted_job_ids

@@ -749,7 +749,8 @@ async def photos_run(
             run_id=operation_run_id,
         )
         wrapped = wrap_run_payload(payload, intent="classify")
-        wrapped.setdefault("job_id", wrapped["run_id"])
+        if not wrapped.get("error") and wrapped.get("status") != "failed":
+            wrapped.setdefault("job_id", wrapped["run_id"])
         return wrapped
 
     if normalized_intent == "curate":
@@ -774,7 +775,8 @@ async def photos_run(
                 run_id=operation_run_id,
             )
             wrapped = wrap_run_payload(payload, intent="curate")
-            wrapped.setdefault("job_id", wrapped["run_id"])
+            if not wrapped.get("error") and wrapped.get("status") != "failed":
+                wrapped.setdefault("job_id", wrapped["run_id"])
             return wrapped
         payload = await call_vendor(
             "photo-ranker",

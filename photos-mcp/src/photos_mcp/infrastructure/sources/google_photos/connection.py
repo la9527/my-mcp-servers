@@ -44,9 +44,10 @@ class GoogleOAuthConnectionService:
         self._repository = credential_repository
         self._transport = transport
         self._pending: GoogleOAuthAuthorizationRequest | None = None
+        self._pending_redirect_uri = ""
 
     def status(self) -> GoogleConnectionStatus:
-        configured = bool(self._client_id.strip() and self._redirect_uri.strip())
+        configured = bool(self._client_id.strip())
         if not configured:
             return GoogleConnectionStatus(
                 configured=False,
@@ -61,12 +62,19 @@ class GoogleOAuthConnectionService:
             reason="" if credential else "Google 계정 연결이 필요합니다.",
         )
 
-    def begin(self, *, scopes: tuple[str, ...] = (PICKER_READONLY_SCOPE,)) -> str:
+    def begin(
+        self,
+        *,
+        redirect_uri: str | None = None,
+        scopes: tuple[str, ...] = (PICKER_READONLY_SCOPE,),
+    ) -> str:
+        effective_redirect_uri = str(redirect_uri or self._redirect_uri).strip()
         self._pending = create_authorization_request(
             client_id=self._client_id,
-            redirect_uri=self._redirect_uri,
+            redirect_uri=effective_redirect_uri,
             scopes=scopes,
         )
+        self._pending_redirect_uri = effective_redirect_uri
         return self._pending.authorization_url
 
     async def complete_callback(self, callback_url: str) -> GoogleConnectionStatus:
@@ -74,7 +82,7 @@ class GoogleOAuthConnectionService:
         if pending is None:
             raise RuntimeError("진행 중인 Google OAuth 요청이 없습니다.")
         parsed = urlparse(callback_url)
-        expected = urlparse(self._redirect_uri)
+        expected = urlparse(self._pending_redirect_uri or self._redirect_uri)
         if (parsed.scheme, parsed.netloc, parsed.path) != (
             expected.scheme,
             expected.netloc,
@@ -95,7 +103,7 @@ class GoogleOAuthConnectionService:
                 transport=self._transport,
                 client_id=self._client_id,
                 client_secret=self._client_secret,
-                redirect_uri=self._redirect_uri,
+                redirect_uri=self._pending_redirect_uri or self._redirect_uri,
                 code=code,
                 code_verifier=pending.code_verifier,
             )
@@ -117,11 +125,14 @@ class GoogleOAuthConnectionService:
             )
         finally:
             self._pending = None
+            self._pending_redirect_uri = ""
         return self.status()
 
     def cancel(self) -> None:
         self._pending = None
+        self._pending_redirect_uri = ""
 
     def disconnect(self) -> None:
         self._pending = None
+        self._pending_redirect_uri = ""
         self._repository.revoke_local_credential(self._account_id)
