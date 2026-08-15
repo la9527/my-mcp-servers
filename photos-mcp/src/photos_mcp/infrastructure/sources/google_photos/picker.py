@@ -252,14 +252,19 @@ class GooglePhotosPickerAdapter:
         expires_at: datetime,
     ) -> PhotoAssetRef:
         media_file = payload.get("mediaFile") if isinstance(payload.get("mediaFile"), dict) else {}
-        metadata = (
+        media_metadata = (
             media_file.get("mediaFileMetadata")
             if isinstance(media_file.get("mediaFileMetadata"), dict)
             else {}
         )
+        photo_metadata = (
+            media_metadata.get("photoMetadata")
+            if isinstance(media_metadata.get("photoMetadata"), dict)
+            else {}
+        )
         media_type = str(payload.get("type") or "photo").lower()
         if media_type not in {"photo", "video"}:
-            media_type = "video" if "videoMetadata" in metadata else "photo"
+            media_type = "video" if "videoMetadata" in media_metadata else "photo"
         asset_id = str(payload["id"])
         mime_type = str(media_file.get("mimeType") or "application/octet-stream")
         base_url = str(media_file.get("baseUrl") or "")
@@ -279,10 +284,23 @@ class GooglePhotosPickerAdapter:
             content_expires_at=expires_at,
             filename=str(media_file.get("filename") or ""),
             metadata={
+                # Keep only durable Picker fields. The temporary base URL and
+                # OAuth credentials must never reach disk or job artifacts.
+                "provider": "google_photos_picker",
                 "mime_type": mime_type,
                 "create_time": str(payload.get("createTime") or ""),
-                "width": str(metadata.get("width") or ""),
-                "height": str(metadata.get("height") or ""),
+                "width": str(media_metadata.get("width") or ""),
+                "height": str(media_metadata.get("height") or ""),
+                "camera_make": str(media_metadata.get("cameraMake") or ""),
+                "camera_model": str(media_metadata.get("cameraModel") or ""),
+                "focal_length_mm": str(photo_metadata.get("focalLength") or ""),
+                "aperture_f_number": str(photo_metadata.get("apertureFNumber") or ""),
+                "iso_equivalent": str(photo_metadata.get("isoEquivalent") or ""),
+                "exposure_time": str(photo_metadata.get("exposureTime") or ""),
+                # The Picker does not expose location and Google's =d
+                # download deliberately removes it. Preserve that distinction
+                # rather than treating a missing GPS value as a zero location.
+                "location_status": "unavailable_from_google_picker",
             },
         )
 

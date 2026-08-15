@@ -22,6 +22,10 @@ from photos_mcp.infrastructure.sources.google_photos.content import GooglePicked
 from photos_mcp.infrastructure.sources.google_photos.import_repository import (
     GoogleImportLeaseRepository,
 )
+from photos_mcp.infrastructure.sources.google_photos.metadata import (
+    embed_location_in_downloaded_copy,
+    location_from_metadata,
+)
 from photos_mcp.infrastructure.sources.google_photos.picker import (
     FakeGooglePhotosPickerAdapter,
     fake_google_asset,
@@ -146,7 +150,14 @@ async def test_google_import_can_prepare_without_starting_classification(tmp_pat
     assert prepared["status"] == "prepared"
     assert prepared["materialized_photo_count"] == 1
     assert starts == []
-    assert leases.list_session(started.session_id)[0].state == "materialized"
+    lease = leases.list_session(started.session_id)[0]
+    assert lease.state == "materialized"
+    assert json.loads(lease.metadata_json) == {}
+    sidecar = Path(lease.sidecar_path)
+    assert sidecar.is_file()
+    sidecar_payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert sidecar_payload["provider"] == "google_photos_picker"
+    assert sidecar_payload["location"]["status"] == "unavailable_from_google_picker"
 
     result = await service.classify_prepared_selection(
         started.session_id,
@@ -160,6 +171,144 @@ async def test_google_import_can_prepare_without_starting_classification(tmp_pat
     assert leases.list_job("job-1")[0].state == "in_use"
     leases.close()
     sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_google_import_uses_original_download_and_local_source_reads_sidecar(tmp_path: Path) -> None:
+    source = descriptor_from_legacy_source("google", account_id="account")
+    picker = FakeGooglePhotosPickerAdapter()
+    sessions = PickerSessionRepository(tmp_path / "picker.db")
+    selection = CloudSelectionService(picker, sessions)
+    started = await selection.start(source, max_item_count=10)
+    photo = fake_google_asset(source.source_id, "photo-1", filename="photo.jpg")
+    photo = type(photo)(
+        source_id=photo.source_id,
+        provider_asset_id=photo.provider_asset_id,
+        media_type=photo.media_type,
+        access_grant_id=photo.access_grant_id,
+        content_state=photo.content_state,
+        filename=photo.filename,
+        metadata={
+            "provider": "google_photos_picker",
+            "create_time": "2026-08-16T00:00:00Z",
+            "geoDataExif": {
+                "latitude": 37.5665,
+                "longitude": 126.9780,
+            },
+        },
+    )
+    picker.complete_with_assets(started.session_id, (photo,))
+    await selection.poll(started.session_id)
+
+    received_max_pixels: list[int | None] = []
+
+    async def resolve_url(asset_id: str, max_pixels: int | None):
+        received_max_pixels.append(max_pixels)
+        return (f"https://content.example/{asset_id}", "image/jpeg", datetime.now(timezone.utc) + timedelta(minutes=10))
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(buffer, format="JPEG")
+
+    async def fetch_bytes(_url: str, _limit: int):
+        return buffer.getvalue()
+
+    leases = GoogleImportLeaseRepository(tmp_path / "imports.db")
+    service = GooglePhotosImportService(
+        selection=selection,
+        content_adapter=GooglePickedContentAdapter(
+            resolve_url=resolve_url,
+            fetch_bytes=fetch_bytes,
+            cache_root=tmp_path / "cache",
+        ),
+        leases=leases,
+        classification_starter=lambda *_args: None,
+    )
+
+    await service.prepare_ready_selection(source, started.session_id)
+
+    assert received_max_pixels == [None]
+    lease = leases.list_session(started.session_id)[0]
+    assert Path(lease.sidecar_path).is_file()
+    sidecar = json.loads(Path(lease.sidecar_path).read_text(encoding="utf-8"))
+    assert sidecar["location"]["embedding_status"] == "embedded"
+    import piexif
+
+    gps = piexif.load(lease.local_path)["GPS"]
+    assert gps[piexif.GPSIFD.GPSLatitudeRef] == b"N"
+    assert gps[piexif.GPSIFD.GPSLongitudeRef] == b"E"
+    leases.close()
+    sessions.close()
+
+
+def test_local_loader_uses_picker_sidecar_capture_time(tmp_path: Path) -> None:
+    prepare_vendor_runtime("photo-ranker")
+    sources = importlib.import_module("photos_mcp_vendor_photo_ranker.sources")
+    photo_path = tmp_path / "google.jpg"
+    Image.new("RGB", (8, 8), "white").save(photo_path, format="JPEG")
+    photo_path.with_name(f"{photo_path.name}.photos-mcp.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "picker_metadata": {
+                    "create_time": "2026-08-16T01:02:03Z",
+                    "camera_model": "Example Camera",
+                },
+                "location": {"status": "unavailable_from_google_picker"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = sources._load_local(str(tmp_path), limit=1, max_size=64)
+
+    assert loaded[0]["capture_date"] == "2026-08-16T01:02:03Z"
+    assert loaded[0]["provider_metadata"]["camera_model"] == "Example Camera"
+
+
+def test_google_location_embedding_preserves_existing_camera_exif(tmp_path: Path) -> None:
+    import piexif
+
+    image_path = tmp_path / "original.jpg"
+    Image.new("RGB", (16, 16), "white").save(image_path, format="JPEG")
+    exif = piexif.load(str(image_path))
+    exif["0th"][piexif.ImageIFD.Make] = b"Example Make"
+    exif["0th"][piexif.ImageIFD.Model] = b"Example Model"
+    exif["Exif"][piexif.ExifIFD.ISOSpeedRatings] = 400
+    piexif.insert(piexif.dump(exif), str(image_path))
+
+    status = embed_location_in_downloaded_copy(
+        image_path,
+        {
+            "status": "available",
+            "source": "takeout_geo_data_exif",
+            "latitude": 37.5665,
+            "longitude": 126.9780,
+        },
+    )
+
+    written = piexif.load(str(image_path))
+    assert status == "embedded"
+    assert written["0th"][piexif.ImageIFD.Make] == b"Example Make"
+    assert written["0th"][piexif.ImageIFD.Model] == b"Example Model"
+    assert written["Exif"][piexif.ExifIFD.ISOSpeedRatings] == 400
+    assert written["GPS"][piexif.GPSIFD.GPSLatitudeRef] == b"N"
+    assert written["GPS"][piexif.GPSIFD.GPSLongitudeRef] == b"E"
+
+
+def test_takeout_location_prefers_camera_gps_and_rejects_zero_placeholder() -> None:
+    location = location_from_metadata(
+        {
+            "geoDataExif": {"latitude": 37.5665, "longitude": 126.9780},
+            "geoData": {"latitude": 35.1796, "longitude": 129.0756},
+        }
+    )
+    missing = location_from_metadata(
+        {"geoDataExif": {"latitude": 0, "longitude": 0}}
+    )
+
+    assert location["source"] == "takeout_geo_data_exif"
+    assert location["latitude"] == 37.5665
+    assert missing["status"] == "unavailable"
 
 
 @pytest.mark.asyncio
@@ -232,19 +381,32 @@ def test_google_import_lease_cleanup_stays_inside_managed_cache(tmp_path: Path) 
     cache = tmp_path / "cache"
     cache.mkdir()
     managed = cache / "managed.jpg"
+    managed_sidecar = cache / "managed.jpg.photos-mcp.json"
     outside = tmp_path / "original.jpg"
     managed.write_bytes(b"managed")
+    managed_sidecar.write_text("{}", encoding="utf-8")
     outside.write_bytes(b"original")
     leases = GoogleImportLeaseRepository(tmp_path / "imports.db")
     from photos_mcp.infrastructure.sources.google_photos.import_repository import (
         GoogleImportLease,
     )
 
-    leases.save(GoogleImportLease("session-1", "managed", str(managed), "image/jpeg", "job-1", "in_use"))
+    leases.save(
+        GoogleImportLease(
+            "session-1",
+            "managed",
+            str(managed),
+            "image/jpeg",
+            "job-1",
+            "in_use",
+            sidecar_path=str(managed_sidecar),
+        )
+    )
     leases.save(GoogleImportLease("session-1", "outside", str(outside), "image/jpeg", "job-1", "in_use"))
 
     assert leases.release_job_files("job-1", cache_root=cache) == 1
     assert not managed.exists()
+    assert not managed_sidecar.exists()
     assert outside.read_bytes() == b"original"
     states = {lease.asset_key: lease.state for lease in leases.list_job("job-1")}
     assert states["managed"] == "released"

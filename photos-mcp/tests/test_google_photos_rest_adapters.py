@@ -171,7 +171,18 @@ async def test_real_picker_contract_creates_polls_pages_downloads_and_deletes(
                                 "baseUrl": "https://lh3.googleusercontent.test/private",
                                 "mimeType": "image/jpeg",
                                 "filename": "photo.jpg",
-                                "mediaFileMetadata": {"width": "4032", "height": "3024"},
+                                "mediaFileMetadata": {
+                                    "width": "4032",
+                                    "height": "3024",
+                                    "cameraMake": "Example Camera",
+                                    "cameraModel": "Example Model",
+                                    "photoMetadata": {
+                                        "focalLength": 28.0,
+                                        "apertureFNumber": 2.8,
+                                        "isoEquivalent": 200,
+                                        "exposureTime": "0.01s",
+                                    },
+                                },
                             },
                         }
                     ]
@@ -206,6 +217,10 @@ async def test_real_picker_contract_creates_polls_pages_downloads_and_deletes(
     assert len(assets) == 1
     assert assets[0].filename == "photo.jpg"
     assert assets[0].metadata["width"] == "4032"
+    assert assets[0].metadata["camera_make"] == "Example Camera"
+    assert assets[0].metadata["camera_model"] == "Example Model"
+    assert assets[0].metadata["iso_equivalent"] == "200"
+    assert assets[0].metadata["location_status"] == "unavailable_from_google_picker"
     assert "googleusercontent" not in repr(assets[0])
     assert content.local_path.read_bytes() == b"jpeg-bytes"
     assert transport.calls[0]["headers"]["Authorization"] == "Bearer access-token"

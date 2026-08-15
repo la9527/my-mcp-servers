@@ -24,6 +24,11 @@ from photos_mcp.infrastructure.sources.google_photos.import_repository import (
     GoogleImportLease,
     GoogleImportLeaseRepository,
 )
+from photos_mcp.infrastructure.sources.google_photos.metadata import (
+    embed_location_in_downloaded_copy,
+    location_from_metadata,
+    write_sidecar,
+)
 
 
 ClassificationStarter = Callable[
@@ -100,7 +105,7 @@ class GooglePhotosImportService:
         source: SourceDescriptor,
         session_id: str,
         *,
-        max_pixels: int = 4096,
+        max_pixels: int | None = None,
         limit: int = 1000,
         progress_callback: PreparationProgress | None = None,
     ) -> dict[str, Any]:
@@ -151,12 +156,15 @@ class GooglePhotosImportService:
         try:
             for pending in asyncio.as_completed(tasks):
                 index, content = await pending
+                sidecar_path = self._write_metadata_sidecar(content)
                 self._leases.save(
                     GoogleImportLease(
                         session_id=session_id,
                         asset_key=content.asset.stable_key,
                         local_path=str(content.local_path),
                         mime_type=content.mime_type,
+                        metadata_json=json.dumps(content.asset.metadata, ensure_ascii=False, sort_keys=True),
+                        sidecar_path=str(sidecar_path),
                     )
                 )
                 completed.append((index, content))
@@ -175,6 +183,7 @@ class GooglePhotosImportService:
                 releasable[str(content.local_path)] = content
             for content in releasable.values():
                 await self._content.release(content)
+                self._metadata_sidecar_path(content.local_path).unlink(missing_ok=True)
             self._leases.mark_released(session_id)
             report("failed", len(completed))
             raise
@@ -192,6 +201,37 @@ class GooglePhotosImportService:
             "paths": paths,
             "face_analysis_enabled": False,
         }
+
+    @staticmethod
+    def _metadata_sidecar_path(content_path: Path) -> Path:
+        return content_path.with_name(f"{content_path.name}.photos-mcp.json")
+
+    def _write_metadata_sidecar(self, content: MaterializedPhotoContent) -> Path:
+        """Persist Picker metadata without mutating the downloaded original.
+
+        The JSON intentionally records that Picker GPS is unavailable. A future
+        Takeout importer can add explicitly sourced ``geoDataExif`` / ``geoData``
+        values without conflating them with original EXIF.
+        """
+        sidecar = self._metadata_sidecar_path(content.local_path)
+        location = location_from_metadata(content.asset.metadata)
+        payload = {
+            "schema_version": 1,
+            "provider": "google_photos_picker",
+            "file": {
+                "filename": content.asset.filename,
+                "mime_type": content.mime_type,
+            },
+            "picker_metadata": dict(content.asset.metadata),
+            "location": location,
+        }
+        write_sidecar(sidecar, payload)
+        payload["location"]["embedding_status"] = embed_location_in_downloaded_copy(
+            content.local_path,
+            location,
+        )
+        write_sidecar(sidecar, payload)
+        return sidecar
 
     async def classify_prepared_selection(
         self,

@@ -26,7 +26,7 @@ class GooglePickedContentAdapter:
         resolve_url: UrlResolver,
         fetch_bytes: ByteFetcher,
         cache_root: str | Path | None = None,
-        max_download_bytes: int = 64 * 1024 * 1024,
+        max_download_bytes: int = 256 * 1024 * 1024,
     ) -> None:
         self._resolve_url = resolve_url
         self._fetch_bytes = fetch_bytes

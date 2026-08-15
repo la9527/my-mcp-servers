@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import logging
 import os
 import sys
@@ -217,12 +218,17 @@ def _load_local(
                 b64 = base64.b64encode(raw_preview_jpeg_bytes(path, max_size)).decode("ascii")
             else:
                 b64 = _image_to_b64(Image.open(path), max_size)
+            provider_metadata = _load_photos_mcp_sidecar(path)
             results.append(
                 {
                     "photo_id": str(path),
                     "image_b64": b64,
                     "source_photo_path": str(path),
-                    "capture_date": datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
+                    "capture_date": str(
+                        provider_metadata.get("create_time")
+                        or datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+                    ),
+                    "provider_metadata": provider_metadata,
                 }
             )
         except Exception:
@@ -234,6 +240,19 @@ def _load_local(
 
     logger.info("Loaded %d photos from local source", len(results))
     return results
+
+
+def _load_photos_mcp_sidecar(path: Path) -> dict[str, str]:
+    """Read the non-destructive Picker metadata sidecar when it is available."""
+    sidecar = path.with_name(f"{path.name}.photos-mcp.json")
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    metadata = payload.get("picker_metadata") if isinstance(payload, dict) else None
+    if not isinstance(metadata, dict):
+        return {}
+    return {str(key): str(value) for key, value in metadata.items() if value is not None}
 
 
 # ── Google Cloud Storage ───────────────────────────────

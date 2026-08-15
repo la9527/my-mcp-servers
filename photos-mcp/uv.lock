@@ -2373,6 +2373,7 @@ dependencies = [
     { name = "mcp" },
     { name = "numpy" },
     { name = "osxphotos" },
+    { name = "piexif" },
     { name = "pillow" },
     { name = "pillow-heif" },
     { name = "pydantic" },
@@ -2461,6 +2462,7 @@ requires-dist = [
     { name = "osxphotos", specifier = ">=0.68" },
     { name = "photos-mcp", extras = ["app", "apple", "gcs", "google", "vlm", "aesthetic", "face", "face-identity", "face-legacy", "review"], marker = "extra == 'all'" },
     { name = "photoscript", marker = "extra == 'apple'" },
+    { name = "piexif", specifier = ">=1.1.3" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "pillow-heif", specifier = ">=0.16" },
     { name = "py2app", marker = "extra == 'app'", specifier = ">=0.28" },
@@ -2489,6 +2491,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b9/b8/55ef5e2285c8effe52d48ca053672b4a25bdc5c96e4666d187fa7deb95d3/photoscript-0.5.3.tar.gz", hash = "sha256:4d54bb99866f2450903be9f4996f311097d816e26dfae55c541f2ef58fc745dd", size = 29580, upload-time = "2025-12-22T12:52:39.951Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/22/a7/a0559b8b1ec72bddba078b96b37f2ca71c61d1845d53babd1f58c09deb51/photoscript-0.5.3-py3-none-any.whl", hash = "sha256:4e4dba3ece23e0fba4ea6aa30c29526f3e9097182006a38011c61c44afefc4bf", size = 27750, upload-time = "2025-12-22T12:52:39.002Z" },
+]
+
+[[package]]
+name = "piexif"
+version = "1.1.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fa/84/a3f25cec7d0922bf60be8000c9739d28d24b6896717f44cc4cfb843b1487/piexif-1.1.3.zip", hash = "sha256:83cb35c606bf3a1ea1a8f0a25cb42cf17e24353fd82e87ae3884e74a302a5f1b", size = 1011134, upload-time = "2019-07-01T15:29:23.045Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2c/d8/6f63147dd73373d051c5eb049ecd841207f898f50a5a1d4378594178f6cf/piexif-1.1.3-py2.py3-none-any.whl", hash = "sha256:3bc435d171720150b81b15d27e05e54b8abbde7b4242cddd81ef160d283108b6", size = 20691, upload-time = "2019-07-01T15:43:20.907Z" },
 ]
 
 [[package]]
