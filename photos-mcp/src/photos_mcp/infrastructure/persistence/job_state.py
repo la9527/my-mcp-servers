@@ -103,6 +103,16 @@ class PhotoRankerJobStore:
             "job_id": job_id,
             "status": job_status_value(getattr(job, "status", "unknown")) if job else "unknown",
             "source": str(getattr(job, "source", "") or "") if job else "",
+            "origin_provider": str(
+                (getattr(job, "request_options", {}) or {}).get("origin_provider") or ""
+            )
+            if job
+            else "",
+            "face_analysis_enabled": bool(
+                (getattr(job, "request_options", {}) or {}).get("face_analysis_enabled", True)
+            )
+            if job
+            else True,
             "created_at": getattr(job, "created_at", "") if job else "",
             "finished_at": getattr(job, "finished_at", "") if job else "",
             "result_summary": dict(getattr(job, "result_summary", {}) or {}) if job else {},

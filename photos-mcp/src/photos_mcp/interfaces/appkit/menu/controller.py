@@ -908,6 +908,8 @@ class PhotosMcpMenuController(NSObject):
         self._results_controller = None
         self._direct_classification_controller = None
         self._local_photo_selection_controller = None
+        self._google_photos_controller = None
+        self._google_photos_runtime = None
         self._timer = None
         self._startup_timer = None
         self._preflight_retry_timer = None
@@ -958,6 +960,11 @@ class PhotosMcpMenuController(NSObject):
             self._direct_classification_controller.shutdown()
         if self._local_photo_selection_controller is not None:
             self._local_photo_selection_controller.shutdown()
+        if self._google_photos_controller is not None:
+            self._google_photos_controller.shutdown()
+        if self._google_photos_runtime is not None:
+            self._google_photos_runtime.close()
+            self._google_photos_runtime = None
 
     def rebuildMenu(self) -> None:
         snapshot = self._state_store.snapshot()
@@ -1141,6 +1148,42 @@ class PhotosMcpMenuController(NSObject):
     def showDirectClassification_(self, _sender) -> None:
         self.showMainWindow_(None)
         self._main_window_controller.showTab_("classification")
+
+    @objc.python_method
+    def googlePhotosRuntime(self):
+        if self._google_photos_runtime is not None:
+            return self._google_photos_runtime
+        from photos_mcp.infrastructure.sources.google_photos.runtime import (
+            GooglePhotosRuntimeSettings,
+            build_google_photos_runtime,
+        )
+
+        settings = GooglePhotosRuntimeSettings.from_environment()
+        if not settings.configured:
+            return None
+        self._google_photos_runtime = build_google_photos_runtime(
+            settings=settings,
+            state_store=self._state_store,
+        )
+        return self._google_photos_runtime
+
+    @objc.python_method
+    def showGooglePhotosConnection(self, *, require_upload_scope: bool = False):
+        from photos_mcp.interfaces.appkit.google_photos.controller import (
+            PhotosMcpGooglePhotosController,
+        )
+
+        if self._google_photos_controller is None:
+            self._google_photos_controller = (
+                PhotosMcpGooglePhotosController.alloc().initWithMenuController_runtime_(
+                    self,
+                    self.googlePhotosRuntime(),
+                )
+            )
+        self._google_photos_controller.showWindow_(None)
+        if require_upload_scope:
+            self._google_photos_controller.beginUploadAuthorization()
+        return self._google_photos_controller
 
     def showMainWindow_(self, _sender) -> None:
         if self._main_window_controller is not None:

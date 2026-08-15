@@ -623,6 +623,8 @@ async def photos_run(
     wait_poll_interval_seconds: float = DEFAULT_ANALYZE_WAIT_POLL_INTERVAL_SECONDS,
     run_id: str = "",
     operation_run_id: str = "",
+    origin_provider: str = "",
+    face_analysis_enabled: bool = True,
 ) -> dict[str, object]:
     normalized_intent = (intent or "classify").strip().lower()
 
@@ -742,6 +744,8 @@ async def photos_run(
             limit=limit,
             selection_profile=selection_profile,
             selected_photo_ids_json=selected_photo_ids_json,
+            origin_provider=origin_provider,
+            face_analysis_enabled=face_analysis_enabled,
             run_id=operation_run_id,
         )
         wrapped = wrap_run_payload(payload, intent="classify")
@@ -765,6 +769,8 @@ async def photos_run(
                 exclude_screenshots=exclude_screenshots,
                 quality_top_percent=quality_top_percent,
                 selected_photo_ids_json=selected_photo_ids_json,
+                origin_provider=origin_provider,
+                face_analysis_enabled=face_analysis_enabled,
                 run_id=operation_run_id,
             )
             wrapped = wrap_run_payload(payload, intent="curate")

@@ -51,8 +51,9 @@ from AppKit import (
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
     NSWindowZoomButton,
+    NSWorkspace,
 )
-from Foundation import NSIndexPath, NSMakeSize, NSSet, NSUserDefaults
+from Foundation import NSIndexPath, NSMakeSize, NSSet, NSUserDefaults, NSURL
 
 from photos_mcp.application.result_presenter import (
     recommendation_reason_summary,
@@ -70,6 +71,15 @@ from photos_mcp.interfaces.appkit.results.photo_viewer import PhotosMcpPhotoView
 from photos_mcp.interfaces.appkit.recommendation_review import (
     PhotosMcpRecommendationReviewController,
 )
+from photos_mcp.interfaces.appkit.face_identity_review import (
+    PhotosMcpFaceIdentityReviewController,
+)
+from photos_mcp.application.face_identity_review import face_measurements_path
+from photos_mcp.application.face_identity_grouping_review import (
+    face_identity_grouping_review_path,
+    load_or_create_face_identity_grouping_review,
+)
+from photos_mcp.application.recommendation_review import recommendation_review_path
 from photos_mcp.application.export_service import (
     execute_selected_export,
     prepare_retry_originals,
@@ -78,6 +88,10 @@ from photos_mcp.application.export_service import (
 from photos_mcp.application.run_support import call_vendor
 from photos_mcp.interfaces.appkit.shared.theme import accent_color, app_font
 from photos_mcp.application.viewer_asset_service import hydrate_viewer_source_paths
+from photos_mcp.application.google_photos_upload_service import (
+    GooglePhotosResultUploadService,
+)
+from photos_mcp.infrastructure.sources.google_photos.library_destination import APPEND_ONLY_SCOPE
 
 
 _RESULT_WINDOW_WIDTH = 1320.0
@@ -131,6 +145,8 @@ class PhotosMcpResultsController(NSWindowController):
         self._computed_columns = 3
         self._viewer_controller = PhotosMcpPhotoViewerController.alloc().init()
         self._recommendation_review_controller = None
+        self._face_identity_review_controller = None
+        self._face_identity_grouping_review_controller = None
         self._selection_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="photos-mcp-review-selection",
@@ -140,6 +156,8 @@ class PhotosMcpResultsController(NSWindowController):
         self._result_generation = 0
         self._export_generation = 0
         self._export_in_progress = False
+        self._google_upload_worker: Thread | None = None
+        self._pending_google_upload: dict[str, Any] = {}
         self._selection_persist_error = ""
         self._is_laying_out = False
         window.setTitle_("사진 분류 결과")
@@ -271,8 +289,48 @@ class PhotosMcpResultsController(NSWindowController):
     def openRecommendationReview_(self, _sender) -> None:
         self._open_recommendation_review(person_composition_review=False)
 
-    def openPersonCompositionReview_(self, _sender) -> None:
-        self._open_recommendation_review(person_composition_review=True)
+    def openFaceIdentityReview_(self, _sender) -> None:
+        try:
+            payload = {
+                "job_id": str(self._payload.get("job_id") or ""),
+                "items": [dict(item) for item in self._items],
+            }
+            self._face_identity_review_controller = (
+                PhotosMcpFaceIdentityReviewController.alloc().initWithResultPayload_(payload)
+            )
+            self._face_identity_review_controller.window().center()
+            self._face_identity_review_controller.showWindow_(None)
+            self._face_identity_review_controller.window().makeKeyAndOrderFront_(None)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            self._show_alert("얼굴 동일인 검토를 열 수 없습니다", str(exc))
+
+    def openFaceIdentityGroupingReview_(self, _sender) -> None:
+        try:
+            job_id = str(self._payload.get("job_id") or "")
+            payload = {
+                "job_id": job_id,
+                # The grouping audit needs original-resolution crops. Source paths
+                # stay inside this private UI flow and are never added to exports.
+                "items": self._private_face_review_items(),
+            }
+            queue_path, review_payload = load_or_create_face_identity_grouping_review(
+                payload,
+                recommendation_review_path(job_id),
+                face_measurements_path(job_id),
+                path=face_identity_grouping_review_path(job_id),
+            )
+            self._face_identity_grouping_review_controller = (
+                PhotosMcpFaceIdentityReviewController.alloc().initWithReviewPayload_path_(
+                    review_payload,
+                    str(queue_path),
+                )
+            )
+            controller = self._face_identity_grouping_review_controller
+            controller.window().center()
+            controller.showWindow_(None)
+            controller.window().makeKeyAndOrderFront_(None)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            self._show_alert("복수 지지 검토를 열 수 없습니다", str(exc))
 
     @objc.python_method
     def _open_recommendation_review(self, *, person_composition_review: bool) -> None:
@@ -487,12 +545,22 @@ class PhotosMcpResultsController(NSWindowController):
             "추천 품질 검토",
             "openRecommendationReview:",
         )
-        self._person_composition_review_button = self._button(
+        self._face_identity_review_button = self._button(
             root,
-            "인물 구성 검토",
-            "openPersonCompositionReview:",
+            "얼굴 동일인 검토",
+            "openFaceIdentityReview:",
+        )
+        self._face_identity_grouping_review_button = self._button(
+            root,
+            "복수 지지 검토",
+            "openFaceIdentityGroupingReview:",
         )
         self._json_export_button = self._button(root, "결과 JSON", "exportResults:")
+        self._google_upload_button = self._button(
+            root,
+            "Google Photos 새 앨범",
+            "uploadSelectedToGoogle:",
+        )
         self._export_button = self._button(root, "선택한 사진 내보내기", "exportSelected:", primary=True)
         self._close_button = self._button(root, "닫기", "closeWindow:", primary=True)
         self._layout_view()
@@ -536,7 +604,7 @@ class PhotosMcpResultsController(NSWindowController):
             self._density_label.setFrame_(NSMakeRect(density_x + 40.0, toolbar_y + 7.0, 70.0, 20.0))
             self._density_larger.setFrame_(NSMakeRect(density_x + 114.0, toolbar_y, 36.0, 32.0))
 
-            compact_footer = width < 1320.0
+            compact_footer = width < 1500.0 or self._is_google_result()
             body_y = 118.0 if compact_footer else 76.0
             body_top = toolbar_y - 14.0
             body_height = max(240.0, body_top - body_y)
@@ -558,10 +626,16 @@ class PhotosMcpResultsController(NSWindowController):
             self._recommendation_review_button.setFrame_(
                 NSMakeRect(margin + 460.0, footer_y, 150.0, 34.0)
             )
-            self._person_composition_review_button.setFrame_(
+            self._face_identity_review_button.setFrame_(
                 NSMakeRect(margin + 618.0, footer_y, 150.0, 34.0)
             )
+            self._face_identity_grouping_review_button.setFrame_(
+                NSMakeRect(margin + 776.0, footer_y, 150.0, 34.0)
+            )
             self._json_export_button.setFrame_(NSMakeRect(width - margin - 414.0, action_y, 96.0, 34.0))
+            self._google_upload_button.setFrame_(
+                NSMakeRect(width - margin - 638.0, action_y, 214.0, 34.0)
+            )
             self._export_button.setFrame_(NSMakeRect(width - margin - 308.0, action_y, 198.0, 34.0))
             self._close_button.setFrame_(NSMakeRect(width - margin - 100.0, action_y, 100.0, 34.0))
             self._update_collection_layout(gallery_width)
@@ -702,6 +776,18 @@ class PhotosMcpResultsController(NSWindowController):
         )
 
     @objc.python_method
+    def _private_face_review_items(self) -> list[dict[str, Any]]:
+        return [
+            dict(
+                self._viewer_items_by_id.get(
+                    str(item.get("photo_id") or ""),
+                    item,
+                )
+            )
+            for item in self._items
+        ]
+
+    @objc.python_method
     def _filtered_items(self) -> list[dict[str, Any]]:
         if self._filter == "all":
             return list(self._items)
@@ -727,12 +813,188 @@ class PhotosMcpResultsController(NSWindowController):
             self._export_button.setEnabled_(count > 0 and not self._export_in_progress)
             self._select_all_button.setEnabled_(not self._export_in_progress)
             self._clear_all_button.setEnabled_(not self._export_in_progress)
+            is_google = self._is_google_result()
+            self._google_upload_button.setHidden_(not is_google)
+            self._google_upload_button.setTitle_(f"선택한 {count}장 Google 새 앨범")
+            self._google_upload_button.setEnabled_(
+                is_google
+                and count > 0
+                and not self._export_in_progress
+                and not (self._google_upload_worker and self._google_upload_worker.is_alive())
+            )
         if hasattr(self, "_collection_view"):
             self._collection_view.reloadData()
         if hasattr(self, "_recommendation_review_button"):
             enabled = any(int(item.get("scene_cluster_size") or 1) > 1 for item in self._items)
             self._recommendation_review_button.setEnabled_(enabled)
-            self._person_composition_review_button.setEnabled_(enabled)
+            job_id = str(self._payload.get("job_id") or "")
+            self._face_identity_review_button.setEnabled_(
+                enabled and face_measurements_path(job_id).is_file()
+            )
+            self._face_identity_grouping_review_button.setEnabled_(
+                enabled
+                and face_measurements_path(job_id).is_file()
+                and recommendation_review_path(job_id).is_file()
+            )
+
+    @objc.python_method
+    def _is_google_result(self) -> bool:
+        return str(self._payload.get("origin_provider") or "") == "google_photos"
+
+    @objc.python_method
+    def _selected_google_source_paths(self) -> tuple[str, ...]:
+        paths = []
+        for item in self._items:
+            if not bool(item.get("selected")):
+                continue
+            private = self._viewer_items_by_id.get(str(item.get("photo_id") or ""), {})
+            path = str(private.get("source_photo_path") or "")
+            if path:
+                paths.append(path)
+        return tuple(dict.fromkeys(paths))
+
+    def uploadSelectedToGoogle_(self, _sender) -> None:
+        if not self._is_google_result():
+            self._show_alert("Google Photos 작업이 아닙니다", "Google Photos에서 시작한 작업만 새 앨범에 업로드할 수 있습니다.")
+            return
+        runtime_getter = getattr(self._menu_controller, "googlePhotosRuntime", None)
+        runtime = runtime_getter() if callable(runtime_getter) else None
+        if runtime is None:
+            self._show_alert("Google Photos 설정이 필요합니다", "환경 설정에서 Google OAuth client를 구성해 주세요.")
+            return
+        status = runtime.connection.status()
+        if not status.connected or APPEND_ONLY_SCOPE not in status.scopes:
+            opener = getattr(self._menu_controller, "showGooglePhotosConnection", None)
+            if callable(opener):
+                opener(require_upload_scope=True)
+            else:
+                self._show_alert("업로드 권한이 필요합니다", "Google Photos 연결 화면에서 업로드 권한을 추가해 주세요.")
+            return
+        selected_paths = self._selected_google_source_paths()
+        if not selected_paths:
+            self._show_alert("업로드할 원본 사본이 없습니다", "선택한 사진의 임시 원본이 만료됐거나 준비되지 않았습니다.")
+            return
+        accessory = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 420.0, 42.0))
+        name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0.0, 8.0, 420.0, 28.0))
+        name_field.setStringValue_(f"Photos MCP - {str(self._payload.get('job_id') or '')[:8]} 추천")
+        name_field.setAccessibilityLabel_("Google Photos 새 앨범 이름")
+        accessory.addSubview_(name_field)
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Google Photos 새 앨범 준비")
+        alert.setInformativeText_(
+            "기존 원본과 기존 앨범은 변경하지 않습니다. 선택한 사진의 새 사본만 업로드합니다."
+        )
+        alert.setAccessoryView_(accessory)
+        alert.addButtonWithTitle_("업로드 계획 확인")
+        alert.addButtonWithTitle_("취소")
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            return
+        album_name = str(name_field.stringValue() or "").strip()
+        if not album_name:
+            self._show_alert("앨범명이 필요합니다", "Google Photos 새 앨범 이름을 입력해 주세요.")
+            return
+        service = GooglePhotosResultUploadService(
+            source=runtime.source,
+            leases=runtime.import_leases,
+            destination=runtime.destination,
+        )
+        self._pending_google_upload = {
+            "service": service,
+            "job_id": str(self._payload.get("job_id") or ""),
+            "paths": selected_paths,
+            "album_name": album_name,
+            "generation": self._result_generation,
+        }
+        self._google_upload_button.setEnabled_(False)
+        self._google_upload_button.setTitle_("업로드 계획 확인 중…")
+
+        def worker() -> None:
+            try:
+                plan = asyncio.run(
+                    service.prepare(
+                        self._pending_google_upload["job_id"],
+                        selected_paths,
+                        album_name=album_name,
+                    )
+                )
+                payload = {"plan": plan, "generation": self._result_generation}
+            except Exception as exc:
+                payload = {"error": str(exc), "generation": self._result_generation}
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "googleUploadPlanReady:", payload, False
+            )
+
+        self._google_upload_worker = Thread(target=worker, daemon=True, name="photos-mcp-google-upload-plan")
+        self._google_upload_worker.start()
+
+    def googleUploadPlanReady_(self, payload) -> None:
+        result = dict(payload or {})
+        self._google_upload_worker = None
+        if int(result.get("generation") or -1) != self._result_generation:
+            return
+        if result.get("error"):
+            self._refresh_selection_controls()
+            self._show_alert("Google Photos 업로드 계획을 만들지 못했습니다", str(result["error"]))
+            return
+        plan = dict(result["plan"])
+        alert = NSAlert.alloc().init()
+        alert.setAlertStyle_(NSAlertStyleWarning)
+        alert.setMessageText_(f"선택한 {int(plan.get('item_count') or 0)}장을 새 앨범에 업로드할까요?")
+        warning = "\n25MB를 넘는 전송입니다." if plan.get("storage_warning_required") else ""
+        alert.setInformativeText_(
+            f"앨범: {plan.get('album_name')}\n전송량: {int(plan.get('total_bytes') or 0):,} bytes{warning}\n\n"
+            "새 파일 사본이 생성되며 기존 Google Photos 원본과 앨범은 변경되지 않습니다."
+        )
+        alert.addButtonWithTitle_("업로드")
+        alert.addButtonWithTitle_("취소")
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            self._refresh_selection_controls()
+            return
+        pending = dict(self._pending_google_upload)
+        pending["plan"] = plan
+        self._pending_google_upload = pending
+        self._google_upload_button.setTitle_("Google Photos 업로드 중…")
+
+        def worker() -> None:
+            try:
+                response = asyncio.run(
+                    pending["service"].execute(
+                        pending["job_id"],
+                        pending["paths"],
+                        pending["plan"],
+                    )
+                )
+                response = {**response, "generation": pending["generation"]}
+            except Exception as exc:
+                response = {"error": str(exc), "generation": pending["generation"]}
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "googleUploadFinished:", response, False
+            )
+
+        self._google_upload_worker = Thread(target=worker, daemon=True, name="photos-mcp-google-upload")
+        self._google_upload_worker.start()
+
+    def googleUploadFinished_(self, payload) -> None:
+        result = dict(payload or {})
+        self._google_upload_worker = None
+        self._refresh_selection_controls()
+        if int(result.get("generation") or -1) != self._result_generation:
+            return
+        if result.get("error"):
+            self._show_alert("Google Photos 업로드를 완료하지 못했습니다", str(result["error"]))
+            return
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Google Photos 새 앨범 업로드가 완료됐습니다")
+        alert.setInformativeText_(
+            f"완료 {int(result.get('created_count') or 0)}장 · 실패 {int(result.get('failed_count') or 0)}장"
+        )
+        product_url = str(result.get("album_product_url") or "")
+        alert.addButtonWithTitle_("새 앨범 열기" if product_url else "확인")
+        alert.addButtonWithTitle_("닫기")
+        if alert.runModal() == NSAlertFirstButtonReturn and product_url:
+            url = NSURL.URLWithString_(product_url)
+            if url is not None:
+                NSWorkspace.sharedWorkspace().openURL_(url)
 
     @objc.python_method
     def _set_all_selection(self, selected: bool) -> None:

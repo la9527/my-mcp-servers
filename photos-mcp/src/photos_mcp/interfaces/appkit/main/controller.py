@@ -54,6 +54,7 @@ _WINDOW_WIDTH = 1180.0
 _WINDOW_HEIGHT = 780.0
 _SIDEBAR_WIDTH = 220.0
 _CONTENT_MARGIN = 32.0
+_CLASSIFICATION_TOP_INSET = 20.0
 
 _SYSTEM_SYMBOLS = {
     "home": "house",
@@ -115,7 +116,7 @@ class PhotosMcpMainWindowController(NSWindowController):
         self._runtime_snapshot = vision_runtime_summary(check_ready=False)
         self._is_runtime_checking = False
         window.setTitle_("Photos MCP")
-        window.setMinSize_(NSMakeSize(1080.0, 680.0))
+        window.setMinSize_(NSMakeSize(1180.0, 760.0))
         window.setReleasedWhenClosed_(False)
         window.setFrameAutosaveName_("PhotosMcpMainWindow")
         window.setDelegate_(self)
@@ -342,16 +343,24 @@ class PhotosMcpMainWindowController(NSWindowController):
             )
         direct = self._menu_controller._direct_classification_controller
         self._direct_view = direct.embeddedContentView()
+        direct.layoutForWidth_(max(860.0, width))
+        embedded_width, embedded_height = direct.embeddedContentSize()
         scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, width, height))
-        scroll.setHasVerticalScroller_(height < 720.0)
-        embedded_width = 860.0
+        scroll.setHasVerticalScroller_(height < embedded_height)
         scroll.setHasHorizontalScroller_(width < embedded_width)
         scroll.setAutohidesScrollers_(True)
-        document = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, max(width, embedded_width), max(height, 720.0)))
+        document = NSView.alloc().initWithFrame_(
+            NSMakeRect(0.0, 0.0, max(width, embedded_width), max(height, embedded_height))
+        )
         x = max(0.0, (float(document.frame().size.width) - embedded_width) / 2.0)
-        self._direct_view.setFrame_(NSMakeRect(x, 0.0, embedded_width, 720.0))
+        document_height = float(document.frame().size.height)
+        y = max(0.0, document_height - embedded_height - _CLASSIFICATION_TOP_INSET)
+        self._direct_view.setFrame_(NSMakeRect(x, y, embedded_width, embedded_height))
         document.addSubview_(self._direct_view)
         scroll.setDocumentView_(document)
+        if height < embedded_height:
+            scroll.contentView().scrollToPoint_(NSMakePoint(0.0, embedded_height - height))
+            scroll.reflectScrolledClipView_(scroll.contentView())
         parent.addSubview_(scroll)
         direct.window().close()
 

@@ -38,6 +38,9 @@ class CloudSelectionService:
         )
         return self._repository.save(session)
 
+    def get(self, session_id: str) -> PickingSession | None:
+        return self._repository.get(session_id)
+
     async def poll(self, session_id: str) -> PickingSession:
         session = self._require(session_id)
         if session.expires_at and session.expires_at <= _utc_now():

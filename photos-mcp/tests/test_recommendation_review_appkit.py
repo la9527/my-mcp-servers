@@ -87,7 +87,8 @@ def test_results_gallery_exposes_review_button_only_for_multi_photo_scenes() -> 
     controller.showWithResult_(_result_payload(scene_count=1))
     assert controller._recommendation_review_button.isEnabled()
     assert controller._recommendation_review_button.accessibilityLabel() == "추천 품질 검토"
-    assert controller._person_composition_review_button.accessibilityLabel() == "인물 구성 검토"
+    assert controller._face_identity_review_button.accessibilityLabel() == "얼굴 동일인 검토"
+    assert controller._face_identity_grouping_review_button.accessibilityLabel() == "복수 지지 검토"
 
     controller.showWithResult_(
         {
@@ -114,6 +115,46 @@ def test_results_gallery_reflows_review_and_export_actions_at_minimum_width() ->
     controller.window().setContentSize_(NSMakeSize(1100.0, 680.0))
     controller._layout_view()
 
-    review_frame = controller._person_composition_review_button.frame()
+    review_frame = controller._face_identity_review_button.frame()
+    grouping_review_frame = controller._face_identity_grouping_review_button.frame()
     export_frame = controller._json_export_button.frame()
     assert review_frame.origin.y + review_frame.size.height <= export_frame.origin.y
+    assert grouping_review_frame.origin.y + grouping_review_frame.size.height <= export_frame.origin.y
+
+
+def test_google_result_upload_action_is_source_gated_and_requires_selection() -> None:
+    NSApplication.sharedApplication()
+    menu_controller = type("MenuController", (), {})()
+    menu_controller._snapshot = type("Snapshot", (), {})()
+    controller = PhotosMcpResultsController.alloc().initWithMenuController_(menu_controller)
+
+    local_payload = _result_payload(scene_count=1)
+    controller.showWithResult_(local_payload)
+    assert controller._google_upload_button.isHidden()
+
+    google_payload = {**_result_payload(scene_count=1), "origin_provider": "google_photos"}
+    controller.showWithResult_(google_payload)
+    assert not controller._google_upload_button.isHidden()
+    assert not controller._google_upload_button.isEnabled()
+    controller._items[0]["selected"] = True
+    controller._refresh_selection_controls()
+    assert controller._google_upload_button.isEnabled()
+    assert "1장" in str(controller._google_upload_button.title())
+
+
+def test_grouping_review_uses_private_hydrated_source_paths() -> None:
+    NSApplication.sharedApplication()
+    menu_controller = type("MenuController", (), {})()
+    menu_controller._snapshot = type("Snapshot", (), {})()
+    controller = PhotosMcpResultsController.alloc().initWithMenuController_(menu_controller)
+    controller.showWithResult_(_result_payload(scene_count=1))
+    photo_id = str(controller._items[0]["photo_id"])
+    controller._viewer_items_by_id[photo_id] = {
+        **controller._items[0],
+        "source_photo_path": "/private/source/original.heic",
+    }
+
+    review_items = controller._private_face_review_items()
+
+    assert review_items[0]["source_photo_path"] == "/private/source/original.heic"
+    assert "source_photo_path" not in controller._items[0]

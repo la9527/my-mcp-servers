@@ -28,6 +28,9 @@ from photos_mcp.application.person_scene_shadow import (
     assign_subject_signatures,
     group_by_subject_signature,
 )
+from photos_mcp.application.person_face_pairwise_shadow import (
+    analyze_human_same_subject_face_shadow,
+)
 
 
 MODEL_SPECS = {
@@ -51,8 +54,10 @@ MODEL_SPECS = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--review", type=Path, required=True)
-    parser.add_argument("--database", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--review", type=Path)
+    source.add_argument("--result", type=Path)
+    parser.add_argument("--database", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--private-root", type=Path, required=True)
     parser.add_argument(
@@ -62,6 +67,30 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--audit-limit", type=int, default=16)
     return parser.parse_args()
+
+
+def _measurement_items_from_result(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = payload.get("results") or payload.get("items") or []
+    by_scene: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        photo_id = str(row.get("photo_id") or "")
+        scene_id = str(row.get("scene_cluster_id") or "")
+        if not photo_id or not scene_id or int(row.get("scene_cluster_size") or 1) <= 1:
+            continue
+        by_scene.setdefault(scene_id, []).append(
+            {
+                "photo_id": photo_id,
+                "preview_path": str(row.get("preview_path") or ""),
+                "capture_date": row.get("capture_date"),
+            }
+        )
+    return [
+        {"scene_cluster_id": scene_id, "photos": photos}
+        for scene_id, photos in sorted(by_scene.items())
+        if len(photos) > 1
+    ]
 
 
 def _ensure_models(model_root: Path) -> dict[str, Path]:
@@ -393,9 +422,18 @@ def _private_audit(
 def main() -> int:
     args = parse_args()
     started = time.perf_counter()
-    review_path = args.review.expanduser().resolve()
-    queue = json.loads(review_path.read_text(encoding="utf-8"))
-    items = _completed_items(queue)
+    if args.review is not None:
+        review_path = args.review.expanduser().resolve()
+        queue = json.loads(review_path.read_text(encoding="utf-8"))
+        items = _completed_items(queue)
+    else:
+        result_path = args.result.expanduser().resolve()
+        result_payload = json.loads(result_path.read_text(encoding="utf-8"))
+        queue = {
+            "job_id": str(result_payload.get("job_id") or result_path.parent.name),
+            "items": _measurement_items_from_result(result_payload),
+        }
+        items = list(queue["items"])
     previews = _preview_paths(items)
     missing = [path for path in previews.values() if not path.is_file()]
     if missing:
@@ -459,8 +497,47 @@ def main() -> int:
     )
     cache_path.chmod(0o600)
 
+    if args.result is not None:
+        summary = {
+            "schema_version": 1,
+            "privacy": {
+                "aggregate_only": True,
+                "contains_photo_ids": False,
+                "contains_paths": False,
+                "contains_embeddings": False,
+            },
+            "mode": "measurement_only",
+            "job_id": str(queue.get("job_id") or ""),
+            "scene_count": len(items),
+            "measurement_photo_count": len(previews),
+            "face_photo_count": sum(bool(cached[photo_id].faces) for photo_id in previews),
+            "face_count": sum(len(cached[photo_id].faces) for photo_id in previews),
+            "runtime": {
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+                "opencv_version": cv2.__version__,
+                "apple_face_capture_revision": int(
+                    Vision.VNDetectFaceCaptureQualityRequest.currentRevision()
+                ),
+                "model_manifest": _model_manifest(models),
+                "measurement_cache_reused_count": cached_count_before,
+                "measurement_new_count": len(previews) - cached_count_before,
+            },
+        }
+        output = args.output.expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.database is None:
+        raise ValueError("--review 모드에는 --database가 필요합니다.")
     score_rows = _load_score_rows(args.database, str(queue.get("job_id") or ""))
     summary = analyze_person_scene_shadow(queue, score_rows, cached.values())
+    summary["human_same_subject_pairwise"] = analyze_human_same_subject_face_shadow(
+        queue,
+        score_rows,
+        cached.values(),
+    )
     summary["runtime"] = {
         "elapsed_seconds": round(time.perf_counter() - started, 3),
         "opencv_version": cv2.__version__,
@@ -478,6 +555,7 @@ def main() -> int:
         "identity_thresholds": [0.363, 0.45, 0.55],
         "ranking": "0.65 face + 0.25 technical + 0.10 current total within subject group",
         "face_veto": "replace only a nearby current winner with a clearly recovered candidate",
+        "pairwise_constraint": "human-labeled same_primary_subjects scenes only",
     }
 
     audit = _private_audit(items, cached, threshold=0.45, limit=args.audit_limit)

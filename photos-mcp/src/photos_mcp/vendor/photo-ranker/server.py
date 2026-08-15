@@ -417,12 +417,16 @@ def _build_request_options(
     exclude_screenshots: bool = False,
     quality_top_percent: int = 30,
     selected_photo_ids: list[str] | None = None,
+    origin_provider: str = "",
+    face_analysis_enabled: bool = True,
 ) -> dict[str, object]:
     options: dict[str, object] = {
         "selection_profile": normalize_selection_profile(selection_profile),
         "selection_mode": selection_mode,
         "exclude_screenshots": exclude_screenshots,
         "quality_top_percent": quality_top_percent,
+        "origin_provider": origin_provider or "",
+        "face_analysis_enabled": bool(face_analysis_enabled),
         "filters": {
             "album": album,
             "person": person,
@@ -593,7 +597,14 @@ async def _run_classify_job(job) -> dict:
         _persist_job_result_artifact(job, db, summary=job.result_summary)
         return job.result_summary
 
-    ranked = await pipe.run(photos, job, selection_profile=selection_profile)
+    ranked = await pipe.run(
+        photos,
+        job,
+        selection_profile=selection_profile,
+        allow_face_analysis=bool(
+            getattr(job, "request_options", {}).get("face_analysis_enabled", True)
+        ),
+    )
     _cache_face_review_assets(job, photos)
 
     # Persist results
@@ -891,6 +902,8 @@ async def start_classify_job(
     exclude_screenshots: bool = False,
     quality_top_percent: int = 30,
     selected_photo_ids_json: str = "[]",
+    origin_provider: str = "",
+    face_analysis_enabled: bool = True,
     run_id: str = "",
 ) -> str:
     """Start a background photo classification job.
@@ -927,6 +940,18 @@ async def start_classify_job(
         selection_error = _validate_local_selected_paths(source_path, selected_photo_ids)
         if selection_error:
             return json.dumps({"error": selection_error}, ensure_ascii=False)
+    normalized_origin = str(origin_provider or "").strip().lower()
+    if normalized_origin == "google_photos":
+        if source != "local" or not selected_photo_ids:
+            return json.dumps(
+                {"error": "Google Photos materialization requires an explicit local selection"},
+                ensure_ascii=False,
+            )
+        if face_analysis_enabled:
+            return json.dumps(
+                {"error": "Google Photos source policy forbids face analysis"},
+                ensure_ascii=False,
+            )
 
     queue = _get_job_queue()
     job = queue.create_job(source, source_path, job_id=run_id)
@@ -948,6 +973,8 @@ async def start_classify_job(
         exclude_screenshots=exclude_screenshots,
         quality_top_percent=quality_top_percent,
         selected_photo_ids=selected_photo_ids,
+        origin_provider=normalized_origin,
+        face_analysis_enabled=face_analysis_enabled,
     )
 
     db = _get_job_db()

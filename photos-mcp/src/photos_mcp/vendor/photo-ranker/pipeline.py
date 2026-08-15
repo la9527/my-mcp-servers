@@ -200,6 +200,7 @@ class Pipeline:
         photos: list[dict],
         job: Job | None = None,
         selection_profile: str = "general",
+        allow_face_analysis: bool = True,
     ) -> list[RankedPhoto]:
         """Run full 2-stage pipeline.
 
@@ -249,7 +250,15 @@ class Pipeline:
                     source_metadata=p,
                 )
             else:
-                cand = await self._stage1(pid, p["image_b64"], source_metadata=p)
+                if allow_face_analysis:
+                    cand = await self._stage1(pid, p["image_b64"], source_metadata=p)
+                else:
+                    cand = await self._stage1(
+                        pid,
+                        p["image_b64"],
+                        source_metadata=p,
+                        allow_face_analysis=False,
+                    )
                 if self._db and job:
                     self._db.save_checkpoint(
                         job.id, "filter", pid, self._snapshot_candidate(cand),
@@ -533,6 +542,7 @@ class Pipeline:
         photo_id: str,
         image_b64: str,
         source_metadata: dict | None = None,
+        allow_face_analysis: bool = True,
     ) -> PhotoCandidate:
         """Lightweight checks: EXIF, orientation, technical quality, face count.
 
@@ -578,7 +588,11 @@ class Pipeline:
             )
             return faces
 
-        tech_score, faces = await asyncio.gather(_technical(), _face_detect())
+        if allow_face_analysis:
+            tech_score, faces = await asyncio.gather(_technical(), _face_detect())
+        else:
+            tech_score = await _technical()
+            faces = ()
 
         cand.technical_score = tech_score
         cand.face_count = len(faces)

@@ -36,6 +36,8 @@ class PickerSessionRepository:
             """
         )
         self._connection.commit()
+        if self.path is not None:
+            self.path.chmod(0o600)
 
     def save(self, session: PickingSession) -> PickingSession:
         with self._lock:

@@ -194,7 +194,8 @@ def test_main_window_has_native_sidebar_and_home_actions() -> None:
     buttons = [view for view in descendants if isinstance(view, NSButton)]
 
     assert controller.window().title() == "Photos MCP"
-    assert float(controller.window().minSize().width) == 1080.0
+    assert float(controller.window().minSize().width) == 1180.0
+    assert float(controller.window().minSize().height) == 760.0
     assert {"Photos MCP", "최근 작업", "환경 및 권한"}.issubset(labels)
     assert {"홈", "사진 분류", "작업 기록", "환경 및 권한", "시작"}.issubset(
         str(button.title() or "") for button in buttons
@@ -238,6 +239,60 @@ def test_main_window_hides_direct_classification_window_after_embedding() -> Non
     NSRunLoop.currentRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.05))
 
     assert direct.window().isVisible() is False
+    direct.shutdown()
+
+
+def test_main_window_minimum_size_keeps_classification_footer_visible() -> None:
+    NSApplication.sharedApplication()
+    menu_controller = _menu_controller(_snapshot())
+
+    async def list_albums():
+        return []
+
+    direct = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        menu_controller,
+        SimpleNamespace(list_albums=list_albums),
+    )
+    menu_controller._direct_classification_controller = direct
+    controller = PhotosMcpMainWindowController.alloc().initWithMenuController_(menu_controller)
+    controller.window().setFrame_display_(NSMakeRect(0.0, 0.0, 1180.0, 760.0), False)
+
+    controller.showTab_("classification")
+
+    assert float(controller.window().contentView().frame().size.height) >= 720.0
+    assert float(direct.embeddedContentView().frame().size.height) == 720.0
+    assert float(direct._cancel_button.frame().origin.y) == 6.0
+    assert float(direct._run_button.frame().origin.y) == 6.0
+    scroll = direct.embeddedContentView().superview().superview().superview()
+    assert isinstance(scroll, NSScrollView)
+    assert scroll.hasVerticalScroller() is False
+    direct.shutdown()
+
+
+def test_main_window_top_aligns_classification_form_when_window_is_tall() -> None:
+    NSApplication.sharedApplication()
+    menu_controller = _menu_controller(_snapshot())
+
+    async def list_albums():
+        return []
+
+    direct = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        menu_controller,
+        SimpleNamespace(list_albums=list_albums),
+    )
+    menu_controller._direct_classification_controller = direct
+    controller = PhotosMcpMainWindowController.alloc().initWithMenuController_(menu_controller)
+    controller.window().setContentSize_(NSMakeSize(1500.0, 1100.0))
+
+    controller.showTab_("classification")
+
+    document = direct.embeddedContentView().superview()
+    form_frame = direct.embeddedContentView().frame()
+    top_gap = float(document.frame().size.height) - float(
+        form_frame.origin.y + form_frame.size.height
+    )
+    assert top_gap == pytest.approx(20.0)
+    assert float(form_frame.origin.y) > 0.0
     direct.shutdown()
 
 
@@ -519,17 +574,116 @@ def test_direct_classification_window_has_complete_native_input_flow() -> None:
     assert float(root.frame().size.height) == 720.0
     assert {
         "사진 분류",
-        "분류 범위",
-        "작업 설정",
+        "사진 위치",
+        "분석할 사진",
+        "분석 방법",
+        "실행 전 확인",
         "분류 기준",
-        "범위 요약",
         "분류 범위를 확인해 주세요",
     }.issubset(labels)
-    assert {"기간 지정", "스크린샷 제외", "취소", "분류 시작", "폴더 열기"}.issubset(
+    assert {"기간 지정", "스크린샷 제외", "취소", "50장 분류 시작", "열기", "선택"}.issubset(
         str(button.title() or "") for button in buttons
     )
+    assert "Google Photos" in labels
+    assert controller._progress_status_labels[1].stringValue() == "진행 중"
+    assert controller._progress_status_labels[2].stringValue() == ""
     assert all(str(button.accessibilityLabel() or "") for button in buttons)
     assert all(button.nextKeyView() is not None for button in buttons)
+    controller.shutdown()
+
+
+def _frames_overlap(first, second) -> bool:
+    first_frame = first.frame()
+    second_frame = second.frame()
+    return not (
+        float(first_frame.origin.x + first_frame.size.width) <= float(second_frame.origin.x)
+        or float(second_frame.origin.x + second_frame.size.width) <= float(first_frame.origin.x)
+        or float(first_frame.origin.y + first_frame.size.height) <= float(second_frame.origin.y)
+        or float(second_frame.origin.y + second_frame.size.height) <= float(first_frame.origin.y)
+    )
+
+
+def _frame_mid_y(view) -> float:
+    frame = view.frame()
+    return float(frame.origin.y + (frame.size.height / 2.0))
+
+
+@pytest.mark.parametrize("width", [860.0, 1080.0, 1320.0])
+def test_direct_classification_layout_prevents_text_and_control_overlap(width) -> None:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+
+    controller.layoutForWidth_(width)
+
+    assert float(controller._content_root.frame().size.width) == width
+    for title, description, button in (
+        (
+            controller._local_title_label,
+            controller._local_description_label,
+            controller._local_folder_button,
+        ),
+        (
+            controller._google_title_label,
+            controller._google_description_label,
+            controller._google_photos_button,
+        ),
+    ):
+        assert not _frames_overlap(title, button)
+        assert not _frames_overlap(description, button)
+
+    for step in range(1, 5):
+        assert not _frames_overlap(controller._section_helpers[step], controller._section_status_labels[step])
+    assert not _frames_overlap(controller._section_status_labels[4], controller._refresh_button)
+    assert not _frames_overlap(controller._read_only_label, controller._cancel_button)
+    controller.shutdown()
+
+
+@pytest.mark.parametrize("width", [860.0, 1080.0, 1320.0])
+def test_direct_classification_step_labels_share_badge_centerline(width) -> None:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+
+    controller.layoutForWidth_(width)
+
+    for step in range(1, 5):
+        progress_badge, progress_value, _ = controller._progress_badges[step]
+        assert _frame_mid_y(progress_value) == pytest.approx(14.0, abs=0.1)
+        assert _frame_mid_y(controller._progress_labels[step]) == pytest.approx(
+            _frame_mid_y(progress_badge), abs=0.1
+        )
+        assert _frame_mid_y(controller._progress_status_labels[step]) == pytest.approx(
+            _frame_mid_y(progress_badge), abs=0.1
+        )
+
+        section_badge, section_value, _ = controller._section_badges[step]
+        assert _frame_mid_y(section_value) == pytest.approx(14.0, abs=0.1)
+        assert _frame_mid_y(controller._section_titles[step]) == pytest.approx(
+            _frame_mid_y(section_badge), abs=0.1
+        )
+        assert _frame_mid_y(controller._section_status_labels[step]) == pytest.approx(
+            _frame_mid_y(section_badge), abs=0.1
+        )
+
+    controller.shutdown()
+
+
+def test_direct_classification_labels_truncate_safely_and_keep_full_tooltips() -> None:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+
+    label = controller._google_description_label
+
+    assert label.maximumNumberOfLines() == 1
+    assert label.toolTip() == "직접 선택한 사진 가져오기"
     controller.shutdown()
 
 
@@ -543,11 +697,180 @@ def test_direct_classification_read_only_notice_does_not_overlap_scope_summary()
         view
         for view in _walk(controller.window().contentView())
         if isinstance(view, NSTextField)
-        and str(view.stringValue() or "").startswith("분류 결과는 읽기 전용")
+        and "사진과 앨범은 변경되지 않습니다" in str(view.stringValue() or "")
     )
 
-    assert float(notice.frame().origin.y) == 58.0
-    assert float(notice.frame().size.height) == 16.0
+    assert float(notice.frame().origin.y) == 15.0
+    assert float(notice.frame().size.height) == 20.0
+    controller.shutdown()
+
+
+def test_direct_classification_marks_completed_steps_after_scope_preview() -> None:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+    controller._albums_loaded = True
+    controller._preview_generation = 1
+    command = controller.commandFromControls()
+    preview = SimpleNamespace(
+        candidate_count=200,
+        count_is_lower_bound=True,
+        run_count=50,
+        analyze_ready_count=200,
+        download_required_count=0,
+        message="선택한 범위를 분석할 수 있습니다.",
+        can_run=True,
+    )
+    controller._pending_preview = (1, command, preview)
+
+    controller.previewFinished_(None)
+
+    assert [controller._progress_status_labels[index].stringValue() for index in range(1, 5)] == [
+        "완료",
+        "완료",
+        "완료",
+        "준비됨",
+    ]
+    assert controller._summary_candidate.stringValue() == "200장 이상"
+    assert controller._summary_run.stringValue() == "50장"
+    assert controller._summary_download.stringValue() == "0장"
+    assert controller._run_button.title() == "50장 분류 시작"
+    assert controller._run_button.isEnabled() is True
+    for step in range(1, 4):
+        badge, label, icon = controller._progress_badges[step]
+        assert label.isHidden() is False
+        assert label.stringValue() == str(step)
+        assert icon.isHidden() is True
+    controller.shutdown()
+
+
+def test_direct_classification_progress_status_stays_with_its_title() -> None:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+
+    for width in (860.0, 1440.0, 2200.0):
+        controller.layoutForWidth_(width)
+        for step in range(1, 5):
+            title = controller._progress_labels[step]
+            status = controller._progress_status_labels[step]
+            title_max_x = float(title.frame().origin.x + title.frame().size.width)
+            status_x = float(status.frame().origin.x)
+            assert 4.0 <= status_x - title_max_x <= 8.0
+            if step < 4:
+                connector = controller._progress_connectors[step]
+                status_max_x = float(status.frame().origin.x + status.frame().size.width)
+                assert float(connector.frame().origin.x) >= status_max_x + 7.0
+
+    controller.shutdown()
+
+
+def test_direct_classification_only_completes_final_step_after_job_is_accepted() -> None:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+    controller._albums_loaded = True
+    command = controller.commandFromControls()
+    controller._last_preview_command = command
+    controller._last_preview = SimpleNamespace(can_run=True, run_count=50)
+    controller._update_step_states()
+
+    assert controller._progress_status_labels[4].stringValue() == "준비됨"
+    assert controller._progress_badges[4][0].accessibilityLabel() == "4단계 준비됨"
+
+    controller._run_accepted = True
+    controller._update_step_states()
+
+    assert controller._progress_status_labels[4].stringValue() == "완료"
+    assert controller._progress_badges[4][0].accessibilityLabel() == "4단계 완료"
+    badge, label, icon = controller._progress_badges[4]
+    assert label.isHidden() is False
+    assert label.stringValue() == "4"
+    assert icon.isHidden() is True
+    controller.shutdown()
+
+
+@pytest.mark.parametrize("width", [860.0, 1320.0, 2200.0])
+def test_direct_classification_source_cards_are_vertically_centered(width) -> None:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+
+    controller.layoutForWidth_(width)
+
+    card_center_y = 39.0
+    for symbol in (
+        controller._apple_source_symbol,
+        controller._local_source_symbol,
+        controller._google_source_symbol,
+    ):
+        assert _frame_mid_y(symbol) == pytest.approx(card_center_y, abs=0.1)
+    assert _frame_mid_y(controller._local_folder_button) == pytest.approx(card_center_y, abs=0.1)
+    assert _frame_mid_y(controller._google_photos_button) == pytest.approx(card_center_y, abs=0.1)
+    assert _frame_mid_y(controller._apple_status_dot) == pytest.approx(29.0, abs=0.1)
+    for title, description in (
+        (controller._apple_title_label, controller._album_status_label),
+        (controller._local_title_label, controller._local_description_label),
+        (controller._google_title_label, controller._google_description_label),
+    ):
+        assert _frame_mid_y(title) == pytest.approx(49.0, abs=0.1)
+        assert _frame_mid_y(description) == pytest.approx(29.0, abs=0.1)
+
+    controller.shutdown()
+
+
+@pytest.mark.parametrize("width", [860.0, 1080.0, 1320.0, 2200.0])
+def test_direct_classification_form_rows_and_refresh_action_are_centered(width) -> None:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+
+    controller.layoutForWidth_(width)
+
+    assert _frame_mid_y(controller._album_field_label) == pytest.approx(127.0, abs=0.1)
+    assert _frame_mid_y(controller._album_popup) == pytest.approx(127.0, abs=0.1)
+    for control in (
+        controller._period_checkbox,
+        controller._start_field,
+        controller._date_separator_label,
+        controller._end_field,
+    ):
+        assert _frame_mid_y(control) == pytest.approx(86.0, abs=0.1)
+    for control in (
+        controller._recent_button,
+        controller._year_button,
+        controller._period_helper_label,
+    ):
+        assert _frame_mid_y(control) == pytest.approx(45.0, abs=0.1)
+
+    assert _frame_mid_y(controller._profile_field_label) == pytest.approx(88.0, abs=0.1)
+    assert _frame_mid_y(controller._profile_popup) == pytest.approx(88.0, abs=0.1)
+    for control in (
+        controller._exclude_checkbox,
+        controller._limit_field_label,
+        controller._limit_popup,
+    ):
+        assert _frame_mid_y(control) == pytest.approx(44.0, abs=0.1)
+
+    assert _frame_mid_y(controller._refresh_button) == pytest.approx(84.0, abs=0.1)
+    preview_width = float(controller._preview_card.frame().size.width)
+    assert float(controller._section_status_labels[4].frame().origin.x) == pytest.approx(
+        preview_width - 86.0, abs=0.1
+    )
+    for title, value, _divider in controller._metric_items:
+        assert not _frames_overlap(title, controller._refresh_button)
+        assert not _frames_overlap(value, controller._refresh_button)
+
     controller.shutdown()
 
 
