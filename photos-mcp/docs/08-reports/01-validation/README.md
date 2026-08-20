@@ -32,3 +32,6 @@ YYYY-MM-DD-<검증-대상>.md
 - [2026-08-14 복수 지지 병합 audit 결과와 독립 holdout](18-face-identity-multi-support-audit-result-2026-08-14.md)
 - [2026-08-14 동일 주 피사체 얼굴·표정 순위 shadow 검증](19-person-face-expression-pairwise-shadow-2026-08-14.md)
 - [2026-08-14 활성 로드맵 자동 구현·회귀 검증](20-automated-roadmap-implementation-2026-08-14.md)
+- [2026-08-20 Google Photos 실계정 E2E 검증](21-google-photos-real-account-e2e-2026-08-20.md)
+- [2026-08-20 Linux Qwen3.8 VLM 기본값·실사진 검증](22-linux-qwen38-vision-runtime-2026-08-20.md)
+- [2026-08-20 Google Photos 취소·만료 예외 흐름 검증](23-google-photos-exception-flow-2026-08-20.md)

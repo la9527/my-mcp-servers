@@ -139,6 +139,72 @@ def test_google_photos_connected_state_never_enables_picker_uri_actions_early() 
     controller.shutdown()
 
 
+def test_google_photos_cancel_starts_when_polling_worker_is_active(monkeypatch) -> None:
+    NSApplication.sharedApplication()
+    runtime = SimpleNamespace(
+        connection=SimpleNamespace(status=lambda: SimpleNamespace(connected=True, reason="")),
+    )
+    controller = PhotosMcpGooglePhotosController.alloc().initWithMenuController_runtime_(
+        SimpleNamespace(),
+        runtime,
+    )
+    controller._session = SimpleNamespace(session_id="session-1")
+    controller._picker_uri = "https://photos.example.test/picker/session-1"
+    controller._render(_UiState("waiting", "사진 선택 완료를 기다리는 중", "대기 중", True))
+
+    class ActivePollWorker:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout):
+            assert timeout == 5.0
+
+    started: list[object] = []
+
+    class CancelWorker:
+        def __init__(self, *, target, args, daemon, name):
+            assert target == controller._cancel_after_poll_worker
+            assert args == ("session-1", controller._worker)
+            assert daemon is True
+            assert name == "photos-mcp-google-cancel"
+
+        def start(self):
+            started.append(self)
+
+        def is_alive(self):
+            return False
+
+    controller._worker = ActivePollWorker()
+    monkeypatch.setattr(google_controller, "Thread", CancelWorker)
+
+    controller.cancelSelection_(None)
+
+    assert controller._poll_stop.is_set()
+    assert controller._state_key == "cancel"
+    assert len(started) == 1
+    controller.shutdown()
+
+
+def test_google_photos_new_selection_clears_direct_prepared_summary() -> None:
+    NSApplication.sharedApplication()
+    cleared: list[bool] = []
+    direct = SimpleNamespace(googlePhotosSelectionReset_=lambda _sender: (cleared.append(True), "session-old")[1])
+    runtime = SimpleNamespace(
+        connection=SimpleNamespace(status=lambda: SimpleNamespace(connected=True, reason="")),
+    )
+    menu = SimpleNamespace(_direct_classification_controller=direct)
+    controller = PhotosMcpGooglePhotosController.alloc().initWithMenuController_runtime_(menu, runtime)
+    started: list[tuple] = []
+    controller._start_worker = lambda *args: started.append(args)
+
+    controller._start_selection()
+
+    assert cleared == [True]
+    assert started[0][0] == "start"
+    assert started[0][2] == "session-old"
+    controller.shutdown()
+
+
 def test_google_photos_submitted_state_supports_new_selection_jobs_and_reset() -> None:
     NSApplication.sharedApplication()
     opened: list[str] = []

@@ -264,7 +264,23 @@ class PhotosMcpGooglePhotosController(NSWindowController):
         self._poll_stop.set()
         if self._session is None or self._runtime is None:
             return
-        self._start_worker("cancel", self._cancel_worker, self._session.session_id)
+        # The long-poll worker owns ``_worker`` while the Picker is waiting.
+        # Stop and join it off the main thread before deleting the remote session.
+        poll_worker = self._worker
+        self._render(_UiState("cancel", "사진 선택을 취소하는 중", "Google Photos 선택 세션을 정리하고 있습니다.", True))
+        self._worker = Thread(
+            target=self._cancel_after_poll_worker,
+            args=(self._session.session_id, poll_worker),
+            daemon=True,
+            name="photos-mcp-google-cancel",
+        )
+        self._worker.start()
+
+    @objc.python_method
+    def _cancel_after_poll_worker(self, session_id: str, poll_worker) -> None:
+        if poll_worker is not None and poll_worker.is_alive():
+            poll_worker.join(timeout=5.0)
+        self._cancel_worker(session_id)
 
     @objc.python_method
     def _reset_flow(self) -> None:
@@ -300,7 +316,8 @@ class PhotosMcpGooglePhotosController(NSWindowController):
     def _start_selection(self) -> None:
         if self._runtime is None:
             return
-        self._start_worker("start", self._start_selection_worker)
+        previous_session_id = self._publish_prepared_selection_reset()
+        self._start_worker("start", self._start_selection_worker, previous_session_id)
 
     @objc.python_method
     def _start_classification(self) -> None:
@@ -387,8 +404,10 @@ class PhotosMcpGooglePhotosController(NSWindowController):
                 cancel()
 
     @objc.python_method
-    def _start_selection_worker(self) -> None:
+    def _start_selection_worker(self, previous_session_id: str = "") -> None:
         try:
+            if previous_session_id:
+                asyncio.run(self._runtime.importer.release_session(previous_session_id))
             session = asyncio.run(self._runtime.importer.start_selection(self._runtime.source))
             self._pending = {"operation": "start", "session": session}
         except Exception as exc:
@@ -669,6 +688,15 @@ class PhotosMcpGooglePhotosController(NSWindowController):
         if controller is not None and hasattr(controller, "googlePhotosSelectionPrepared_"):
             controller.googlePhotosSelectionPrepared_(result)
             self.window().orderOut_(None)
+
+    @objc.python_method
+    def _publish_prepared_selection_reset(self) -> str:
+        """Forget the prior prepared set before the user starts a new Picker session."""
+
+        controller = getattr(self._menu_controller, "_direct_classification_controller", None)
+        if controller is not None and hasattr(controller, "googlePhotosSelectionReset_"):
+            return str(controller.googlePhotosSelectionReset_(None) or "")
+        return ""
 
     @objc.python_method
     @staticmethod

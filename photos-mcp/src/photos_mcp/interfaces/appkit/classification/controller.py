@@ -589,6 +589,15 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         self._update_source_scope_summary()
         self._request_preview()
 
+    def googlePhotosSelectionReset_(self, _sender) -> None:
+        """Discard a prepared Google set when the user begins a fresh Picker selection."""
+
+        session_id = str(self._google_prepared.get("session_id") or "")
+        self._google_prepared = {}
+        self._google_preparation_progress = {}
+        self._set_selected_source("google_photos", request_preview=True)
+        return session_id
+
     def googlePhotosPreparationProgress_(self, payload) -> None:
         self._google_preparation_progress = dict(payload or {})
         if self._selected_source == "google_photos":

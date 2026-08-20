@@ -17,8 +17,12 @@ Photos MCP에 Google Photos를 연결하는 범위는 **사용자가 Google Phot
 | 다운로드와 분류 | Mac이 polling 후 자동 처리, browser 파일 다운로드 없음 |
 | 결과 업로드 | 사용자가 결과 화면에서 명시적으로 승인한 사진만 새 `Photos MCP - ...` 앱 생성 앨범으로 업로드 |
 | 기존 Google Photos 원본 | 수정·이동·삭제·기존 앨범 재구성 금지 |
-| Linux VLM 전송 | 기본 차단, 작업별 별도 고지와 Touch ID/passkey 확인 필요 |
+| Linux VLM 전송 | 개인 단독 사용·신뢰된 동일 LAN 환경에서는 별도 작업별 동의 없이 허용. Google OAuth와 Picker의 사용자 선택은 계속 필수 |
 | Chrome MCP | 개발 E2E 화면 확인만 사용, OAuth 허용·Picker 선택 자동 클릭에는 사용하지 않음 |
+
+#### 2026-08-20 개인 설치 결정
+
+현재 Photos MCP는 한 명의 사용자가 소유·관리하는 Mac과 동일 LAN의 Linux workstation만 사용하는 개인 설치다. 따라서 Google OAuth 승인과 Picker의 능동적인 사진 선택을 이번 작업의 동의 경계로 유지하고, 선택된 사진을 Linux Qwen3.8로 분석할 때 별도의 작업별 전송 동의 화면은 추가하지 않는다. 이 문서의 Touch ID/passkey 위임 profile과 원격 runtime별 고지 내용은 다중 사용자·외부 runtime 배포를 위한 후속 확장안이며, 현재 앱 범위에는 적용하지 않는다.
 
 ## 현재 상태
 
@@ -37,7 +41,7 @@ Photos MCP에 Google Photos를 연결하는 범위는 **사용자가 Google Phot
 | AppKit UX | 3단계 연결·선택·분류 창, 링크 열기·복사·취소·polling·분류 연결 | 자동 구현·단위 검증 완료 |
 | 결과 업로드 UX | Google 입력 작업만 노출, 선택 수·앨범명·용량 고지와 승인 | 자동 구현·단위 검증 완료 |
 | 원격 위임 | 요청 서명, Touch ID/passkey 위임 profile, picker link relay | 후속 별도 범위 |
-| 실제 계정 E2E | OAuth 동의, 실제 Picker 선택, 실제 앨범 생성과 UI 확인 | 사용자 직접 동작 필요 |
+| 실제 계정 E2E | 기존 Keychain OAuth 연결, Picker 선택, 자동 다운로드·분류, 실제 새 album 생성과 Google UI 확인 | 2026-08-20 기본 성공. 취소·만료·재연결·부분 실패는 추가 검증 필요 |
 
 fake adapter는 빠른 회귀 검증용으로 유지하며, production runtime은 앱 설정 Keychain을 우선하고 기존 환경 변수는 fallback으로만 사용해 실제 REST adapter를 조립한다. 저장 DB와 cache는 각각 `0600`, `0700` 권한으로 제한한다. 실제 Google 계정 E2E는 사용자가 OAuth 동의와 Picker 선택을 직접 완료해야 하므로 자동 완료 범위에 포함하지 않는다. 설정 저장 구조와 callback 경계는 [OAuth 앱 설정 문서](05-google-photos-oauth-app-settings-2026-08-15.md)에 정리한다.
 
@@ -47,7 +51,7 @@ fake adapter는 빠른 회귀 검증용으로 유지하며, production runtime�
 - token과 refresh token은 응답·로그에 노출하지 않고 Keychain repository를 통한다.
 - Picker 원본은 작업에 귀속된 임시 lease로만 결과 업로드에 재사용하며, 만료·다른 작업 경로는 거부한다.
 - 기존 Google Photos 원본과 기존 album을 수정하는 API 경로는 없다.
-- 실제 계정의 동의·사진 선택·새 album 표시 확인은 사람이 수행할 외부 검증으로 남는다.
+- 실계정의 기존 OAuth 연결, Picker 사진 선택, 자동 다운로드·분류, 새 album 표시 확인은 [2026-08-20 실계정 E2E 보고서](../../08-reports/01-validation/21-google-photos-real-account-e2e-2026-08-20.md)로 검증했다. 새 Keychain에서의 최초 동의와 취소·만료·재연결은 별도 예외 검증으로 남는다.
 
 ## 지원 범위와 제외 범위
 
@@ -184,7 +188,7 @@ Google의 Device Authorization Flow는 다른 장치에서 URL·코드를 입력
 | --- | --- | --- |
 | Mac local VLM으로 사진 분류 | profile이 유효하면 자동 | 없음 |
 | 원격 LLM이 picker link 전달 | profile이 유효하면 자동 | 사용자는 link에서 사진을 선택할 때만 행동 |
-| Linux VLM으로 사진 bytes 전송 | 기본 차단 | 작업별 Touch ID/passkey와 별도 전송 고지 |
+| Linux VLM으로 사진 bytes 전송 | 개인 단독 사용·신뢰된 동일 LAN의 현재 설치에서는 자동 | 다중 사용자·원격 runtime 전환 시 작업별 Touch ID/passkey와 전송 고지 |
 | scope·계정 변경, 연결 해제, token 삭제 | 기본 차단 | Mac의 Touch ID/passkey와 명시적 확인 |
 
 이 방식에서 본인 인증은 원격 요청의 의도를 강하게 증명하는 역할을 한다. 그러나 Chrome MCP/LLM이 Google OAuth의 `허용` 버튼을 대신 클릭하는 방식은 채택하지 않는다. OAuth 화면은 Google 계정·앱 identity·scope를 사용자가 확인하는 별도 보안 경계이고, agent-driven click은 Google이 Photos Picker 승인 방식으로 보증하지 않는다. [Google OAuth 정책](https://developers.google.com/identity/protocols/oauth2/policies), [Google Photos 데이터 정책](https://developers.google.com/photos/support/api-policy)
@@ -258,7 +262,7 @@ Google Photos의 기존 개인 보관함을 무인 동기화하는 요구에는 
 | Google Drive 또는 Cloud Storage 전용 업로드 폴더 | 완전 자동 가능 | 사용자가 별도 업로드한 분석 대기 폴더 | 불가, 별도 저장소 source |
 | Google Photos Library API의 앱 생성 콘텐츠 | 제한 자동 | 앱이 직접 올린 사진·앨범 관리 | 불가, 앱 생성 항목만 가능 |
 
-현재 Photos MCP의 목적에는 **Picker를 사용자 주도 가져오기**, 로컬 폴더·Apple 사진을 **반복 분석 source**로 유지하는 조합이 가장 안전하다. Google Photos 입력을 Linux VLM으로 보내는 경우에는 별도 고지를 유지하고, 1차 실연동은 Mac mini 로컬 runtime만 허용한다.
+현재 Photos MCP의 목적에는 **Picker를 사용자 주도 가져오기**, 로컬 폴더·Apple 사진을 **반복 분석 source**로 유지하는 조합이 가장 안전하다. 현재 개인 단독 사용·동일 LAN 설치에서는 Google Photos 입력을 Linux Qwen3.8로 분석할 수 있으며, 별도 전송 고지는 다중 사용자 또는 원격 runtime 전환 시에만 다시 요구한다.
 
 ### 날짜 기반 자동 선택의 API 한계
 
@@ -308,12 +312,12 @@ Picker `baseUrl`은 최대 60분이며 권한 철회 시 더 빨리 만료될 �
 
 Google source capability는 이미 `face_quality=False`, `face_clustering=False`다. 실제 workflow 연결 시에도 이 정책을 application service에서 강제한다.
 
-- VLM 기반 장면 설명·일반 분류: 가능하되, 외부 Linux VLM 전송 전 별도 동의 문구를 표시한다.
+- VLM 기반 장면 설명·일반 분류: 개인 단독 사용자가 신뢰된 동일 LAN의 Linux workstation을 운영하는 현재 배포에서는 별도 작업별 동의 없이 허용한다. Google OAuth와 Picker에서 사용자가 직접 사진을 선택하는 동의 경계는 유지한다.
 - 로컬 기술 점수·중복 억제: 원본 또는 thumbnail을 처리하므로 정책·동의 검토 뒤 1차에서는 비활성화하고, 일반 VLM 분석만 허용하는 보수적 시작을 권장한다.
 - 인물 분류와 선호 학습: 금지.
 - 결과 내보내기: 로컬 디렉터리만 1차 허용한다. Google 재업로드는 별도 승인 범위로 분리한다.
 
-이는 Google 데이터가 외부 Linux workstation으로 전송될 수 있는 현재 Photos MCP 환경을 고려한 보수적 설계다. 정책상 사용자 데이터 전송은 사용자 동의와 화면에 보이는 기능 제공 범위 안에서만 허용된다. 이 판단은 정책을 현재 배포 구조에 적용한 구현상 추론이다. [데이터 정책](https://developers.google.com/photos/support/api-policy)
+현재 설치는 한 명의 사용자가 Mac과 동일 네트워크의 Linux workstation을 직접 관리하는 개인 전용 환경이다. 따라서 OAuth 승인과 Picker의 능동 선택으로 이번 분류 사용 목적을 확인하고, 별도의 Linux 전송 확인 sheet는 표시하지 않는다. 이 예외는 개인 설치에만 적용한다. 다중 사용자 배포, 원격 네트워크 전송 또는 관리 주체가 다른 runtime을 지원할 때는 전송 대상·처리 목적·보관 기간을 보이는 작업별 고지를 다시 도입한다. [데이터 정책](https://developers.google.com/photos/support/api-policy)
 
 ## 구현 순서
 
@@ -326,8 +330,8 @@ Google source capability는 이미 `face_quality=False`, `face_clustering=False`
 7. 결과 album upload 확인, 용량 고지와 receipt: **완료**.
 8. incremental append-only OAuth, resumable upload, batchCreate와 부분 실패 backend: **완료**.
 9. Google source 정책 재검증과 얼굴·인물 기능 차단: **완료**.
-10. 실제 계정 OAuth·Picker 1장/10장·취소·만료·재연결: **사용자 직접 검증 대기**.
-11. 실제 새 album 생성·중복·복구·원본 비변경 확인: **사용자 직접 검증 대기**.
+10. 실제 계정 Picker·자동 다운로드·분류·새 album 업로드: **기본 성공**. 1장/10장, 취소·만료·재연결은 추가 검증 대기.
+11. 실제 새 album 생성·원본 비변경 확인: **기본 성공**. 중복·부분 실패·복구는 추가 검증 대기.
 
 ## 완료 조건
 
@@ -340,7 +344,7 @@ Google source capability는 이미 `face_quality=False`, `face_clustering=False`
 - 사용자가 고른 결과만 명시 승인 뒤 새 app-created album에 업로드되며, 기존 Google Photos 원본과 기존 album은 변경되지 않는다.
 - 업로드 scope는 `photoslibrary.appendonly`을 필요 시점에만 추가 요청하고, 업로드 영수증·재시도·부분 실패·취소가 복구된다.
 - 결과 album에는 자동 생성 점수·tag·내부 metadata를 description으로 쓰지 않고, 위치 metadata가 사본에서 빠질 수 있음을 사전 고지한다.
-- 외부 VLM 전송은 별도 동의가 없으면 차단된다.
+- 개인 단독 사용·신뢰된 동일 LAN의 Linux VLM 전송은 OAuth와 Picker 선택 뒤 허용되며, 다중 사용자 또는 원격 runtime 배포에서는 작업별 고지·동의를 다시 요구한다.
 - 원격 요청은 위임 profile의 요청자 identity·scope·runtime 검증을 통과해야 하며, OAuth credential과 base URL은 원격에 노출되지 않는다.
 - 실제 계정으로 최소 1·10장 성공, 취소, 만료 오류, 연결 해제를 검증한다.
 - 최초 연결 뒤 원격 browser에서 picker link로 사진을 선택해도 Mac이 자동 다운로드·분류하는 것을 검증한다.
@@ -349,7 +353,7 @@ Google source capability는 이미 `face_quality=False`, `face_clustering=False`
 
 ## 결정이 필요한 항목
 
-1. **1차 분석 runtime**: Google 선택 사진을 Mac mini의 로컬 VLM만 사용해 처리할지, Linux VLM 전송을 별도 동의로 허용할지 결정해야 한다. 권장안은 1차 로컬 전용이다.
+1. **1차 분석 runtime**: 개인 단독 사용·동일 LAN 설치에서는 Linux Qwen3.8을 기본 분석 runtime으로 사용한다. 다중 사용자 또는 원격 runtime 배포로 전환할 때에만 별도 전송 동의 UX를 재검토한다.
 2. **결과 album 이름**: 기본 이름은 날짜 기반 `Photos MCP - 추천`으로 두고, 업로드 sheet에서 사용자가 매번 변경할 수 있게 한다.
 3. **업로드 대상**: 기본은 추천·사용자 선택 사진만으로 하며, 검토 필요 결과를 올릴 때는 별도 checkbox로 명시 선택하게 한다.
 4. **배포 범위**: 개인 단독 사용은 test user로 시작할 수 있지만, 외부 사용자에게 배포하면 OAuth verification과 정책 고지·삭제 지원을 먼저 완료해야 한다.

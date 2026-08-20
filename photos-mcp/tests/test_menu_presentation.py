@@ -144,7 +144,7 @@ def test_active_job_shows_waiting_reason_and_model_without_private_detail() -> N
 
     active = menu.active_jobs[0]
     assert active.subtitle == "사진 원본 다운로드 대기 · 1 / 10 · 10%"
-    assert active.operation_detail == "원본 사진을 이 기기에 다운로드하는 중입니다 · 분석 모델: Linux Qwen3.6"
+    assert active.operation_detail == "원본 사진을 이 기기에 다운로드하는 중입니다 · 분석 모델: Linux Qwen3.8"
     assert "/private" not in active.operation_detail
 
 

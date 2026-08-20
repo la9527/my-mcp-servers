@@ -776,9 +776,9 @@ class PhotosMcpMainWindowController(NSWindowController):
         self._divider(parent, 20.0, divider_y, width - 40.0)
         chip_size = 30.0
         self._image_view(parent, 20.0, 26.0, chip_size, chip_size, "model-chip", "이미지 분석 모델", template=True, tint=_tone_color(runtime_tone))
-        model_name = str(runtime.get("model") or "Qwen3.6-35B-A3B")
-        if "Qwen3.6" in model_name:
-            model_name = "Qwen3.6-35B-A3B"
+        model_name = str(runtime.get("model") or "Qwen3.8-27B")
+        if "Qwen3.8" in model_name:
+            model_name = "Qwen3.8-27B"
         self._label(parent, 62.0, 48.0, width - 190.0, 20.0, model_name, bold=True, size=12.8)
         runtime_status = "확인 중" if self._is_runtime_checking else ("연결됨" if runtime.get("ready") else ("요청 시 연결" if runtime.get("on_demand") else "설정됨"))
         self._status_pill(parent, 62.0, 21.0, runtime_status, runtime_tone)

@@ -23,7 +23,7 @@ GOAL_GUIDES: dict[str, dict[str, Any]] = {
         ],
     },
     "analyze": {
-        "description": "Linux Qwen3.6 VLM으로 단일 사진 또는 범위를 분석합니다.",
+        "description": "Linux Qwen3.8 VLM으로 단일 사진 또는 범위를 분석합니다.",
         "steps": [
             {"tool": "photos_query", "action": "status"},
             {"tool": "photos_select", "action": "analyze_photo"},

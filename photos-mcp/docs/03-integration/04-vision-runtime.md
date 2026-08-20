@@ -10,7 +10,7 @@ Photos MCP는 사진 분석 요청과 VLM 프로세스 수명 주기를 분리�
 | --- | --- |
 | provider | `linux_qwen36` |
 | backend | `openai_compat` |
-| model | `Qwen3.6-35B-A3B-Q4_K_M.gguf` |
+| model | `Qwen3.8-27B-Q4_K_M.gguf` |
 | API base | `http://127.0.0.1:12801/v1` |
 | runtime target | `linux-qwen36-vlm` |
 | 준비 제한 시간 | 330초 |
@@ -18,6 +18,9 @@ Photos MCP는 사진 분석 요청과 VLM 프로세스 수명 주기를 분리�
 | Mac 로컬 target | `qwen3-vl-4b` |
 
 기본 Linux API가 loopback 주소인 이유는 SSH 터널이나 로컬 broker가 원격 llama.cpp endpoint를 Mac의 `127.0.0.1:12801`에 투영하기 때문이다.
+
+`linux_qwen36` provider와 `linux-qwen36-vlm` target 이름은 이미 저장된 작업의
+호환성을 위해 유지한다. 이는 현재 모델 버전이 아니라 기존 runtime 식별자다.
 
 ## 요청 흐름
 

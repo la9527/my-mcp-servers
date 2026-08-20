@@ -6,7 +6,7 @@
 
 - [장면별 추천 품질 사람 검토](01-recommendation-quality-review-2026-08-10.md): 현재 자동추천과 사용자의 실제 1·2순위를 비교하고, 개인 검토 큐와 집계 지표를 이용해 다음 shadow score 실험의 기준선을 만든다.
 - [인물 구성 기반 장면 분리와 얼굴 품질 추천](02-person-aware-scene-ranking-shadow-2026-08-10.md): 자동 승격 판정 pipeline까지 구현했다. strict veto는 87장면에서 +1.1495%p에 그쳐 운영 반영 없이 shadow를 유지하며, 독립 holdout 5쌍의 사람 라벨이 남아 있다.
-- [Google Photos Picker 실연동](03-google-photos-picker-integration-2026-08-13.md): OAuth·Picker REST·temporary cache·분류 bridge·새 앱 생성 앨범 업로드와 복구 backend까지 자동 구현·계약 검증을 마쳤다. 실제 계정 OAuth 동의·Picker 선택·앨범 확인은 사용자 E2E가 남아 있다.
+- [Google Photos Picker 실연동](03-google-photos-picker-integration-2026-08-13.md): OAuth·Picker REST·temporary cache·분류 bridge·새 앱 생성 앨범 업로드와 복구 backend까지 자동 구현·계약 검증을 마쳤다. 실계정에서 56장 선택·50장 분류·추천 30장 새 album 업로드와 Picker 취소·재선택·만료 정리를 검증했다. refresh token 철회 뒤 재연결과 실제 네트워크 단절 기반 부분 업로드 복구 E2E가 남아 있다.
 - [Google Photos 입력·결과 앨범 AppKit UX](04-google-photos-appkit-ux-2026-08-13.md): source 선택, browser Picker 대기, 결과 앨범 업로드 승인 흐름을 구현하고 controller 테스트를 완료했다. 실제 계정 화면 검증은 Google 외부 설정 후 진행한다.
 - [Google Photos OAuth 앱 설정](05-google-photos-oauth-app-settings-2026-08-15.md): OAuth Client ID·Redirect URI·선택적 Client secret을 앱에서 입력해 macOS Keychain에 저장하고 즉시 runtime에 반영한다. callback URL 자동 수신과 실제 계정 E2E는 후속 검증 대상이다.
 - [Google Photos 재선택과 작업 기록 정리](06-google-photos-reselection-and-job-history-cleanup-2026-08-15.md): 취소·제출 뒤 새 선택과 화면 초기화를 제공하고, 작업 기록 개별·전체 삭제 시 앱 생성 결과·미리보기·Google 임시 다운로드를 함께 안전하게 정리한다.

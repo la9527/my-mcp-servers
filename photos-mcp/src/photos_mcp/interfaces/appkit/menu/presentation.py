@@ -407,7 +407,7 @@ def _job_view_model(job: dict[str, Any], *, active: bool, now: datetime | None =
         provider = _text(job.get("runtime_provider"))
         if provider:
             provider_label = {
-                "linux_qwen36": "Linux Qwen3.6",
+                "linux_qwen36": "Linux Qwen3.8",
                 "mlx_local": "Mac MLX",
                 "local_openai_compat": "로컬 OpenAI 호환 모델",
                 "openai_compat": "OpenAI 호환 모델",

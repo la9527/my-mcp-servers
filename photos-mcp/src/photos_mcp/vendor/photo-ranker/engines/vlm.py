@@ -19,7 +19,7 @@ from ..models import EventType, SceneDescription
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+DEFAULT_MODEL = "Qwen3.8-27B-Q4_K_M.gguf"
 DEFAULT_BACKEND = "openai_compat"
 _LOCAL_VISION_PREFLIGHT_TTL_SECONDS = 30.0
 _LOCAL_VISION_PREFLIGHT_CACHE: dict[tuple[str, str], tuple[float, tuple[bool, bool, str]]] = {}

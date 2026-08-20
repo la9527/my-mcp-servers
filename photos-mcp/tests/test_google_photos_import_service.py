@@ -538,12 +538,12 @@ def test_google_import_recovers_latest_unbound_downloaded_selection(tmp_path: Pa
 
     recovered = service.recover_latest_prepared_selection()
 
-    assert recovered["session_id"] == "newest-session"
-    assert recovered["paths"] == (str(newest),)
+    assert recovered["session_id"] == "older-session"
+    assert recovered["paths"] == (str(older),)
     assert recovered["recovered"] is True
     lease = leases.list_session("newest-session")[0]
-    assert lease.state == "materialized"
-    assert lease.job_id == ""
+    assert lease.state == "in_use"
+    assert lease.job_id == "curate-fake-id"
     leases.close()
     sessions.close()
 
@@ -575,6 +575,38 @@ def test_google_import_does_not_recover_selection_for_known_job(tmp_path: Path) 
     assert leases.list_session("session")[0].state == "in_use"
     leases.close()
     sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_google_import_releases_session_sidecar_with_materialized_photo(tmp_path: Path) -> None:
+    leases = GoogleImportLeaseRepository(tmp_path / "imports.db")
+    from photos_mcp.infrastructure.sources.google_photos.import_repository import GoogleImportLease
+
+    photo = tmp_path / "photo.jpg"
+    sidecar = tmp_path / "photo.jpg.photos-mcp.json"
+    photo.write_bytes(b"photo")
+    sidecar.write_text("{}", encoding="utf-8")
+    leases.save(
+        GoogleImportLease(
+            "session-1",
+            "asset-1",
+            str(photo),
+            "image/jpeg",
+            sidecar_path=str(sidecar),
+        )
+    )
+    service = GooglePhotosImportService(
+        selection=None,
+        content_adapter=None,
+        leases=leases,
+        classification_starter=lambda *_args: None,
+    )
+
+    assert await service.release_session("session-1") == 1
+    assert not photo.exists()
+    assert not sidecar.exists()
+    assert leases.list_session("session-1")[0].state == "released"
+    leases.close()
 
 
 @pytest.mark.asyncio

@@ -124,7 +124,7 @@ async def test_photos_query_guide_returns_runtime_and_safe_flow() -> None:
     assert payload["status"] == "ok"
     assert payload["goal"] == "album"
     assert payload["vision_runtime"]["provider"] == "linux_qwen36"
-    assert payload["vision_runtime"]["model"] == "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+    assert payload["vision_runtime"]["model"] == "Qwen3.8-27B-Q4_K_M.gguf"
     assert payload["safety"]["write_plan_approval_required"] is True
     assert payload["guide"]["steps"][-1] == {
         "tool": "photos_write",

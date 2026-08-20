@@ -2050,6 +2050,31 @@ def test_direct_classification_google_source_uses_prepared_paths_and_video_summa
     controller.shutdown()
 
 
+def test_direct_classification_google_reselection_clears_prepared_summary(tmp_path) -> None:
+    NSApplication.sharedApplication()
+    photo = tmp_path / "google.jpg"
+    photo.write_bytes(b"photo")
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        _menu_controller(_snapshot()),
+        SimpleNamespace(),
+    )
+    controller.googlePhotosSelectionPrepared_(
+        {
+            "session_id": "session-1",
+            "paths": [str(photo)],
+            "materialized_photo_count": 1,
+        }
+    )
+
+    controller.googlePhotosSelectionReset_(None)
+
+    assert controller._google_prepared == {}
+    assert controller._google_preparation_progress == {}
+    assert controller._source_scope_title.stringValue() == "Google Photos에서 사진을 선택해 주세요"
+    assert controller._run_button.isEnabled() is False
+    controller.shutdown()
+
+
 def test_direct_classification_google_progress_is_visible_before_preparation() -> None:
     NSApplication.sharedApplication()
     controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(

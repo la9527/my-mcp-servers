@@ -13,7 +13,8 @@ SUPPORTED_POLICIES = {REMOTE_ALLOWED, LOCAL_ONLY}
 
 DEFAULT_PROVIDER = "linux_qwen36"
 DEFAULT_BACKEND = "openai_compat"
-DEFAULT_MODEL = "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+# This must match the model loaded by the Linux llama.cpp vision service.
+DEFAULT_MODEL = "Qwen3.8-27B-Q4_K_M.gguf"
 DEFAULT_API_BASE = "http://127.0.0.1:12801/v1"
 DEFAULT_TARGET = "linux-qwen36-vlm"
 DEFAULT_PREPARE_TIMEOUT_SECONDS = 330.0

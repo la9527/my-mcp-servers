@@ -30,7 +30,7 @@ def _clear_runtime_env(monkeypatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_default_runtime_is_linux_qwen36(monkeypatch) -> None:
+def test_default_runtime_uses_linux_qwen38_model(monkeypatch) -> None:
     _clear_runtime_env(monkeypatch)
 
     settings = vision_runtime.resolve_vision_runtime_settings()
@@ -38,7 +38,7 @@ def test_default_runtime_is_linux_qwen36(monkeypatch) -> None:
     assert settings.policy == "remote_allowed"
     assert settings.provider == "linux_qwen36"
     assert settings.backend == "openai_compat"
-    assert settings.model == "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+    assert settings.model == "Qwen3.8-27B-Q4_K_M.gguf"
     assert settings.api_base == "http://127.0.0.1:12801/v1"
     assert settings.target == "linux-qwen36-vlm"
     assert settings.prepare_command.endswith("/bin/ensure-linux-llama-cpp")
@@ -90,5 +90,5 @@ def test_runtime_summary_reports_ready_without_exposing_api_key(monkeypatch) -> 
 
     assert payload["status"] == "ready"
     assert payload["ready"] is True
-    assert payload["model"] == "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+    assert payload["model"] == "Qwen3.8-27B-Q4_K_M.gguf"
     assert "api_key" not in payload

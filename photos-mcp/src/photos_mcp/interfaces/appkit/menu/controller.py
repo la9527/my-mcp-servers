@@ -706,8 +706,8 @@ class PhotosMcpEnvironmentController(NSWindowController):
         self._add_divider(vision_card, 20.0, 92.0, 316.0)
 
         model_name = str(runtime.get("model") or "이미지 분석 모델")
-        if "Qwen3.6" in model_name:
-            model_name = "Qwen3.6-35B-A3B"
+        if "Qwen3.8" in model_name:
+            model_name = "Qwen3.8-27B"
         self._add_symbol_badge(vision_card, 20.0, 40.0, 28.0, "warning" if runtime.get("on_demand") else "success", "cpu", "이미지 분석 모델")
         model_label = self._add_label(vision_card, 62.0, 57.0, 190.0, 18.0, model_name, bold=True, size=12.0)
         model_label.setTextColor_(NSColor.labelColor())

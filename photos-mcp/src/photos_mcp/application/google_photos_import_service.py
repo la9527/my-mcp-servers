@@ -284,20 +284,16 @@ class GooglePhotosImportService:
 
     def recover_latest_prepared_selection(self) -> dict[str, Any]:
         """Recover downloaded photos that were never attached to a real job."""
-        known_job_ids: set[str] = set()
-        if self._state_store is not None:
-            snapshot = self._state_store.snapshot()
-            known_job_ids.update(str(item.get("job_id") or "") for item in snapshot.active_jobs)
-            known_job_ids.update(str(item.get("job_id") or "") for item in snapshot.recent_jobs)
-            known_job_ids.discard("")
-
         for session_id in self._leases.list_unreleased_session_ids():
             leases = self._leases.list_session(session_id)
             existing = tuple(lease for lease in leases if Path(lease.local_path).is_file())
             if not existing:
                 continue
             bound_job_ids = {lease.job_id for lease in existing if lease.job_id}
-            if bound_job_ids & known_job_ids:
+            # A submitted job owns its materialized files even when its state
+            # snapshot is temporarily unavailable during startup or recovery.
+            # Never present those files as a retryable Picker selection.
+            if bound_job_ids:
                 continue
             self._leases.reset_materialized(session_id)
             session = self._selection.get(session_id)
@@ -360,5 +356,7 @@ class GooglePhotosImportService:
         leases = self._leases.list_session(session_id)
         for lease in leases:
             Path(lease.local_path).unlink(missing_ok=True)
+            if lease.sidecar_path:
+                Path(lease.sidecar_path).unlink(missing_ok=True)
         self._leases.mark_released(session_id)
         return len(leases)
