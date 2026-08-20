@@ -231,6 +231,27 @@ class JobDB:
                 repaired_running_with_results,
             )
 
+        # Older releases represented a process restart as a failed analysis.
+        # Preserve the historical record but expose its actual cause so it is
+        # not counted with model, source, or image-processing failures.
+        migrated_restart_failures = self._conn.execute(
+            """
+            UPDATE jobs
+            SET status = 'interrupted'
+            WHERE
+                status = 'failed'
+                AND lower(COALESCE(error_message, '')) IN (
+                    'app_restarted_before_completion',
+                    'recovered stale running job after restart or cancelled session'
+                )
+            """
+        ).rowcount
+        if migrated_restart_failures:
+            logger.info(
+                "Migrated %d legacy restart failures to interrupted",
+                migrated_restart_failures,
+            )
+
         stale_threshold = max(_stale_running_job_secs(), 0.0)
         if stale_threshold <= 0:
             return
@@ -240,11 +261,11 @@ class JobDB:
             """
             UPDATE jobs
             SET
-                status = 'failed',
+                status = 'interrupted',
                 finished_at = ?,
                 error_message = COALESCE(
                     error_message,
-                    'Recovered stale running job after restart or cancelled session'
+                    'app_restarted_before_completion'
                 )
             WHERE
                 status = 'running'
@@ -256,7 +277,7 @@ class JobDB:
         ).rowcount
         if stale_running:
             logger.info(
-                "Repaired %d stale running job records older than %.0fs",
+                "Marked %d stale running job records as interrupted after %.0fs",
                 stale_running,
                 stale_threshold,
             )
@@ -324,7 +345,7 @@ class JobDB:
 
         Returns the deleted job ids in newest-first order.
         """
-        target_statuses = statuses or ("completed", "failed", "cancelled")
+        target_statuses = statuses or ("completed", "failed", "cancelled", "interrupted")
         if not target_statuses:
             return []
 

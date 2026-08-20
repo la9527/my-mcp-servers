@@ -92,6 +92,8 @@ _JOB_REASON_LABELS = {
     "local_download_probe_timeout": "사진 다운로드 상태 확인 시간이 초과되었습니다",
     "local_download_timeout": "원본 사진 다운로드 대기 시간이 초과되었습니다",
     "no photos found from source": "조건에 맞는 사진을 찾지 못했습니다",
+    "app_restarted_before_completion": "앱 재시작으로 작업이 중단되었습니다",
+    "recovered stale running job after restart or cancelled session": "앱 재시작으로 작업이 중단되었습니다",
 }
 
 
@@ -439,6 +441,11 @@ def _job_view_model(job: dict[str, Any], *, active: bool, now: datetime | None =
             cancel_reason = reason_label or "사용자가 작업을 취소했습니다"
             subtitle = f"{timestamp} · {cancel_reason}"
             tone = "neutral"
+        elif status == "interrupted":
+            title = f"{title} 중단됨"
+            interruption_reason = reason_label or "작업이 완료되기 전에 중단되었습니다"
+            subtitle = f"{timestamp} · {interruption_reason} · 다시 실행하세요"
+            tone = "warning"
         else:
             title = f"{title} 실패"
             subtitle = f"{timestamp} · {reason_label or '실패 원인을 확인하세요'}"

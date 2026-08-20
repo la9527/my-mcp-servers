@@ -93,6 +93,7 @@ def test_clear_job_history_removes_terminal_queue_and_db_rows(monkeypatch) -> No
         JobSnapshot("job-done", "classify", "apple", "completed"),
         JobSnapshot("job-running", "classify", "apple", "running"),
         JobSnapshot("job-failed", "classify", "apple", "failed"),
+        JobSnapshot("job-interrupted", "classify", "apple", "interrupted"),
     ]
     store = SimpleNamespace(
         list_snapshots=lambda: snapshots,
@@ -105,10 +106,10 @@ def test_clear_job_history_removes_terminal_queue_and_db_rows(monkeypatch) -> No
     monkeypatch.setattr("photos_mcp.app.lifecycle.load_vendor_server", lambda _name: SimpleNamespace())
     monkeypatch.setattr(controller, "refresh_jobs_once", lambda: None)
 
-    cleared_ids = controller.clear_job_history(("completed", "failed"))
+    cleared_ids = controller.clear_job_history(("completed", "failed", "interrupted"))
 
-    assert cleared_ids == ["job-done", "job-failed"]
-    assert deleted_ids == ["job-done", "job-failed"]
+    assert cleared_ids == ["job-done", "job-failed", "job-interrupted"]
+    assert deleted_ids == ["job-done", "job-failed", "job-interrupted"]
 
 
 def test_clear_job_history_removes_terminal_synthetic_runs_from_state(monkeypatch) -> None:

@@ -399,7 +399,7 @@ async def _wait_for_terminal_summary(
             prefix = f"{label}: " if label else ""
             progress(f"{prefix}poll {attempt + 1}/{rounds} {snapshot}")
             last_snapshot = snapshot
-        if str(summary_payload.get("status") or "") in {"completed", "failed", "cancelled"}:
+        if str(summary_payload.get("status") or "") in {"completed", "failed", "cancelled", "interrupted"}:
             return summary_payload
         await anyio.sleep(poll_interval_seconds)
     return summary_payload
@@ -802,13 +802,13 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                         rounds=max(config.wait_poll_rounds, 3),
                         poll_interval_seconds=config.wait_poll_interval_seconds,
                         predicate=lambda payload: isinstance(payload.get("progress"), dict)
-                        or str(payload.get("status") or "") in {"completed", "failed", "cancelled"},
+                        or str(payload.get("status") or "") in {"completed", "failed", "cancelled", "interrupted"},
                         progress=progress,
                         label=f"wait_for_local run_id={timeout_run_id}",
                     )
                     summary_ok = isinstance(wait_summary_payload, dict) and (
                         bool(wait_summary_payload.get("progress"))
-                        or str(wait_summary_payload.get("status") or "") in {"completed", "failed", "cancelled"}
+                        or str(wait_summary_payload.get("status") or "") in {"completed", "failed", "cancelled", "interrupted"}
                     )
                     set_check(result_section.checks[0], PASS if summary_ok else FAIL, _json_preview(wait_summary_payload))
 
@@ -860,7 +860,7 @@ async def run_live_validation(config: ValidationConfig) -> list[ReportSection]:
                         rounds=max(config.wait_poll_rounds, 3),
                         poll_interval_seconds=config.wait_poll_interval_seconds,
                         predicate=lambda payload: isinstance(payload.get("progress"), dict)
-                        or str(payload.get("status") or "") in {"completed", "failed", "cancelled"},
+                        or str(payload.get("status") or "") in {"completed", "failed", "cancelled", "interrupted"},
                         progress=progress,
                         label=f"wait_for_local cancel-prep run_id={cancel_run_id}",
                     )

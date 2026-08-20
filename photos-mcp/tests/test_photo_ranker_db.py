@@ -52,6 +52,44 @@ def test_job_db_repairs_running_job_with_saved_results(tmp_path) -> None:
     assert repaired.error_message is None
 
 
+def test_job_db_migrates_legacy_restart_failure_to_interrupted(tmp_path) -> None:
+    db_path = tmp_path / "jobs.db"
+    JobDB = _load_job_db_class()
+    db = JobDB(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO jobs (
+            id, source, source_path, request_json, status, created_at,
+            started_at, finished_at, progress_json, result_json, error_message
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "legacy-restart-failure",
+            "local",
+            "/tmp/input",
+            "{}",
+            "failed",
+            time.time() - 60,
+            time.time() - 55,
+            time.time() - 50,
+            "{}",
+            None,
+            "app_restarted_before_completion",
+        ),
+    )
+    conn.commit()
+    conn.close()
+    db.close()
+
+    migrated = JobDB(db_path).load_job("legacy-restart-failure")
+
+    assert migrated is not None
+    assert migrated.status.value == "interrupted"
+    assert migrated.error_message == "app_restarted_before_completion"
+
+
 def test_job_db_allows_shared_access_from_worker_threads(tmp_path) -> None:
     JobDB = _load_job_db_class()
     db = JobDB(tmp_path / "jobs.db")

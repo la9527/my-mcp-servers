@@ -1157,7 +1157,7 @@ class PhotosMcpMenuController(NSObject):
         alert = NSAlert.alloc().init()
         alert.setMessageText_(f"전체 작업 기록 {historical_count}건을 삭제할까요?")
         alert.setInformativeText_(
-            "완료·실패·취소·재개 확인 필요 기록과 Photos MCP가 만든 결과·미리보기·임시 Google 다운로드를 모두 삭제합니다. "
+            "완료·실패·취소·중단·재개 확인 필요 기록과 Photos MCP가 만든 결과·미리보기·임시 Google 다운로드를 모두 삭제합니다. "
             "진행 중인 작업과 원본 사진은 삭제하지 않습니다."
         )
         alert.setAlertStyle_(NSAlertStyleCritical)

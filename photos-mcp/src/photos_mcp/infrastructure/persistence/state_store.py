@@ -11,7 +11,7 @@ from typing import Any
 
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
-TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
+TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
 ACTIVE_JOB_STATUSES = {"pending", "running", "waiting_source", "waiting_model", "writing"}
 RECOVERY_JOB_STATUSES = {"awaiting_resume_approval"}
 HISTORICAL_JOB_STATUSES = TERMINAL_JOB_STATUSES | RECOVERY_JOB_STATUSES

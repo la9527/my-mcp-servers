@@ -18,6 +18,7 @@ class JobStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
 
 
 @dataclass
@@ -200,6 +201,7 @@ class JobQueue:
             JobStatus.COMPLETED,
             JobStatus.FAILED,
             JobStatus.CANCELLED,
+            JobStatus.INTERRUPTED,
         }:
             return False
 
@@ -220,6 +222,7 @@ class JobQueue:
             JobStatus.COMPLETED,
             JobStatus.FAILED,
             JobStatus.CANCELLED,
+            JobStatus.INTERRUPTED,
         }
         removed: list[str] = []
         for job_id, job in list(self._jobs.items()):

@@ -416,16 +416,18 @@ class PhotosMcpMainWindowController(NSWindowController):
         self._label(server, 38.0, 10.0, 96.0, 20.0, "서버 실행 중", bold=True, size=11.5)
 
         completed = sum(job.status == "completed" for job in jobs)
-        failed = sum(job.tone == "error" for job in jobs)
+        interrupted = sum(job.status == "interrupted" for job in jobs)
+        failed = sum(job.status == "failed" for job in jobs)
         active = sum(job.can_cancel for job in jobs)
         filter_y = top - 126.0
         filters = (
             ("all", f"전체 {len(jobs)}"),
             ("active", f"진행 중 {active}"),
             ("completed", f"완료 {completed}"),
+            ("interrupted", f"중단 {interrupted}"),
             ("failed", f"실패 {failed}"),
         )
-        filter_width = min(108.0, (usable - 18.0) / 4.0)
+        filter_width = min(108.0, (usable - 24.0) / 5.0)
         for index, (key, title) in enumerate(filters):
             button = self._button(
                 parent,
@@ -447,7 +449,8 @@ class PhotosMcpMainWindowController(NSWindowController):
             if self._job_filter == "all"
             or (self._job_filter == "active" and job.can_cancel)
             or (self._job_filter == "completed" and job.status == "completed")
-            or (self._job_filter == "failed" and job.tone == "error")
+            or (self._job_filter == "interrupted" and job.status == "interrupted")
+            or (self._job_filter == "failed" and job.status == "failed")
         ]
         if filtered_jobs and not any(job.job_id == self._selected_job_id for job in filtered_jobs):
             try:
@@ -517,7 +520,15 @@ class PhotosMcpMainWindowController(NSWindowController):
         else:
             detail_card = self._card(detail, 14.0, 52.0, detail_width - 28.0, panel_height - 104.0, selected_job.tone)
             self._label(detail_card, 18.0, panel_height - 148.0, detail_width - 150.0, 26.0, selected_job.title, bold=True, size=17.0)
-            status_title = "진행 중" if selected_job.can_cancel else ("완료" if selected_job.status == "completed" else "확인 필요")
+            status_title = (
+                "진행 중"
+                if selected_job.can_cancel
+                else "완료"
+                if selected_job.status == "completed"
+                else "다시 실행 필요"
+                if selected_job.status == "interrupted"
+                else "확인 필요"
+            )
             self._status_pill(detail_card, detail_width - 126.0, panel_height - 146.0, status_title, selected_job.tone)
             self._divider(detail_card, 18.0, panel_height - 162.0, detail_width - 64.0)
             self._label(detail_card, 18.0, panel_height - 204.0, 92.0, 18.0, "현재 상태", secondary=True, size=10.0)
@@ -534,6 +545,20 @@ class PhotosMcpMainWindowController(NSWindowController):
                 self._button(detail, 26.0 + button_width, 14.0, button_width, 32.0, "기록 삭제", self._menu_controller, "deleteJobWithConfirmation:", identifier=selected_job.job_id)
             elif selected_job.can_cancel:
                 self._button(detail, 18.0, 14.0, detail_width - 36.0, 32.0, "작업 취소", self._menu_controller, "cancelJob:", identifier=selected_job.job_id)
+            elif selected_job.status == "interrupted":
+                button_width = (detail_width - 44.0) / 2.0
+                self._button(
+                    detail,
+                    18.0,
+                    14.0,
+                    button_width,
+                    32.0,
+                    "다시 분류 설정",
+                    self._menu_controller,
+                    "showDirectClassification:",
+                    primary=True,
+                )
+                self._button(detail, 26.0 + button_width, 14.0, button_width, 32.0, "기록 삭제", self._menu_controller, "deleteJobWithConfirmation:", identifier=selected_job.job_id)
             else:
                 self._button(detail, 18.0, 14.0, detail_width - 36.0, 32.0, "기록 삭제", self._menu_controller, "deleteJobWithConfirmation:", identifier=selected_job.job_id)
 

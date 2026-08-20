@@ -154,7 +154,7 @@ class PhotoRankerJobStore:
         return paths
 
     def reconcile_orphaned_jobs_after_restart(self) -> list[str]:
-        """Fail durable active jobs that are absent from the fresh process queue.
+        """Mark durable active jobs absent from the fresh queue as interrupted.
 
         The vendor queue is intentionally in-memory. After an app restart, a
         pending or running DB row cannot continue unless it was explicitly
@@ -173,9 +173,9 @@ class PhotoRankerJobStore:
 
             status = getattr(job, "status", "")
             try:
-                job.status = type(status)("failed")
+                job.status = type(status)("interrupted")
             except (TypeError, ValueError):
-                job.status = "failed"
+                job.status = "interrupted"
             job.finished_at = finished_at
             job.error_message = "app_restarted_before_completion"
             self.db.save_job(job)
@@ -331,7 +331,7 @@ class PhotoRankerJobStore:
         *,
         cleanup_artifacts: bool = True,
     ) -> list[str]:
-        target_statuses = statuses or ("completed", "failed", "cancelled")
+        target_statuses = statuses or ("completed", "failed", "cancelled", "interrupted")
         deleted_from_db = self.db.clear_job_history(statuses=target_statuses)
 
         deleted_from_queue: list[str] = []

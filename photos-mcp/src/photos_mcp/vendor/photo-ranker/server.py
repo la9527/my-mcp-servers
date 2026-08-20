@@ -1110,7 +1110,7 @@ async def delete_job(job_id: str) -> str:
     if not job:
         return json.dumps({"job_id": job_id, "deleted": False, "error": "Job not found"})
 
-    if job.status.value not in {"completed", "failed", "cancelled"}:
+    if job.status.value not in {"completed", "failed", "cancelled", "interrupted"}:
         return json.dumps(
             {
                 "job_id": job_id,
@@ -1133,19 +1133,19 @@ async def delete_job(job_id: str) -> str:
 async def clear_job_history(status: str = "") -> str:
     """Delete terminal job history, optionally filtered by one terminal status."""
     normalized_status = status.strip().lower()
-    if normalized_status and normalized_status not in {"completed", "failed", "cancelled"}:
+    if normalized_status and normalized_status not in {"completed", "failed", "cancelled", "interrupted"}:
         return json.dumps(
             {
                 "deleted_count": 0,
                 "deleted_job_ids": [],
-                "error": "status must be one of completed, failed, cancelled",
+                "error": "status must be one of completed, failed, cancelled, interrupted",
             }
         )
 
     target_statuses = (
         (normalized_status,)
         if normalized_status
-        else ("completed", "failed", "cancelled")
+        else ("completed", "failed", "cancelled", "interrupted")
     )
     queue_statuses = {JobStatus(value) for value in target_statuses}
 

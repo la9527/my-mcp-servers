@@ -56,7 +56,7 @@ class _DB:
         deleted = [
             job_id
             for job_id, job in list(self.jobs.items())
-            if job.status.value in (statuses or ("completed", "failed", "cancelled"))
+            if job.status.value in (statuses or ("completed", "failed", "cancelled", "interrupted"))
         ]
         for job_id in deleted:
             self.jobs.pop(job_id, None)
@@ -118,7 +118,7 @@ def test_photo_ranker_job_store_lists_merged_snapshots_with_queue_precedence() -
     assert snapshots["queue-only"].status == "pending"
 
 
-def test_reconcile_orphaned_jobs_after_restart_fails_only_db_active_jobs() -> None:
+def test_reconcile_orphaned_jobs_after_restart_marks_only_db_active_jobs_interrupted() -> None:
     orphaned_pending = _Job("orphaned-pending", _Status("pending"))
     orphaned_running = _Job("orphaned-running", _Status("running"))
     restored = _Job("restored", _Status("pending"))
@@ -129,8 +129,8 @@ def test_reconcile_orphaned_jobs_after_restart_fails_only_db_active_jobs() -> No
     reconciled = store.reconcile_orphaned_jobs_after_restart()
 
     assert reconciled == ["orphaned-pending", "orphaned-running"]
-    assert orphaned_pending.status.value == "failed"
-    assert orphaned_running.status.value == "failed"
+    assert orphaned_pending.status.value == "interrupted"
+    assert orphaned_running.status.value == "interrupted"
     assert orphaned_pending.error_message == "app_restarted_before_completion"
     assert orphaned_pending.finished_at is not None
     assert restored.status.value == "pending"
@@ -212,15 +212,23 @@ def test_delete_job_artifacts_removes_only_direct_managed_job_directory(
 
 
 def test_photo_ranker_job_store_clears_terminal_history_in_db_and_queue() -> None:
-    db = _DB([_Job("db-done", _Status("completed")), _Job("db-active", _Status("running"))])
-    queue = _Queue([_Job("queue-done", _Status("failed")), _Job("queue-active", _Status("pending"))])
+    db = _DB([
+        _Job("db-done", _Status("completed")),
+        _Job("db-interrupted", _Status("interrupted")),
+        _Job("db-active", _Status("running")),
+    ])
+    queue = _Queue([
+        _Job("queue-done", _Status("failed")),
+        _Job("queue-interrupted", _Status("interrupted")),
+        _Job("queue-active", _Status("pending")),
+    ])
     store = PhotoRankerJobStore(_Module(db, queue))
 
     deleted = store.clear_terminal_history()
 
-    assert deleted == ["db-done", "queue-done"]
-    assert db.clear_statuses == ("completed", "failed", "cancelled")
-    assert queue.removed == ["queue-done"]
+    assert deleted == ["db-done", "db-interrupted", "queue-done", "queue-interrupted"]
+    assert db.clear_statuses == ("completed", "failed", "cancelled", "interrupted")
+    assert queue.removed == ["queue-done", "queue-interrupted"]
 
 
 def test_photo_ranker_job_store_returns_sanitized_review_items() -> None:
