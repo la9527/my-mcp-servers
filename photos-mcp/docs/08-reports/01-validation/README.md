@@ -35,3 +35,4 @@ YYYY-MM-DD-<검증-대상>.md
 - [2026-08-20 Google Photos 실계정 E2E 검증](21-google-photos-real-account-e2e-2026-08-20.md)
 - [2026-08-20 Linux Qwen3.8 VLM 기본값·실사진 검증](22-linux-qwen38-vision-runtime-2026-08-20.md)
 - [2026-08-20 Google Photos 취소·만료 예외 흐름 검증](23-google-photos-exception-flow-2026-08-20.md)
+- [2026-08-21 추천 다양성 검토 큐 재준비](24-recommendation-diversity-review-refresh-2026-08-21.md): 삭제된 과거 작업과 분리해 현재 보존된 결과의 개인 검토 큐를 다시 만들고, 두 번째 추천 중복 label 재수집 기준을 기록했다.
