@@ -38,6 +38,7 @@ from photos_mcp.interfaces.appkit.menu.presentation import (
     build_job_history_view_models,
     build_menu_view_model,
 )
+from photos_mcp.interfaces.appkit.people.controller import PhotosMcpPeopleManagerController
 from photos_mcp.interfaces.appkit.shared.theme import (
     ICON_SIZE,
     accent_color,
@@ -63,6 +64,7 @@ _SYSTEM_SYMBOLS = {
     "classification": "photo.on.rectangle.angled",
     "jobs": "clock.arrow.circlepath",
     "environment": "checkmark.shield",
+    "people": "person.2",
     "device-mac-mini": "macmini",
     "device-workstation": "desktopcomputer",
     "model-chip": "cpu",
@@ -117,6 +119,7 @@ class PhotosMcpMainWindowController(NSWindowController):
         self._is_rebuilding = False
         self._render_signature = None
         self._direct_view = None
+        self._people_manager = None
         self._icons: dict[tuple[str, float, bool], Any] = {}
         self._runtime_snapshot = vision_runtime_summary(check_ready=False)
         self._is_runtime_checking = False
@@ -150,7 +153,7 @@ class PhotosMcpMainWindowController(NSWindowController):
 
     @objc.python_method
     def showTab_(self, tab: str) -> None:
-        if tab not in {"home", "classification", "jobs", "environment"}:
+        if tab not in {"home", "classification", "jobs", "environment", "people"}:
             tab = "home"
         if self._selected_tab == "jobs" and tab != "jobs":
             self._remember_job_scroll_position()
@@ -196,6 +199,7 @@ class PhotosMcpMainWindowController(NSWindowController):
                 "classification": self._build_classification,
                 "jobs": self._build_jobs,
                 "environment": self._build_environment,
+                "people": self._build_people,
             }[self._selected_tab](content, width - sidebar_width, height)
             self._render_signature = self._view_signature(self._snapshot)
         finally:
@@ -236,6 +240,7 @@ class PhotosMcpMainWindowController(NSWindowController):
             ("classification", "사진 분류"),
             ("jobs", "작업 기록"),
             ("environment", "환경 및 권한"),
+            ("people", "인물 관리"),
         )
         y = height - 138.0
         for key, title in items:
@@ -354,6 +359,12 @@ class PhotosMcpMainWindowController(NSWindowController):
 
     def openEnvironment_(self, _sender) -> None:
         self.showTab_("environment")
+
+    @objc.python_method
+    def _build_people(self, parent: Any, width: float, height: float) -> None:
+        if self._people_manager is None:
+            self._people_manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(self)
+        self._people_manager.renderInParent_width_height_(parent, width, height)
 
     @objc.python_method
     def _build_classification(self, parent: Any, width: float, height: float) -> None:

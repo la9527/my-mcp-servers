@@ -13,6 +13,7 @@ from AppKit import (
     NSImage,
     NSImageView,
     NSOutlineView,
+    NSPopUpButton,
     NSScrollView,
     NSStackView,
     NSSplitView,
@@ -40,6 +41,8 @@ from photos_mcp.local_file_selection_appkit import (
     _scan_local_photos,
 )
 from photos_mcp.interfaces.appkit.main.controller import PhotosMcpMainWindowController
+from photos_mcp.interfaces.appkit.people.controller import PhotosMcpPeopleManagerController
+from photos_mcp.application.person_identity_management import PeopleCatalog, PersonFace, PersonIdentity
 from photos_mcp.ui_theme import scaled_font_size
 
 
@@ -197,12 +200,12 @@ def test_main_window_has_native_sidebar_and_home_actions() -> None:
     assert float(controller.window().minSize().width) == 1180.0
     assert float(controller.window().minSize().height) == 760.0
     assert {"Photos MCP", "최근 작업", "환경 및 권한"}.issubset(labels)
-    assert {"홈", "사진 분류", "작업 기록", "환경 및 권한", "시작"}.issubset(
+    assert {"홈", "사진 분류", "작업 기록", "환경 및 권한", "인물 관리", "시작"}.issubset(
         str(button.title() or "") for button in buttons
     )
     sidebar_buttons = [button for button in buttons if str(button.identifier() or "")]
-    assert all(button.image() is not None for button in sidebar_buttons[:4])
-    assert all(float(button.frame().origin.x) == 20.0 for button in sidebar_buttons[:4])
+    assert all(button.image() is not None for button in sidebar_buttons[:5])
+    assert all(float(button.frame().origin.x) == 20.0 for button in sidebar_buttons[:5])
 
     status_title = next(
         view
@@ -218,6 +221,97 @@ def test_main_window_has_native_sidebar_and_home_actions() -> None:
     ]
     assert float(status_title.frame().origin.x) == 44.0
     assert len(status_summaries) == 1
+
+
+def test_main_window_people_tab_has_a_local_only_empty_state() -> None:
+    NSApplication.sharedApplication()
+    controller = PhotosMcpMainWindowController.alloc().initWithMenuController_(
+        _menu_controller(_snapshot())
+    )
+
+    controller.showTab_("people")
+    labels = {
+        str(view.stringValue() or "")
+        for view in _walk(controller.window().contentView())
+        if isinstance(view, NSTextField)
+    }
+
+    assert {"인물 관리", "인물 묶음", "관리할 얼굴이 없습니다"}.issubset(labels)
+
+
+def test_people_management_renders_merge_controls_for_multiple_groups() -> None:
+    NSApplication.sharedApplication()
+    main = PhotosMcpMainWindowController.alloc().initWithMenuController_(
+        _menu_controller(_snapshot())
+    )
+    manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(main)
+    face = PersonFace(
+        face_id="face-one",
+        job_id="job-one",
+        photo_id="photo-one",
+        face_index=0,
+        crop_path="/tmp/face-one.jpg",
+        preview_path="/tmp/photo-one.jpg",
+        source_photo_path="/tmp/photo-one.jpg",
+        embedding=(0.1, 0.2),
+        area=0.5,
+    )
+    second_face = PersonFace(
+        face_id="face-two",
+        job_id="job-two",
+        photo_id="photo-two",
+        face_index=0,
+        crop_path="/tmp/face-two.jpg",
+        preview_path="/tmp/photo-two.jpg",
+        source_photo_path="/tmp/photo-two.jpg",
+        embedding=(0.2, 0.1),
+        area=0.5,
+    )
+    peer_face = PersonFace(
+        face_id="face-peer",
+        job_id="job-one",
+        photo_id="photo-peer",
+        face_index=0,
+        crop_path="/tmp/face-peer.jpg",
+        preview_path="/tmp/photo-peer.jpg",
+        source_photo_path="/tmp/photo-peer.jpg",
+        embedding=(0.3, 0.2),
+        area=0.4,
+    )
+    manager._catalog = PeopleCatalog(
+        identities=(
+            PersonIdentity("auto-one", "", (face, peer_face), False),
+            PersonIdentity("auto-two", "다른 인물", (second_face,), False),
+        ),
+        face_count=2,
+        source_job_count=1,
+    )
+    manager._selected_identity_id = "auto-one"
+    main._people_manager = manager
+    main.showTab_("people")
+
+    descendants = list(_walk(main.window().contentView()))
+    assert any(isinstance(view, NSPopUpButton) for view in descendants)
+    assert any(
+        isinstance(view, NSButton) and str(view.title() or "") == "선택 묶음 병합"
+        for view in descendants
+    )
+    checkbox = next(
+        view
+        for view in descendants
+        if isinstance(view, NSButton)
+        and str(view.identifier() or "") == "face-one"
+        and str(view.title() or "") == "선택"
+    )
+    checkbox.performClick_(None)
+    assert manager._selected_face_ids == {"face-one"}
+    descendants = list(_walk(main.window().contentView()))
+    split_button = next(
+        view
+        for view in descendants
+        if isinstance(view, NSButton) and str(view.title() or "") == "선택 얼굴 새 묶음"
+    )
+    assert split_button.isEnabled()
 
 
 def test_main_window_hides_direct_classification_window_after_embedding() -> None:
