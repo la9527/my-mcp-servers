@@ -43,11 +43,30 @@ def _load_score_rows(database: Path, job_id: str) -> dict[str, dict]:
         }
 
 
+def _load_recommendation_min_score(database: Path, job_id: str) -> float | None:
+    """Load the original global score floor for an exact policy replay."""
+    with sqlite3.connect(database.expanduser()) as connection:
+        row = connection.execute(
+            "SELECT result_json FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+    if row is None or not row[0]:
+        return None
+    try:
+        summary = json.loads(str(row[0]))
+        value = summary.get("scene_recommendation_min_score")
+        return float(value) if value is not None else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
 def main() -> int:
     args = parse_args()
     started = time.perf_counter()
     queue = json.loads(args.review.expanduser().read_text(encoding="utf-8"))
-    rows = _load_score_rows(args.database, str(queue.get("job_id") or ""))
+    job_id = str(queue.get("job_id") or "")
+    rows = _load_score_rows(args.database, job_id)
+    recommendation_min_score = _load_recommendation_min_score(args.database, job_id)
 
     prepare_vendor_runtime("photo-ranker")
     scene_module = importlib.import_module("photos_mcp_vendor_photo_ranker.scene_selection")
@@ -106,6 +125,7 @@ def main() -> int:
         candidates = tuple(
             DiversityCandidate(
                 photo_id=str(candidate["photo_id"]),
+                total_score=float(candidate.get("total_score") or 0.0),
                 score_gap=float(winner.get("total_score") or 0.0)
                 - float(candidate.get("total_score") or 0.0),
                 vision_distance=float(
@@ -127,12 +147,14 @@ def main() -> int:
             DiversityScene(
                 scene_key=str(item.get("scene_cluster_id") or ""),
                 winner_id=winner_id,
+                winner_score=float(winner.get("total_score") or 0.0),
                 candidates=candidates,
                 saved_recommendations=tuple(
                     str(value) for value in item.get("auto_recommended_photo_ids") or [] if str(value)
                 ),
                 human_choices=human,
                 duplicate_labeled="duplicate" in (labels.get("failure_codes") or []),
+                recommendation_min_score=recommendation_min_score,
             )
         )
 
@@ -146,6 +168,7 @@ def main() -> int:
         {
             "analyzed_photo_count": len(analyzed_photo_ids),
             "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "recommendation_min_score": recommendation_min_score,
         }
     )
     text = json.dumps(summary, ensure_ascii=False, indent=2) + "\n"

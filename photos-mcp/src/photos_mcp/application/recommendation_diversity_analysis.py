@@ -9,6 +9,7 @@ from typing import Any, Iterable
 @dataclass(frozen=True)
 class DiversityCandidate:
     photo_id: str
+    total_score: float
     score_gap: float
     vision_distance: float
     phash_distance: float
@@ -18,10 +19,12 @@ class DiversityCandidate:
 class DiversityScene:
     scene_key: str
     winner_id: str
+    winner_score: float
     candidates: tuple[DiversityCandidate, ...]
     saved_recommendations: tuple[str, ...]
     human_choices: tuple[str, ...]
     duplicate_labeled: bool
+    recommendation_min_score: float | None = None
 
 
 SHADOW_DIVERSITY_POLICIES: tuple[dict[str, Any], ...] = (
@@ -52,8 +55,21 @@ def _policy_recommendations(
     phash_threshold: float | None,
     maximum_score_gap: float = 18.0,
 ) -> tuple[str, ...]:
+    # Selection mode can impose a global score floor in addition to the
+    # scene-local score gap and visual diversity checks.
+    if (
+        scene.recommendation_min_score is not None
+        and scene.winner_score < scene.recommendation_min_score
+    ):
+        return ()
+
     recommendations = [scene.winner_id]
     for candidate in scene.candidates:
+        if (
+            scene.recommendation_min_score is not None
+            and candidate.total_score < scene.recommendation_min_score
+        ):
+            break
         if candidate.score_gap > maximum_score_gap:
             continue
         if candidate.vision_distance < vision_threshold:
