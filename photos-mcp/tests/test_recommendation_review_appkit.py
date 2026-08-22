@@ -78,6 +78,25 @@ def test_person_composition_review_persists_label_without_changing_human_choice(
     assert stored["items"][0]["labels"]["best_photo_ids"] == []
 
 
+def test_person_composition_review_header_uses_person_label_progress(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PHOTOS_MCP_HOME", str(tmp_path))
+    NSApplication.sharedApplication()
+    controller = PhotosMcpRecommendationReviewController.alloc().initWithResultPayload_personCompositionReview_(
+        _result_payload(),
+        True,
+    )
+    controller._payload["items"][0]["labels"]["review_status"] = "completed"
+    controller.render()
+
+    labels = [
+        str(view.stringValue() or "")
+        for view in controller.window().contentView().subviews()
+        if hasattr(view, "stringValue")
+    ]
+    assert any("인물 구성 완료 0 · 남음 2장면" in label for label in labels)
+    controller.window().performClose_(None)
+
+
 def test_results_gallery_exposes_review_button_only_for_multi_photo_scenes() -> None:
     NSApplication.sharedApplication()
     menu_controller = type("MenuController", (), {})()
@@ -87,6 +106,8 @@ def test_results_gallery_exposes_review_button_only_for_multi_photo_scenes() -> 
     controller.showWithResult_(_result_payload(scene_count=1))
     assert controller._recommendation_review_button.isEnabled()
     assert controller._recommendation_review_button.accessibilityLabel() == "추천 품질 검토"
+    assert controller._person_composition_review_button.isEnabled()
+    assert controller._person_composition_review_button.accessibilityLabel() == "인물 구성 검토"
     assert controller._face_identity_review_button.accessibilityLabel() == "얼굴 동일인 검토"
     assert controller._face_identity_grouping_review_button.accessibilityLabel() == "복수 지지 검토"
 
@@ -104,6 +125,24 @@ def test_results_gallery_exposes_review_button_only_for_multi_photo_scenes() -> 
         }
     )
     assert not controller._recommendation_review_button.isEnabled()
+    assert not controller._person_composition_review_button.isEnabled()
+
+
+def test_results_gallery_opens_person_composition_review(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PHOTOS_MCP_HOME", str(tmp_path))
+    NSApplication.sharedApplication()
+    menu_controller = type("MenuController", (), {})()
+    menu_controller._snapshot = type("Snapshot", (), {})()
+    controller = PhotosMcpResultsController.alloc().initWithMenuController_(menu_controller)
+    controller.showWithResult_(_result_payload(scene_count=1))
+
+    controller.openPersonCompositionReview_(None)
+
+    review_controller = controller._person_composition_review_controller
+    assert review_controller is not None
+    assert review_controller._person_composition_review is True
+    assert review_controller.window().title() == "인물 구성 검토"
+    review_controller.window().performClose_(None)
 
 
 def test_results_gallery_reflows_review_and_export_actions_at_minimum_width() -> None:
@@ -116,10 +155,13 @@ def test_results_gallery_reflows_review_and_export_actions_at_minimum_width() ->
     controller._layout_view()
 
     review_frame = controller._face_identity_review_button.frame()
+    person_composition_frame = controller._person_composition_review_button.frame()
     grouping_review_frame = controller._face_identity_grouping_review_button.frame()
     export_frame = controller._json_export_button.frame()
-    assert review_frame.origin.y + review_frame.size.height <= export_frame.origin.y
-    assert grouping_review_frame.origin.y + grouping_review_frame.size.height <= export_frame.origin.y
+    # Review controls share the upper footer row with export actions but never overlap.
+    assert review_frame.origin.x + review_frame.size.width <= export_frame.origin.x
+    assert person_composition_frame.origin.x + person_composition_frame.size.width <= export_frame.origin.x
+    assert grouping_review_frame.origin.x + grouping_review_frame.size.width <= export_frame.origin.x
 
 
 def test_google_result_upload_action_is_source_gated_and_requires_selection() -> None:

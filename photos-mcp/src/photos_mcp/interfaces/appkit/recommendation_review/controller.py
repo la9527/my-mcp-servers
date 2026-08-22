@@ -340,13 +340,21 @@ class PhotosMcpRecommendationReviewController(NSWindowController):
                 else "사진을 클릭하면 1순위, Shift+숫자 또는 ‘2순위’ 버튼으로 두 번째 사진을 선택합니다."
             )
             self._label(root, _MARGIN, height - 56.0, width - 2 * _MARGIN, 32.0, title, 22.0, True)
+            progress_text = (
+                f"장면 {self._index + 1} / {len(self._payload['items'])} · "
+                f"인물 구성 완료 {summary['person_composition_completed_scene_count']} · "
+                f"남음 {summary['person_composition_remaining_scene_count']}장면"
+                if self._person_composition_review
+                else f"장면 {self._index + 1} / {len(self._payload['items'])} · "
+                f"완료 {summary['completed_scene_count']} · 건너뜀 {summary['skipped_scene_count']}"
+            )
             self._label(
                 root,
                 _MARGIN,
                 height - 84.0,
                 width - 2 * _MARGIN,
                 20.0,
-                f"장면 {self._index + 1} / {len(self._payload['items'])} · 완료 {summary['completed_scene_count']} · 건너뜀 {summary['skipped_scene_count']}",
+                progress_text,
                 11.0,
                 False,
                 secondary=True,

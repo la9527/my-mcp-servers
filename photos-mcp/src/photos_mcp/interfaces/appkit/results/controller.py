@@ -153,6 +153,7 @@ class PhotosMcpResultsController(NSWindowController):
         self._computed_columns = 3
         self._viewer_controller = PhotosMcpPhotoViewerController.alloc().init()
         self._recommendation_review_controller = None
+        self._person_composition_review_controller = None
         self._face_identity_review_controller = None
         self._face_identity_grouping_review_controller = None
         self._selection_executor = ThreadPoolExecutor(
@@ -335,6 +336,9 @@ class PhotosMcpResultsController(NSWindowController):
     def openRecommendationReview_(self, _sender) -> None:
         self._open_recommendation_review(person_composition_review=False)
 
+    def openPersonCompositionReview_(self, _sender) -> None:
+        self._open_recommendation_review(person_composition_review=True)
+
     def openFaceIdentityReview_(self, _sender) -> None:
         try:
             payload = {
@@ -385,15 +389,19 @@ class PhotosMcpResultsController(NSWindowController):
                 "job_id": str(self._payload.get("job_id") or ""),
                 "items": [dict(item) for item in self._items],
             }
-            self._recommendation_review_controller = (
+            controller = (
                 PhotosMcpRecommendationReviewController.alloc().initWithResultPayload_personCompositionReview_(
                     payload,
                     person_composition_review,
                 )
             )
-            self._recommendation_review_controller.window().center()
-            self._recommendation_review_controller.showWindow_(None)
-            self._recommendation_review_controller.window().makeKeyAndOrderFront_(None)
+            if person_composition_review:
+                self._person_composition_review_controller = controller
+            else:
+                self._recommendation_review_controller = controller
+            controller.window().center()
+            controller.showWindow_(None)
+            controller.window().makeKeyAndOrderFront_(None)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             title = "인물 구성 검토를 열 수 없습니다" if person_composition_review else "추천 품질 검토를 열 수 없습니다"
             self._show_alert(title, str(exc))
@@ -627,6 +635,11 @@ class PhotosMcpResultsController(NSWindowController):
             "추천 품질 검토",
             "openRecommendationReview:",
         )
+        self._person_composition_review_button = self._button(
+            root,
+            "인물 구성 검토",
+            "openPersonCompositionReview:",
+        )
         self._face_identity_review_button = self._button(
             root,
             "얼굴 동일인 검토",
@@ -690,8 +703,11 @@ class PhotosMcpResultsController(NSWindowController):
             self._density_label.setFrame_(NSMakeRect(density_x + 40.0, toolbar_y + 7.0, 70.0, 20.0))
             self._density_larger.setFrame_(NSMakeRect(density_x + 114.0, toolbar_y, 36.0, 32.0))
 
-            compact_footer = width < 1500.0 or self._is_google_result()
-            body_y = 118.0 if compact_footer else 76.0
+            # Reserve two footer rows for review tools and output controls so
+            # every review entry remains usable at the minimum window width.
+            # Google uploads add a third row because their album button is wider.
+            is_google_result = self._is_google_result()
+            body_y = 160.0 if is_google_result else 118.0
             body_top = toolbar_y - 14.0
             body_height = max(240.0, body_top - body_y)
             self._scroll_view.setFrame_(NSMakeRect(margin, body_y, gallery_width, body_height))
@@ -704,7 +720,8 @@ class PhotosMcpResultsController(NSWindowController):
             self._layout_inspector(inspector_width, height - body_y - 32.0)
 
             footer_y = 24.0
-            action_y = 66.0 if compact_footer else footer_y
+            action_y = 66.0
+            review_y = 108.0 if is_google_result else 66.0
             self._finder_button.setFrame_(NSMakeRect(margin, footer_y, 150.0, 34.0))
             self._selection_label.setFrame_(NSMakeRect(margin + 166.0, footer_y + 7.0, 100.0, 20.0))
             self._selection_hint_label.setFrame_(NSMakeRect(margin + 166.0, 4.0, 190.0, 16.0))
@@ -712,13 +729,16 @@ class PhotosMcpResultsController(NSWindowController):
             self._select_all_button.setFrame_(NSMakeRect(margin + 416.0, footer_y, 86.0, 34.0))
             self._clear_all_button.setFrame_(NSMakeRect(margin + 508.0, footer_y, 86.0, 34.0))
             self._recommendation_review_button.setFrame_(
-                NSMakeRect(margin + 606.0, footer_y, 150.0, 34.0)
+                NSMakeRect(margin, review_y, 150.0, 34.0)
+            )
+            self._person_composition_review_button.setFrame_(
+                NSMakeRect(margin + 158.0, review_y, 150.0, 34.0)
             )
             self._face_identity_review_button.setFrame_(
-                NSMakeRect(margin + 764.0, footer_y, 150.0, 34.0)
+                NSMakeRect(margin + 316.0, review_y, 150.0, 34.0)
             )
             self._face_identity_grouping_review_button.setFrame_(
-                NSMakeRect(margin + 922.0, footer_y, 150.0, 34.0)
+                NSMakeRect(margin + 474.0, review_y, 150.0, 34.0)
             )
             self._json_export_button.setFrame_(NSMakeRect(width - margin - 414.0, action_y, 96.0, 34.0))
             self._google_upload_button.setFrame_(
@@ -978,6 +998,7 @@ class PhotosMcpResultsController(NSWindowController):
         if hasattr(self, "_recommendation_review_button"):
             enabled = any(int(item.get("scene_cluster_size") or 1) > 1 for item in self._items)
             self._recommendation_review_button.setEnabled_(enabled)
+            self._person_composition_review_button.setEnabled_(enabled)
             job_id = str(self._payload.get("job_id") or "")
             self._face_identity_review_button.setEnabled_(
                 enabled and face_measurements_path(job_id).is_file()
