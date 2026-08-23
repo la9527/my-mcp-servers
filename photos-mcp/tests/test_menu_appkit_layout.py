@@ -10,6 +10,8 @@ from AppKit import (
     NSButton,
     NSCollectionView,
     NSControlSizeLarge,
+    NSControlStateValueOn,
+    NSEventModifierFlagCommand,
     NSImage,
     NSImageView,
     NSOutlineView,
@@ -18,6 +20,7 @@ from AppKit import (
     NSStackView,
     NSSplitView,
     NSTextField,
+    NSView,
     NSWindowZoomButton,
 )
 from Foundation import NSDate, NSIndexPath, NSMakePoint, NSMakeRect, NSMakeSize, NSRunLoop, NSSet
@@ -42,6 +45,7 @@ from photos_mcp.local_file_selection_appkit import (
 )
 from photos_mcp.interfaces.appkit.main.controller import PhotosMcpMainWindowController
 from photos_mcp.interfaces.appkit.people.controller import PhotosMcpPeopleManagerController
+from photos_mcp.interfaces.appkit.people.drag_views import IdentityDragHandle, IdentityDropRowView
 from photos_mcp.application.person_identity_management import PeopleCatalog, PersonFace, PersonIdentity
 from photos_mcp.ui_theme import scaled_font_size
 
@@ -239,7 +243,7 @@ def test_main_window_people_tab_has_a_local_only_empty_state() -> None:
     assert {"인물 관리", "인물 묶음", "관리할 얼굴이 없습니다"}.issubset(labels)
 
 
-def test_people_management_renders_merge_controls_for_multiple_groups() -> None:
+def test_people_management_renders_drag_drop_controls_for_multiple_groups() -> None:
     NSApplication.sharedApplication()
     main = PhotosMcpMainWindowController.alloc().initWithMenuController_(
         _menu_controller(_snapshot())
@@ -291,27 +295,422 @@ def test_people_management_renders_merge_controls_for_multiple_groups() -> None:
     main.showTab_("people")
 
     descendants = list(_walk(main.window().contentView()))
-    assert any(isinstance(view, NSPopUpButton) for view in descendants)
+    source_buttons = [
+        view
+        for view in descendants
+        if (
+            isinstance(view, NSButton)
+            and str(view.title() or "") == ""
+            and "원본 사진 보기" in str(view.accessibilityLabel() or "")
+        )
+    ]
+    exclude_buttons = [
+        view
+        for view in descendants
+        if (
+            isinstance(view, NSButton)
+            and str(view.title() or "") == ""
+            and "얼굴 아님으로 표시" in str(view.accessibilityLabel() or "")
+        )
+    ]
+    assert source_buttons and exclude_buttons
+    for button in (*source_buttons, *exclude_buttons):
+        assert str(button.title() or "") == ""
+        assert button.image() is not None
+        assert button.frame().size.width >= 32.0
+        assert button.frame().size.height >= 32.0
+        assert str(button.toolTip() or "")
+        assert str(button.accessibilityHelp() or "")
+    assert str(source_buttons[0].toolTip()) == "원본 사진 보기"
+    assert str(exclude_buttons[0].toolTip()) == "얼굴 아님으로 표시"
     assert any(
-        isinstance(view, NSButton) and str(view.title() or "") == "선택 묶음 병합"
+        isinstance(view, NSTextField) and str(view.stringValue() or "") == "얼굴을 여기에 놓아 새 인물 그룹 만들기"
         for view in descendants
     )
-    checkbox = next(
+    assert any(isinstance(view, NSButton) and str(view.title() or "") == "새 그룹 만들기" for view in descendants)
+    assert any(isinstance(view, NSButton) and str(view.title() or "") == "선택 이동" for view in descendants)
+    assert any(isinstance(view, NSButton) and str(view.title() or "") == "그룹 전체 병합" for view in descendants)
+    assert not any(
+        isinstance(view, NSTextField) and str(view.stringValue() or "") == ":::"
+        for view in descendants
+    )
+    assert any(
+        isinstance(view, NSButton) and str(view.title() or "") == "대표 사진 보기"
+        for view in descendants
+    )
+
+
+def test_people_face_grid_starts_at_the_top_when_its_content_is_short() -> None:
+    NSApplication.sharedApplication()
+    main = PhotosMcpMainWindowController.alloc().initWithMenuController_(_menu_controller(_snapshot()))
+    manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(main)
+    face = PersonFace(
+        face_id="face-one",
+        job_id="job-one",
+        photo_id="photo-one",
+        face_index=0,
+        crop_path="/tmp/face-one.jpg",
+        preview_path="/tmp/photo-one.jpg",
+        source_photo_path="/tmp/photo-one.jpg",
+        embedding=(0.1, 0.2),
+        area=0.5,
+    )
+    identity = PersonIdentity("auto-one", "", (face,), False)
+    parent = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 400.0, 500.0))
+
+    manager._face_gallery(parent, 0.0, 0.0, 320.0, 420.0, identity)
+
+    scroll = next(view for view in parent.subviews() if isinstance(view, NSScrollView))
+    document = scroll.documentView()
+    card = document.subviews()[0]
+    assert float(document.frame().size.height) >= 420.0
+    assert float(card.frame().origin.y) > 200.0
+
+
+def test_people_identity_list_starts_at_the_top_when_its_content_is_short() -> None:
+    NSApplication.sharedApplication()
+    main = PhotosMcpMainWindowController.alloc().initWithMenuController_(_menu_controller(_snapshot()))
+    manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(main)
+    face = PersonFace(
+        face_id="face-one",
+        job_id="job-one",
+        photo_id="photo-one",
+        face_index=0,
+        crop_path="/tmp/face-one.jpg",
+        preview_path="/tmp/photo-one.jpg",
+        source_photo_path="/tmp/photo-one.jpg",
+        embedding=(0.1, 0.2),
+        area=0.5,
+    )
+    manager._catalog = PeopleCatalog(
+        tuple(PersonIdentity(f"person-{index}", f"인물 {index}", (face,), True) for index in range(3)),
+        3,
+        1,
+    )
+    manager._selected_identity_id = "person-0"
+    parent = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 400.0, 900.0))
+
+    manager._identity_list(parent, 0.0, 0.0, 320.0, 820.0)
+
+    scroll = next(view for view in _walk(parent) if isinstance(view, NSScrollView))
+    document = scroll.documentView()
+    rows = [view for view in document.subviews() if isinstance(view, IdentityDropRowView)]
+    first_row = next(view for view in rows if str(view.identifier()) == "person-0")
+    top_gap = float(document.frame().size.height) - float(
+        first_row.frame().origin.y + first_row.frame().size.height
+    )
+    assert float(document.frame().size.height) >= float(scroll.contentSize().height)
+    assert top_gap == pytest.approx(6.0)
+
+
+@pytest.mark.parametrize("gallery_width", [603.0, 604.0, 757.0, 758.0])
+def test_people_face_grid_never_clips_the_last_column(gallery_width: float) -> None:
+    NSApplication.sharedApplication()
+    main = PhotosMcpMainWindowController.alloc().initWithMenuController_(_menu_controller(_snapshot()))
+    manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(main)
+    faces = tuple(
+        PersonFace(
+            face_id=f"face-{index}",
+            job_id="job-one",
+            photo_id=f"photo-{index}",
+            face_index=index,
+            crop_path=f"/tmp/face-{index}.jpg",
+            preview_path=f"/tmp/photo-{index}.jpg",
+            source_photo_path=f"/tmp/photo-{index}.jpg",
+            embedding=(0.1, 0.2),
+            area=0.5,
+        )
+        for index in range(12)
+    )
+    parent = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, gallery_width, 500.0))
+
+    manager._face_gallery(
+        parent,
+        0.0,
+        0.0,
+        gallery_width,
+        420.0,
+        PersonIdentity("auto-one", "", faces, False),
+    )
+
+    document = next(view for view in parent.subviews() if isinstance(view, NSScrollView)).documentView()
+    assert all(
+        float(card.frame().origin.x + card.frame().size.width) <= float(document.frame().size.width)
+        for card in document.subviews()
+    )
+
+
+def test_people_identity_row_uses_whole_row_selection_without_stealing_drag_handle() -> None:
+    NSApplication.sharedApplication()
+    main = PhotosMcpMainWindowController.alloc().initWithMenuController_(_menu_controller(_snapshot()))
+    manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(main)
+    face = PersonFace(
+        face_id="face-one",
+        job_id="job-one",
+        photo_id="photo-one",
+        face_index=0,
+        crop_path="/tmp/face-one.jpg",
+        preview_path="/tmp/photo-one.jpg",
+        source_photo_path="/tmp/photo-one.jpg",
+        embedding=(0.1, 0.2),
+        area=0.5,
+    )
+    peer = PersonFace(
+        face_id="face-two",
+        job_id="job-one",
+        photo_id="photo-two",
+        face_index=0,
+        crop_path="/tmp/face-two.jpg",
+        preview_path="/tmp/photo-two.jpg",
+        source_photo_path="/tmp/photo-two.jpg",
+        embedding=(0.2, 0.3),
+        area=0.4,
+    )
+    manager._catalog = PeopleCatalog(
+        (
+            PersonIdentity("auto-one", "", (face,), False),
+            PersonIdentity("auto-two", "", (peer,), False),
+        ),
+        2,
+        1,
+    )
+    manager._selected_identity_id = "auto-one"
+    parent = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 400.0, 500.0))
+    manager._identity_list(parent, 0.0, 0.0, 320.0, 420.0)
+    rows = [view for view in _walk(parent) if isinstance(view, IdentityDropRowView)]
+    row = next(view for view in rows if str(view.identifier()) == "auto-one")
+    peer_row = next(view for view in rows if str(view.identifier()) == "auto-two")
+    handle = next(view for view in row.subviews() if isinstance(view, IdentityDragHandle))
+    document = row.superview()
+
+    point_in_row = NSMakePoint(
+        float(row.frame().origin.x) + 20.0,
+        float(row.frame().origin.y) + 20.0,
+    )
+    point_in_peer = NSMakePoint(
+        float(peer_row.frame().origin.x) + 20.0,
+        float(peer_row.frame().origin.y) + 20.0,
+    )
+    point_in_handle = NSMakePoint(
+        float(row.frame().origin.x) + float(handle.frame().origin.x) + 4.0,
+        float(row.frame().origin.y) + float(handle.frame().origin.y) + 4.0,
+    )
+
+    assert document.hitTest_(point_in_row) is row
+    assert document.hitTest_(point_in_peer) is peer_row
+    assert document.hitTest_(point_in_handle) is handle
+    assert row.hitTest_(point_in_peer) is None
+
+
+def test_invalid_people_drop_does_not_replace_existing_undo_state() -> None:
+    NSApplication.sharedApplication()
+    main = PhotosMcpMainWindowController.alloc().initWithMenuController_(_menu_controller(_snapshot()))
+    manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(main)
+    face = PersonFace(
+        face_id="face-one",
+        job_id="job-one",
+        photo_id="photo-one",
+        face_index=0,
+        crop_path="/tmp/face-one.jpg",
+        preview_path="/tmp/photo-one.jpg",
+        source_photo_path="/tmp/photo-one.jpg",
+        embedding=(0.1, 0.2),
+        area=0.5,
+    )
+    manager._catalog = PeopleCatalog((PersonIdentity("auto-one", "", (face,), False),), 1, 1)
+    manager._undo_snapshot = {"sentinel": True}
+    manager._undo_message = "기존 변경"
+
+    accepted = manager.acceptPersonDrop_payload_(
+        "auto-one",
+        {
+            "source_identity_id": "auto-one",
+            "face_ids": ["face-one"],
+            "drag_type": "com.nanobot.photos-mcp.people.face",
+        },
+    )
+
+    assert accepted is False
+    assert manager._undo_snapshot == {"sentinel": True}
+    assert manager._undo_message == "기존 변경"
+
+
+def test_people_drop_rejects_unknown_version_and_mixed_stale_faces() -> None:
+    NSApplication.sharedApplication()
+    main = PhotosMcpMainWindowController.alloc().initWithMenuController_(_menu_controller(_snapshot()))
+    manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(main)
+    source_face = PersonFace("face-one", "job", "photo-one", 0, "/tmp/a", "/tmp/a", "/tmp/a", (0.1,), 0.5)
+    target_face = PersonFace("face-two", "job", "photo-two", 0, "/tmp/b", "/tmp/b", "/tmp/b", (0.2,), 0.5)
+    manager._catalog = PeopleCatalog(
+        (
+            PersonIdentity("auto-one", "", (source_face,), False),
+            PersonIdentity("auto-two", "", (target_face,), False),
+        ),
+        2,
+        1,
+    )
+    payload = {
+        "version": 1,
+        "source_identity_id": "auto-one",
+        "face_ids": ["face-one", "stale-face"],
+        "drag_type": "com.nanobot.photos-mcp.people.face",
+    }
+
+    assert manager.canAcceptPersonDrop_payload_("auto-two", payload) is False
+    payload["face_ids"] = ["face-one"]
+    payload["version"] = 999
+    assert manager.canAcceptPersonDrop_payload_("auto-two", payload) is False
+
+
+def test_people_row_mouse_and_keyboard_selection_use_the_whole_row() -> None:
+    NSApplication.sharedApplication()
+    main = PhotosMcpMainWindowController.alloc().initWithMenuController_(_menu_controller(_snapshot()))
+    manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(main)
+    face = PersonFace("face-one", "job", "photo-one", 0, "/tmp/a", "/tmp/a", "/tmp/a", (0.1,), 0.5)
+    peer = PersonFace("face-two", "job", "photo-two", 0, "/tmp/b", "/tmp/b", "/tmp/b", (0.2,), 0.5)
+    manager._catalog = PeopleCatalog(
+        (
+            PersonIdentity("auto-one", "", (face,), False),
+            PersonIdentity("auto-two", "", (peer,), False),
+        ),
+        2,
+        1,
+    )
+    manager._selected_identity_id = "auto-one"
+    parent = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 400.0, 500.0))
+    manager._identity_list(parent, 0.0, 0.0, 320.0, 420.0)
+    peer_row = next(
+        view for view in _walk(parent) if isinstance(view, IdentityDropRowView) and view.identity_id == "auto-two"
+    )
+    manager._name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 180.0, 28.0))
+    manager._name_field.setStringValue_("첫 인물 이름 초안")
+
+    # A real mouse event must not rely on NSButton's mouse-up tracking because
+    # selecting the row rebuilds this composite view.
+    peer_row.mouseDown_(SimpleNamespace())
+    assert manager._selected_identity_id == "auto-two"
+    assert manager._focused_identity_id == "auto-two"
+    assert manager._name_draft_identity_id == "auto-one"
+    assert manager._name_draft == "첫 인물 이름 초안"
+    manager._selected_identity_id = "auto-one"
+    peer_row.keyDown_(SimpleNamespace(charactersIgnoringModifiers=lambda: " "))
+    assert manager._selected_identity_id == "auto-two"
+    manager._selected_identity_id = "auto-one"
+    peer_row.performClick_(None)
+    assert manager._selected_identity_id == "auto-two"
+
+
+def test_people_face_checkbox_remembers_focus_across_rebuild() -> None:
+    NSApplication.sharedApplication()
+    main = PhotosMcpMainWindowController.alloc().initWithMenuController_(_menu_controller(_snapshot()))
+    manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(main)
+    face = PersonFace("face-one", "job", "photo-one", 0, "/tmp/a", "/tmp/a", "/tmp/a", (0.1,), 0.5)
+    manager._catalog = PeopleCatalog((PersonIdentity("auto-one", "", (face,), False),), 1, 1)
+    manager._selected_identity_id = "auto-one"
+    sender = NSButton.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 30.0, 26.0))
+    sender.setIdentifier_(face.face_id)
+    sender.setState_(NSControlStateValueOn)
+
+    manager.toggleFaceSelection_(sender)
+
+    assert manager._selected_face_ids == {face.face_id}
+    assert manager._focused_face_selection_id == face.face_id
+
+
+def test_people_minimum_width_actions_do_not_overlap_and_undo_requires_command() -> None:
+    NSApplication.sharedApplication()
+    main = PhotosMcpMainWindowController.alloc().initWithMenuController_(_menu_controller(_snapshot()))
+    manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(main)
+    faces = tuple(
+        PersonFace(f"face-{index}", "job", f"photo-{index}", index, "/tmp/a", "/tmp/a", "/tmp/a", (0.1,), 0.5)
+        for index in range(2)
+    )
+    peer = PersonFace("face-peer", "job", "photo-peer", 0, "/tmp/b", "/tmp/b", "/tmp/b", (0.2,), 0.5)
+    manager._catalog = PeopleCatalog(
+        (
+            PersonIdentity("auto-one", "", faces, False),
+            PersonIdentity("auto-two", "", (peer,), False),
+        ),
+        3,
+        1,
+    )
+    manager._selected_identity_id = "auto-one"
+    manager._selected_face_ids = {"face-0"}
+    parent = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 628.0, 610.0))
+    manager._detail_panel(parent, 0.0, 0.0, 628.0, 610.0)
+    descendants = list(_walk(parent))
+    controls = {
+        str(view.title() or ""): view
+        for view in descendants
+        if isinstance(view, NSButton) and str(view.title() or "")
+    }
+    popup = next(view for view in descendants if isinstance(view, NSPopUpButton))
+
+    def overlaps(left, right) -> bool:
+        left_frame, right_frame = left.frame(), right.frame()
+        return not (
+            left_frame.origin.x + left_frame.size.width <= right_frame.origin.x
+            or right_frame.origin.x + right_frame.size.width <= left_frame.origin.x
+            or left_frame.origin.y + left_frame.size.height <= right_frame.origin.y
+            or right_frame.origin.y + right_frame.size.height <= left_frame.origin.y
+        )
+
+    bottom_controls = [popup, controls["선택 이동"], controls["그룹 전체 병합"], controls["실행 취소"]]
+    assert all(not overlaps(left, right) for index, left in enumerate(bottom_controls) for right in bottom_controls[index + 1 :])
+    assert controls["새 그룹 만들기"].isEnabled() is True
+    assert controls["선택 이동"].isEnabled() is False
+    assert controls["그룹 전체 병합"].isEnabled() is False
+    assert int(controls["실행 취소"].keyEquivalentModifierMask()) == int(NSEventModifierFlagCommand)
+
+    manager._move_target_identity_id = "auto-two"
+    target_parent = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 628.0, 610.0))
+    manager._detail_panel(target_parent, 0.0, 0.0, 628.0, 610.0)
+    target_controls = {
+        str(view.title() or ""): view
+        for view in _walk(target_parent)
+        if isinstance(view, NSButton) and str(view.title() or "")
+    }
+    assert target_controls["선택 이동"].isEnabled() is True
+    assert target_controls["그룹 전체 병합"].isEnabled() is False
+
+    manager._selected_face_ids.clear()
+    merge_parent = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 628.0, 610.0))
+    manager._detail_panel(merge_parent, 0.0, 0.0, 628.0, 610.0)
+    merge_button = next(
         view
-        for view in descendants
-        if isinstance(view, NSButton)
-        and str(view.identifier() or "") == "face-one"
-        and str(view.title() or "") == "선택"
+        for view in _walk(merge_parent)
+        if isinstance(view, NSButton) and str(view.title() or "") == "그룹 전체 병합"
     )
-    checkbox.performClick_(None)
-    assert manager._selected_face_ids == {"face-one"}
-    descendants = list(_walk(main.window().contentView()))
-    split_button = next(
+    assert merge_button.isEnabled() is True
+    assert "현재 그룹 전체" in str(merge_button.toolTip() or "")
+    assert str(merge_button.accessibilityHelp() or "")
+
+    manager._selected_face_ids = {face.face_id for face in faces}
+    second_parent = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 628.0, 610.0))
+    manager._detail_panel(second_parent, 0.0, 0.0, 628.0, 610.0)
+    new_group = next(
         view
-        for view in descendants
-        if isinstance(view, NSButton) and str(view.title() or "") == "선택 얼굴 새 묶음"
+        for view in _walk(second_parent)
+        if isinstance(view, NSButton) and str(view.title() or "") == "새 그룹 만들기"
     )
-    assert split_button.isEnabled()
+    assert new_group.isEnabled() is False
+
+
+def test_people_name_selection_survives_an_intermediate_resize_rebuild() -> None:
+    NSApplication.sharedApplication()
+    main = PhotosMcpMainWindowController.alloc().initWithMenuController_(_menu_controller(_snapshot()))
+    manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(main)
+    manager._selected_identity_id = "auto-one"
+    manager._name_draft_identity_id = "auto-one"
+    manager._name_selection_range = (2, 3)
+    manager._name_restore_pending_identity_id = "auto-one"
+    manager._name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 180.0, 28.0))
+    manager._name_field.setStringValue_("이름 초안")
+
+    manager._capture_name_state()
+
+    assert manager._name_selection_range == (2, 3)
+    assert manager._name_restore_pending_identity_id == "auto-one"
 
 
 def test_main_window_hides_direct_classification_window_after_embedding() -> None:
