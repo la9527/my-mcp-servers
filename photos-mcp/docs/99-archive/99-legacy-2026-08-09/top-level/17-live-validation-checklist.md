@@ -59,7 +59,7 @@
 기록:
 
 - 상태: `x`
-- 실행 명령: `cd /Volumes/ExtData/my-mcp-servers/photos-mcp && ./scripts/build_framework_standalone.sh`
+- 실행 명령: `cd /Volumes/ExtData/01_Projects/PhotosMcp/photos-mcp && ./scripts/build_framework_standalone.sh`
 - 핵심 응답: `dist-framework-standalone/PhotosMcp.app` 와 `~/Applications/PhotosMcp.app` timestamp 가 모두 `2026-05-22 21:28` 로 갱신됐고, `codesign --verify --deep --strict dist-framework-standalone/PhotosMcp.app` 및 `~/Applications/PhotosMcp.app/Contents/MacOS/PhotosMcp --health` 가 통과했다.
 - 메모: 설치본 health CLI 는 `status=ok`, `endpoint=http://127.0.0.1:18791/mcp` 를 반환했다.
 - 2026-08-02 재검증: 임시 dist·설치본에서 `codesign --verify --deep --strict`를 health 전후로 모두 통과했고, bundle import smoke도 통과했다. build script는 health 실행 시 `PYTHONDONTWRITEBYTECODE=1`을 강제해 서명 seal이 유지된다.

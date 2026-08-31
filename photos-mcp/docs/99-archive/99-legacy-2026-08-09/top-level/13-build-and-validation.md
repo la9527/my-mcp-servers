@@ -251,11 +251,11 @@ Apple source / workflow validation 기준:
 
 wrapper launch 까지 포함한 validation:
 
-1. `./.venv/bin/python scripts/live_validate.py --bundle-path "$HOME/Applications/PhotosMcp.app" --wrapper-script /Volumes/ExtData/Nanobot/infra/scripts/run-photos-mcp-app.sh --report-path docs/live-validation-report-latest.md`
+1. `./.venv/bin/python scripts/live_validate.py --bundle-path "$HOME/Applications/PhotosMcp.app" --wrapper-script /Volumes/ExtData/02_Services/LocalModels/Nanobot/infra/scripts/run-photos-mcp-app.sh --report-path docs/live-validation-report-latest.md`
 
 workflow validation 까지 포함한 validation:
 
-1. `./.venv/bin/python scripts/live_validate.py --bundle-path "$HOME/Applications/PhotosMcp.app" --wrapper-script /Volumes/ExtData/Nanobot/infra/scripts/run-photos-mcp-app.sh --include-workflows --report-path docs/live-validation-report-latest.md`
+1. `./.venv/bin/python scripts/live_validate.py --bundle-path "$HOME/Applications/PhotosMcp.app" --wrapper-script /Volumes/ExtData/02_Services/LocalModels/Nanobot/infra/scripts/run-photos-mcp-app.sh --include-workflows --report-path docs/live-validation-report-latest.md`
 
 실행 중 진행 상태 확인:
 

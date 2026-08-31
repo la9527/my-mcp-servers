@@ -28,7 +28,7 @@ validator 구현:
 권장 focused gate:
 
 ```bash
-cd /Volumes/ExtData/my-mcp-servers/photos-mcp
+cd /Volumes/ExtData/01_Projects/PhotosMcp/photos-mcp
 uv run pytest tests/test_llm_sample_validation.py tests/test_public_tools.py tests/test_mcp_client.py tests/test_run_service.py tests/test_photo_ranker_selection.py -q
 ```
 

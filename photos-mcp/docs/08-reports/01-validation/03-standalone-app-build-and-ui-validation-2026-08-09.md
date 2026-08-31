@@ -23,7 +23,7 @@
 다음 명령으로 framework standalone bundle을 다시 만들었다.
 
 ```bash
-PHOTOS_MCP_INSTALL_BUNDLE_PATH=/Volumes/ExtData/system/Applications/PhotosMcp.app \
+PHOTOS_MCP_INSTALL_BUNDLE_PATH=/Volumes/ExtData/02_Services/PhotosMcp/PhotosMcp.app \
 PHOTOS_MCP_PUBLIC_APPLICATION_LINK=/Applications/PhotosMcp.app \
 ./scripts/build_framework_standalone.sh
 ```
@@ -33,7 +33,7 @@ PHOTOS_MCP_PUBLIC_APPLICATION_LINK=/Applications/PhotosMcp.app \
 | 항목 | 결과 |
 | --- | --- |
 | 빌드 bundle | `dist-framework-standalone/PhotosMcp.app`, 약 320 MB |
-| 실제 설치본 | `/Volumes/ExtData/system/Applications/PhotosMcp.app`, 약 320 MB |
+| 실제 설치본 | `/Volumes/ExtData/02_Services/PhotosMcp/PhotosMcp.app`, 약 320 MB |
 | 사용자 진입 경로 | `/Applications/PhotosMcp.app` 심볼릭 링크 |
 | 심볼릭 링크 대상 | 실제 설치본과 일치 |
 | 설치 시각 | 2026-08-09 08:06 KST |

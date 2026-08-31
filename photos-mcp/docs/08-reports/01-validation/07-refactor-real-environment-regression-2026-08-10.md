@@ -10,7 +10,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| macOS 앱 | `/Volumes/ExtData/system/Applications/PhotosMcp.app` |
+| macOS 앱 | `/Volumes/ExtData/02_Services/PhotosMcp/PhotosMcp.app` |
 | 앱 상태 | `ready`, 활성 작업 0, 대기 중 쓰기 0 |
 | 앱 서명 | `codesign --verify --deep --strict` 통과 |
 | VLM 서버 | Linux workstation, `Qwen3.6-35B-A3B-Q4_K_M.gguf` |

@@ -357,7 +357,7 @@ selected_photo_ids = [두 절대 경로]
 
 자동 검증은 `./.venv/bin/pytest -q` 기준 434개가 통과했고, `./.venv/bin/python scripts/validate_docs.py`로 Markdown 40개의 링크와 문서 구조를 확인했다.
 
-설치본은 standalone으로 다시 빌드하고 `~/Applications/PhotosMcp.app`과 `/Volumes/ExtData/system/Applications/PhotosMcp.app`에 반영했다. 실제 앱 검증 결과는 다음과 같다.
+설치본은 standalone으로 다시 빌드하고 `~/Applications/PhotosMcp.app`과 `/Volumes/ExtData/02_Services/PhotosMcp/PhotosMcp.app`에 반영했다. 실제 앱 검증 결과는 다음과 같다.
 
 - 서로 다른 두 폴더에서 사진을 1장씩 선택한 뒤 폴더를 이동해도 `전체 선택 2장 / 2개 폴더`가 유지됐다.
 - `선택 목록 2`에는 두 폴더가 별도 그룹으로 표시되고 thumbnail, 파일명, 수정 시각, 개별 해제와 `폴더 보기`가 정상 동작했다.

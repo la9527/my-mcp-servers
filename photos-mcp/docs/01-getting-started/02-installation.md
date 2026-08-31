@@ -18,7 +18,7 @@
 저장소 루트의 기존 가상환경을 사용하는 경우:
 
 ```bash
-cd /Volumes/ExtData/my-mcp-servers/photos-mcp
+cd /Volumes/ExtData/01_Projects/PhotosMcp/photos-mcp
 .venv/bin/python -m photos_mcp.main --version
 .venv/bin/python -m photos_mcp.main --health
 ```
@@ -43,7 +43,7 @@ uv sync --extra dev --extra app
 별도 위치에 설치하려면 환경변수를 지정한다.
 
 ```bash
-PHOTOS_MCP_INSTALL_BUNDLE_PATH=/Volumes/ExtData/system/Applications/PhotosMcp.app \
+PHOTOS_MCP_INSTALL_BUNDLE_PATH=/Volumes/ExtData/02_Services/PhotosMcp/PhotosMcp.app \
 PHOTOS_MCP_PUBLIC_APPLICATION_LINK=/Applications/PhotosMcp.app \
 ./scripts/build_framework_standalone.sh
 ```
@@ -59,7 +59,7 @@ open -a PhotosMcp
 또는 정확한 번들 경로를 지정한다.
 
 ```bash
-open /Volumes/ExtData/system/Applications/PhotosMcp.app
+open /Volumes/ExtData/02_Services/PhotosMcp/PhotosMcp.app
 ```
 
 앱은 single-instance lock을 사용한다. 이미 실행 중이면 두 번째 인스턴스는 종료 코드 `75`로 거부된다.

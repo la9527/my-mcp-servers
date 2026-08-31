@@ -240,7 +240,7 @@ Quick Look은 파일 미리보기에는 적합하지만 분석 정보 오버레�
 - 직접 분류 최대 분석 수를 100장에서 1000장으로 확장하고 선택 항목을 `10, 25, 50, 100, 250, 500, 1000`장으로 구성했다.
 - 결과 컨트롤러가 UI에 올리는 항목도 최대 1000장으로 제한해 잘못된 대형 결과가 무제한으로 렌더링되지 않게 했다.
 
-실제 설치본 `/Volumes/ExtData/system/Applications/PhotosMcp.app`을 Computer Use로 조작해 다음을 확인했다.
+실제 설치본 `/Volumes/ExtData/02_Services/PhotosMcp/PhotosMcp.app`을 Computer Use로 조작해 다음을 확인했다.
 
 | 검증 항목 | 결과 |
 | --- | --- |
