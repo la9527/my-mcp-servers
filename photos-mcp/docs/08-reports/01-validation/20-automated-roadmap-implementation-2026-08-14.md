@@ -34,9 +34,10 @@
 | 기존 Top-1 일치율 | 74.71% |
 | strict veto Top-1 일치율 | 75.86% |
 | 순개선 | 1건, +1.1495%p |
-| 독립 holdout 사람 라벨 잔여 | 5쌍 |
+| 독립 holdout 사람 라벨 잔여 | 0쌍, 2026-09-01 완료 |
+| 독립 holdout 결과 | 같은 사람 5, 오병합 0, Wilson 95% 상한 43.45% |
 
-최종 판정은 `shadow_only`이며 `operational_ranking_changed=false`다. 단일 threshold는 승격 기준을 충족하지 못했고, grouping audit은 오류 0건이지만 표본 17개라 통계 상한이 충분하지 않다. strict veto도 100개 표본과 +5%p 개선 조건에 미달했다.
+최종 판정은 `shadow_only`이며 `operational_ranking_changed=false`다. 독립 holdout 사람 검토는 완료됐지만 5건만으로는 통계 상한이 충분하지 않다. 단일 threshold는 승격 기준을 충족하지 못했고, grouping audit도 오류 0건이지만 표본 17개라 통계 상한이 충분하지 않다. strict veto 역시 100개 표본과 +5%p 개선 조건에 미달했다.
 
 ## 보안과 데이터 경계
 
@@ -65,7 +66,6 @@ git diff --check
 1. Google Cloud OAuth client·consent screen·test user 설정과 최초 동의
 2. 실제 Picker에서 1장·10장 선택, 취소·만료·재연결 확인
 3. 실제 새 Google Photos album 생성, 원본 비변경, 저장공간·위치 metadata 고지 확인
-4. 독립 얼굴 holdout 5쌍의 동일인 여부 판정
-5. iCloud Drive 등 실제 목적지에서 OS가 cloud 전파를 완료했는지 확인
+4. iCloud Drive 등 실제 목적지에서 OS가 cloud 전파를 완료했는지 확인
 
-이 항목들이 완료되기 전에는 Google 실계정 기능을 완전 검증으로 표시하거나 얼굴 shadow를 운영 추천에 승격하지 않는다.
+독립 얼굴 holdout 5쌍의 동일인 여부 판정은 2026-09-01 완료했다. 나머지 항목이 완료되기 전에는 Google 실계정 기능을 완전 검증으로 표시하지 않는다. 얼굴 shadow는 사람 검토 완료와 별개로 통계·정확도 gate를 통과하기 전까지 운영 추천에 승격하지 않는다.

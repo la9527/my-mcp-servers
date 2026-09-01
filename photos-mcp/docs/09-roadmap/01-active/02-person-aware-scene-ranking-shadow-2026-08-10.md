@@ -20,6 +20,7 @@
 - 상호 최근접 singleton 병합 38개는 복수 지지 검증 뒤 별도 확인 대상으로 유지
 - 사람 확인 동일 주 피사체 91개 장면의 얼굴·표정 pairwise shadow 완료
 - 비교 가능 87개에서 strict 선명도 veto만 Top-1 `74.71% -> 75.86%`로 1건 개선, 표본 부족으로 shadow 유지
+- 독립 holdout 5쌍 사람 검토 완료, 동일인 5·오병합 0이지만 Wilson 95% 상한 43.45%로 shadow 유지
 - 얼굴 주도 순위와 모든 얼굴 보너스 정책은 기존보다 악화돼 운영 반영 기각
 - 실제 1,000장 작업의 사람 검토 완료 장면을 기준선으로 사용
 - 운영 장면 묶음과 추천 결과는 검증 통과 전까지 변경하지 않음
@@ -180,9 +181,10 @@ Git에 저장할 집계에는 사진 ID, 원본 경로, 얼굴 box, 임베딩과
 | 기존 Top-1 | 74.71% |
 | strict veto Top-1 | 75.86% |
 | 순개선 | 1건, +1.1495%p |
-| 독립 holdout | 5쌍 사람 라벨 대기 |
+| 독립 holdout | 5쌍 검토 완료, 동일인 5·오병합 0 |
+| 독립 holdout Wilson 95% 상한 | 43.45% |
 
-차단 사유는 단일 threshold 보정 실패, primary grouping의 통계 신뢰 부족, 독립 holdout 사람 증거 미완료, strict veto 표본 100개 미만, Top-1 개선 5%p 미만이다. 결과 파일은 경로·사진 ID·얼굴 crop·embedding이 없는 aggregate-only 형식이며, 현재 운영 추천 로직은 그대로 유지한다.
+2026-09-01에 독립 holdout 사람 검토를 완료하고 aggregate-only readiness를 갱신했다. 사람 라벨 잔여는 0건이지만 독립 표본의 통계 신뢰가 부족하다. 차단 사유는 단일 threshold 보정 실패, primary grouping의 통계 신뢰 부족, 독립 holdout의 통계 신뢰 부족, strict veto 표본 100개 미만, Top-1 개선 5%p 미만이다. 결과 파일은 경로·사진 ID·얼굴 crop·embedding이 없는 aggregate-only 형식이며, 현재 운영 추천 로직은 그대로 유지한다.
 
 ## 첫 shadow 결과
 
@@ -207,7 +209,7 @@ Git에 저장할 집계에는 사진 ID, 원본 경로, 얼굴 box, 임베딩과
 7. 이중 threshold pair triage와 116개 장면 grouping shadow를 재생한다. 완료
 8. 확실한 얼굴 core와 중간 구간 보조 부착을 분리한 constrained grouping을 구현한다. 완료
 9. 복수 지지 후보 30개 중 판독 가능한 병합 17개를 얼굴 crop private audit으로 직접 검증한다. 완료, 동일인 17·오병합 0
-10. 기존 1,000장과 겹치지 않는 독립 holdout을 만들어 오류 상한을 재검증한다. 650장 계측과 5쌍 큐 준비 완료, 사람 라벨 대기
+10. 기존 1,000장과 겹치지 않는 독립 holdout을 만들어 오류 상한을 재검증한다. 650장 계측과 5쌍 사람 검토 완료, 동일인 5·오병합 0이지만 독립 표본 통계 부족으로 shadow 유지
 11. 동일 주요 피사체 후보의 pairwise 얼굴·표정 비교를 별도 shadow로 측정한다. 완료, strict 선명도 veto 1건만 순 개선하여 shadow 유지
 12. 승격 조건을 통과한 뒤에만 `scene_selection`과 제품 추천 순위에 반영한다.
 

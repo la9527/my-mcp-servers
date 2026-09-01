@@ -37,3 +37,4 @@ YYYY-MM-DD-<검증-대상>.md
 - [2026-08-20 Google Photos 취소·만료 예외 흐름 검증](23-google-photos-exception-flow-2026-08-20.md)
 - [2026-08-21 추천 다양성 검토 큐 재준비](24-recommendation-diversity-review-refresh-2026-08-21.md): 삭제된 과거 작업과 분리해 현재 보존된 결과의 개인 검토 큐를 다시 만들고, 두 번째 추천 중복 label 재수집 기준을 기록했다.
 - [2026-08-22 추천 다양성 사람 검토 결과](25-recommendation-diversity-review-result-2026-08-22.md): 23개 복수 사진 장면의 개인 검토 집계와 shadow 재현성 보정, 현행 정책 유지 결론을 기록했다.
+- [2026-09-01 독립 얼굴 holdout 완료와 readiness 재집계](26-independent-face-holdout-completion-2026-09-01.md): 5쌍 사람 검토 완료와 통계 부족 분리, aggregate-only 재집계 결과를 기록했다.

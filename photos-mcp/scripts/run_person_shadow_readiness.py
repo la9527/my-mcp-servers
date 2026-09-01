@@ -12,7 +12,10 @@ from photos_mcp.application.person_scene_shadow import (
     FaceShadowMeasurement,
     PhotoShadowMeasurement,
 )
-from photos_mcp.application.person_shadow_readiness import evaluate_person_shadow_readiness
+from photos_mcp.application.person_shadow_readiness import (
+    evaluate_person_shadow_readiness,
+    refresh_person_shadow_holdout_evidence,
+)
 from photos_mcp.infrastructure.runtime.paths import photo_ranker_runtime_root, photos_mcp_home
 
 
@@ -23,6 +26,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--home", type=Path, default=photos_mcp_home())
     parser.add_argument("--runtime-root", type=Path, default=photo_ranker_runtime_root())
     parser.add_argument("--holdout-id", default="independent-holdout-2026-08-14")
+    parser.add_argument(
+        "--existing-aggregate",
+        type=Path,
+        help=(
+            "Refresh only holdout evidence in an existing aggregate when source "
+            "results were archived."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -57,27 +68,39 @@ def _measurements(payload: dict[str, Any]) -> list[PhotoShadowMeasurement]:
 def run(args: argparse.Namespace) -> dict[str, Any]:
     validation = args.home.expanduser() / "validation"
     job_id = str(args.job_id)
-    artifact = _load(args.runtime_root.expanduser() / "artifacts" / job_id / "results.json")
     holdout_path = validation / "face-identity-grouping" / args.holdout_id / "review-private.json"
-    summary = evaluate_person_shadow_readiness(
-        face_review=_load(validation / "face-identity" / job_id / "review-private.json"),
-        grouping_review=_load(
-            validation / "face-identity-grouping" / job_id / "review-private.json"
-        ),
-        scene_review=_load(
-            validation / "recommendation-quality" / job_id / "review-private.json"
-        ),
-        result_rows=[dict(item) for item in artifact.get("results") or []],
-        measurements=_measurements(
-            _load(
-                validation
-                / "person-aware-scene-shadow"
-                / job_id
-                / "measurements-private.json"
-            )
-        ),
-        independent_holdout_review=_load(holdout_path) if holdout_path.is_file() else None,
-    )
+    if args.existing_aggregate is not None:
+        if not holdout_path.is_file():
+            raise FileNotFoundError(f"Independent holdout review not found: {holdout_path}")
+        summary = refresh_person_shadow_holdout_evidence(
+            _load(args.existing_aggregate),
+            _load(holdout_path),
+        )
+    else:
+        artifact = _load(
+            args.runtime_root.expanduser() / "artifacts" / job_id / "results.json"
+        )
+        summary = evaluate_person_shadow_readiness(
+            face_review=_load(validation / "face-identity" / job_id / "review-private.json"),
+            grouping_review=_load(
+                validation / "face-identity-grouping" / job_id / "review-private.json"
+            ),
+            scene_review=_load(
+                validation / "recommendation-quality" / job_id / "review-private.json"
+            ),
+            result_rows=[dict(item) for item in artifact.get("results") or []],
+            measurements=_measurements(
+                _load(
+                    validation
+                    / "person-aware-scene-shadow"
+                    / job_id
+                    / "measurements-private.json"
+                )
+            ),
+            independent_holdout_review=(
+                _load(holdout_path) if holdout_path.is_file() else None
+            ),
+        )
     output = args.output.expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
