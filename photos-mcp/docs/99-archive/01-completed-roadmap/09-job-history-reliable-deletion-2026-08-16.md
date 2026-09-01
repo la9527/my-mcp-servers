@@ -55,3 +55,10 @@ Apple 사진 원본, 사용자가 선택한 로컬 원본, Google Photos 원본�
 3. 1000건 삭제 progress는 `0`에서 `1000`까지 감소 없이 갱신된다.
 4. 다른 job이 참조하는 terminal cache와 활성 job artifact는 유지된다.
 5. 고아 artifact와 참조 없는 관리 cache만 정리하며 원본·모델·외부 경로는 유지된다.
+
+## 완료 판정 — 2026-09-01
+
+- `DaemonController.delete_job_history()`가 workflow run과 vendor job을 통합 삭제하고, 진행 callback·삭제 파일 수·회수 byte를 보고한다.
+- `awaiting_resume_approval` 기록 삭제, 활성 작업 제외, 공유 terminal cache 보존, 고아 artifact/cache 정리를 `tests/test_daemon.py`와 `tests/test_job_state.py`에서 검증한다.
+- AppKit 작업 기록 화면은 같은 coordinator를 background worker에서 호출하고 진행 상태를 표시한다.
+- 최신 전체 회귀 654건을 통과했으며 원본 사진·모델·외부 경로는 삭제 대상에 포함되지 않는다.

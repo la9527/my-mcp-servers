@@ -30,3 +30,10 @@
 - 레지스트리 저장 권한과 Git 미포함을 단위 테스트한다.
 - 이름 지정, 얼굴 분리, 묶음 병합, 수동 변경 삭제가 재로딩 뒤 유지되는지 확인한다.
 - AppKit 탭에서 빈 상태, 얼굴 선택, 이름 저장과 병합 대상 선택을 검증한다.
+
+## 완료 판정 — 2026-09-01
+
+- `PersonIdentityRegistry`와 AppKit 개인 얼굴 관리 화면에 이름 지정, 분리, 병합, 수동 변경 삭제가 구현되어 있다.
+- private registry는 로컬 `people-private.json`에만 저장되고 `0600` 권한을 강제하며, 사진 경로·crop·이름을 Git 추적 결과에 넣지 않는다.
+- `tests/test_person_identity_management.py`와 `tests/test_menu_appkit_layout.py`가 저장·재로딩, 선택, 병합·분리, 잘못된 drop 거부와 undo 계약을 검증한다.
+- 후속 drag-and-drop UX와 실제 앱 화면 검증까지 완료했고 최신 전체 회귀 654건을 통과해 함께 완료 보관한다. 얼굴 인식 운영 승격은 별도 shadow 품질 gate를 계속 따른다.

@@ -44,3 +44,10 @@ Google Photos 선택·분류를 취소하거나 제출한 뒤에도 같은 창�
 4. 전체 삭제는 완료·실패·취소·재개 확인 필요 기록을 제거하고 진행 중 작업은 유지한다.
 5. 작업 artifact와 Google 임시 파일은 사라지지만 관리 root 밖 원본은 유지된다.
 6. 기본·최소 창에서 버튼과 요약 문구가 잘리지 않는다.
+
+## 완료 판정 — 2026-09-01
+
+- Google Photos 제출·취소 뒤 새 선택과 준비 요약 초기화는 AppKit controller와 직접 분류 화면에 반영되어 있다.
+- 개별·전체 기록 삭제는 workflow와 vendor job을 함께 처리하고, `awaiting_resume_approval`을 포함한 종료·복구 대기 상태와 관리 cache를 안전 경계 안에서 정리한다.
+- 재선택 상태 전이는 `tests/test_google_photos_appkit.py`, `tests/test_menu_appkit_layout.py`, 삭제 계약은 `tests/test_daemon.py`와 `tests/test_job_state.py`에서 회귀 검증한다.
+- 최신 전체 회귀 654건을 통과해 이 문서를 완료 보관소로 이동했다. 외부 Google 계정의 refresh token 철회와 실제 네트워크 단절 복구는 별도 활성 Google E2E 항목으로 유지한다.

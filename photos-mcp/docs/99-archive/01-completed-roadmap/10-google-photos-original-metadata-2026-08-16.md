@@ -57,3 +57,10 @@ uv run pytest -q tests/test_google_photos_import_service.py \
 ```
 
 검증 항목은 `=d` 기본 전달, Picker 촬영 메타데이터 추출, JSON 보조 파일 생성, 분석 입력의 촬영 시각 사용, 작업 삭제 시 보조 파일 삭제를 포함한다.
+
+## 완료 판정 — 2026-09-01
+
+- Picker adapter는 사진에 `=d`, 동영상에 `=dv`를 사용하고 `mediaFileMetadata`를 정규화한다.
+- import service는 민감한 URL·token을 제외한 `.photos-mcp.json` 보조 파일을 만들며, Picker가 위치를 제공하지 않는 경우 `unavailable_from_google_picker`를 명시한다.
+- Takeout `geoDataExif`·`geoData` 출처 구분, `0, 0` 제외, 지원 형식의 임시 복사본 GPS 기록과 관리 cache 삭제가 구현되어 있다.
+- 관련 Google Photos·source adapter 테스트를 포함한 최신 전체 회귀 654건을 통과했다. Picker가 제공하지 않는 위치를 추정하거나 원본 파일을 변경하는 기능은 범위에 포함하지 않는다.
