@@ -160,6 +160,7 @@ def load_photos(
             date_to=date_to,
             limit=limit,
             max_size=max_size,
+            selected_photo_ids=selected_photo_ids,
         )
     if source == "gcs":
         return _load_gcs(
@@ -345,6 +346,7 @@ def _load_apple(
     date_to: str = "",
     limit: int = 100,
     max_size: int = DEFAULT_ANALYSIS_MAX_SIZE,
+    selected_photo_ids: list[str] | None = None,
 ) -> list[dict]:
     """Load images from Apple Photos via osxphotos."""
     try:
@@ -360,6 +362,22 @@ def _load_apple(
     db = _get_apple_db()
     photos = db.photos()
     logger.info("Apple Photos DB: %d total photos", len(photos))
+
+    explicit_selection = bool(selected_photo_ids)
+    if explicit_selection:
+        by_id = {
+            str(getattr(photo, "uuid", "") or ""): photo
+            for photo in photos
+            if _is_supported_apple_photo(photo)
+        }
+        seen: set[str] = set()
+        photos = []
+        for raw_id in selected_photo_ids or []:
+            photo_id = str(raw_id)
+            if photo_id in seen or photo_id not in by_id:
+                continue
+            seen.add(photo_id)
+            photos.append(by_id[photo_id])
 
     # Apply filters
     if date_from or date_to:
@@ -397,8 +415,9 @@ def _load_apple(
 
     photos = [p for p in photos if _is_supported_apple_photo(p)]
 
-    # Sort by date descending (newest first)
-    photos.sort(key=lambda p: p.date or datetime.min, reverse=True)
+    # Preserve the caller's explicit UUID order; otherwise keep newest first.
+    if not explicit_selection:
+        photos.sort(key=lambda p: p.date or datetime.min, reverse=True)
     photos = photos[:limit]
 
     results: list[dict] = []

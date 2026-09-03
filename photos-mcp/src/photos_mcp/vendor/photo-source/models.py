@@ -15,6 +15,7 @@ class Photo:
     path: str
     width: int
     height: int
+    date_added: str = ""  # ISO 8601 provider library-ingest time
     media_type: str = "photo"
     albums: list[str] = field(default_factory=list)
     persons: list[str] = field(default_factory=list)
@@ -29,6 +30,7 @@ class Photo:
             "path": self.path,
             "width": self.width,
             "height": self.height,
+            "date_added": self.date_added,
             "media_type": self.media_type,
             "albums": self.albums,
             "persons": self.persons,
@@ -43,6 +45,7 @@ class PhotoMetadata:
     photo_id: str
     filename: str
     date_taken: str
+    date_added: str = ""
     media_type: str = "photo"
     camera_make: str = ""
     camera_model: str = ""
@@ -59,6 +62,7 @@ class PhotoMetadata:
             "photo_id": self.photo_id,
             "filename": self.filename,
             "date_taken": self.date_taken,
+            "date_added": self.date_added,
             "media_type": self.media_type,
             "camera_make": self.camera_make,
             "camera_model": self.camera_model,

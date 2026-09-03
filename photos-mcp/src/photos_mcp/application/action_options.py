@@ -71,6 +71,20 @@ _register(ActionSpec(
 ))
 _register(ActionSpec(
     tool="photos_query",
+    action="automation_status",
+    allowed=_set("automation_run_id"),
+    required=_set("automation_run_id"),
+    usage_hint="Read a durable daily-curation run without starting or mutating it.",
+))
+_register(ActionSpec(
+    tool="photos_query",
+    action="automation_actions",
+    allowed=_set("status", "limit"),
+    defaults={"status": "pending", "limit": 50},
+    usage_hint="List safe human-action requests for the local Hermes notification bridge.",
+))
+_register(ActionSpec(
+    tool="photos_query",
     action="list",
     allowed=_set("source", "album", "person", "date_from", "date_to", "limit", "include_thumbnail", "include_metadata", "max_size"),
     defaults={"source": "apple", "limit": 20, "include_thumbnail": False, "include_metadata": False, "max_size": 512},
@@ -227,6 +241,22 @@ _register(ActionSpec(
 ))
 _register(ActionSpec(
     tool="photos_workflow",
+    action="daily_curate",
+    allowed=_set(
+        "source", "source_id", "date_added_from", "date_added_to", "lookback_hours",
+        "overlap_hours", "limit", "selection_profile", "exclude_screenshots", "mode",
+        "action_base_url",
+    ),
+    defaults={
+        "source": "apple", "source_id": "system-library", "date_added_from": "",
+        "date_added_to": "", "lookback_hours": 48.0, "overlap_hours": 6.0,
+        "limit": 50, "selection_profile": "general", "exclude_screenshots": True,
+        "mode": "review_only", "action_base_url": "",
+    },
+    usage_hint="Discover newly added Apple Photos assets and submit read-only ranking; album writes remain separate and approval-gated.",
+))
+_register(ActionSpec(
+    tool="photos_workflow",
     action="curate_to_album",
     allowed=COMMON_SCOPE | _set("selection_profile", "exclude_screenshots", "target_album_name", "folder") | WAIT_OPTIONS,
     required=_set("target_album_name"),
@@ -265,6 +295,8 @@ _register(ActionSpec(
 
 for _key, _spec in list(ACTION_SPECS.items()):
     if _spec.tool not in {"photos_write", "photos_workflow"}:
+        continue
+    if _spec.tool == "photos_workflow" and _spec.action == "daily_curate":
         continue
     _defaults = dict(_spec.defaults)
     _defaults["approval_token"] = ""

@@ -931,12 +931,12 @@ async def start_classify_job(
     except json.JSONDecodeError:
         return json.dumps({"error": "selected_photo_ids_json must be a JSON array"}, ensure_ascii=False)
     if not isinstance(selected_photo_ids, list) or not all(isinstance(item, str) for item in selected_photo_ids):
-        return json.dumps({"error": "selected_photo_ids_json must contain string paths"}, ensure_ascii=False)
-    if selected_photo_ids and source != "local":
-        return json.dumps({"error": "selected_photo_ids are supported for local source only"}, ensure_ascii=False)
+        return json.dumps({"error": "selected_photo_ids_json must contain string identifiers"}, ensure_ascii=False)
+    if selected_photo_ids and source not in {"local", "apple"}:
+        return json.dumps({"error": "selected_photo_ids are supported for local and Apple sources only"}, ensure_ascii=False)
     if len(selected_photo_ids) > limit:
         return json.dumps({"error": "selected photo count exceeds limit"}, ensure_ascii=False)
-    if selected_photo_ids:
+    if selected_photo_ids and source == "local":
         selection_error = _validate_local_selected_paths(source_path, selected_photo_ids)
         if selection_error:
             return json.dumps({"error": selection_error}, ensure_ascii=False)

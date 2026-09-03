@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import sys
 import tempfile
-from datetime import datetime, time
+from datetime import UTC, datetime, time
 from pathlib import Path
 
 from ..models import Photo, PhotoMetadata
@@ -88,6 +89,44 @@ def _matches_date_filters(
     return True
 
 
+def _utc_datetime(value: datetime) -> datetime:
+    """Normalize provider dates so aware and legacy naive values sort together."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _added_sort_key(photo) -> tuple[datetime, str]:
+    return (
+        _utc_datetime(getattr(photo, "date_added")),
+        str(getattr(photo, "uuid", "") or ""),
+    )
+
+
+def _encode_added_cursor(photo) -> str:
+    payload = {
+        "v": 1,
+        "date_added": _utc_datetime(getattr(photo, "date_added")).isoformat(),
+        "provider_asset_id": str(getattr(photo, "uuid", "") or ""),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_added_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        if payload.get("v") != 1:
+            raise ValueError("unsupported cursor version")
+        provider_asset_id = str(payload["provider_asset_id"])
+        if not provider_asset_id:
+            raise ValueError("empty provider asset id")
+        return _utc_datetime(datetime.fromisoformat(str(payload["date_added"]))), provider_asset_id
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid Apple Photos date_added cursor") from exc
+
+
 class ApplePhotosSource:
     """Access Apple Photos / iCloud library via osxphotos."""
 
@@ -143,6 +182,41 @@ class ApplePhotosSource:
         )
 
         return [self._to_photo(p) for p in photos]
+
+    def list_added_photos(
+        self,
+        date_added_from: str | None = None,
+        date_added_to: str | None = None,
+        cursor: str = "",
+        limit: int = 100,
+    ) -> dict[str, object]:
+        """Return a stable page ordered by library-ingest time and Apple UUID."""
+        self._ensure_loaded()
+        bounded_limit = max(1, min(int(limit), 500))
+        photos = [
+            photo
+            for photo in self._db.photos()
+            if _is_supported_photo_asset(photo)
+            and getattr(photo, "date_added", None) is not None
+            and _matches_date_filters(
+                getattr(photo, "date_added", None),
+                date_from=date_added_from,
+                date_to=date_added_to,
+            )
+        ]
+        photos.sort(key=_added_sort_key)
+
+        if cursor:
+            cursor_key = _decode_added_cursor(cursor)
+            photos = [photo for photo in photos if _added_sort_key(photo) > cursor_key]
+
+        page = photos[: bounded_limit + 1]
+        has_more = len(page) > bounded_limit
+        page = page[:bounded_limit]
+        return {
+            "items": [self._to_photo(photo) for photo in page],
+            "next_cursor": _encode_added_cursor(page[-1]) if has_more and page else "",
+        }
 
     def list_albums(self, limit: int = 200) -> list[dict[str, object]]:
         """Return user albums without invoking the Photos write/automation adapter."""
@@ -266,6 +340,7 @@ class ApplePhotosSource:
             photo_id=p.uuid,
             filename=p.filename or "",
             date_taken=p.date.isoformat() if p.date else "",
+            date_added=p.date_added.isoformat() if getattr(p, "date_added", None) else "",
             media_type=_apple_media_type(p),
             camera_make=getattr(exif, "camera_make", "") or "",
             camera_model=getattr(exif, "camera_model", "") or "",
@@ -721,6 +796,7 @@ class ApplePhotosSource:
             id=p.uuid,
             filename=p.filename or "",
             date_taken=p.date.isoformat() if p.date else "",
+            date_added=p.date_added.isoformat() if getattr(p, "date_added", None) else "",
             source="apple_photos",
             path=self._resolve_photo_path(p, download_missing=False) or "",
             width=p.width or 0,

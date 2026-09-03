@@ -25,6 +25,21 @@ async def test_vendor_photo_source_port_uses_injected_vendor_caller() -> None:
 
 
 @pytest.mark.asyncio
+async def test_vendor_photo_source_port_normalizes_added_photo_page() -> None:
+    async def caller(server: str, method: str, *_args, **_kwargs):
+        assert server == "photo-source"
+        assert method == "list_added_photos"
+        return {"items": [{"id": "apple-1"}, "ignored"], "next_cursor": "cursor-1"}
+
+    port = VendorPhotoSourcePort(caller=caller)
+
+    assert await port.list_added_photos("apple", limit=1) == {
+        "items": [{"id": "apple-1"}],
+        "next_cursor": "cursor-1",
+    }
+
+
+@pytest.mark.asyncio
 async def test_vendor_photo_source_port_lists_albums_through_read_only_vendor_tool() -> None:
     calls: list[tuple[str, str, dict]] = []
 

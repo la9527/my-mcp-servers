@@ -267,6 +267,15 @@ class PhotosMcpStateStore:
                 return None
             return dict(payload)
 
+    def get_job_snapshot(self, run_id: str) -> dict[str, Any] | None:
+        """Return the current vendor or facade snapshot for reconciliation."""
+        with self._lock:
+            synthetic = self._synthetic_runs.get(run_id)
+            if synthetic is not None:
+                return dict(synthetic)
+            job = self._jobs.get(run_id)
+            return asdict(job) if job is not None else None
+
     def cancel_synthetic_run(self, run_id: str) -> bool:
         with self._lock:
             task = self._synthetic_tasks.get(run_id)

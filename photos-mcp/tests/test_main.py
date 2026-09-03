@@ -229,6 +229,82 @@ def test_build_http_app_serves_capabilities_endpoint() -> None:
     assert body["checks"] == []
 
 
+def test_build_http_app_serves_read_only_user_action_page() -> None:
+    from starlette.testclient import TestClient
+
+    config = load_config()
+    state_store = PhotosMcpStateStore(
+        endpoint=config.endpoint,
+        health_endpoint=config.health_endpoint,
+    )
+    state_store.run_repository.save_user_action_request(
+        {
+            "request_id": "action-http-1",
+            "dedupe_key": "picker:http-1",
+            "request_type": "google_picker_selection",
+            "provider": "google_photos",
+            "status": "pending",
+            "title": "Google Photos 선택이 필요합니다",
+            "message": "최근 사진을 확인해 주세요.",
+            "action_url": "http://127.0.0.1:18791/actions/action-http-1",
+            "expires_at": "2026-09-04T00:00:00+00:00",
+            "created_at": "2026-09-03T00:00:00+00:00",
+        }
+    )
+    app = build_http_app(config=config, state_store=state_store)
+
+    with TestClient(app) as client:
+        response = client.get("/actions/action-http-1")
+        missing = client.get("/actions/missing")
+
+    assert response.status_code == 200
+    assert "Google Photos 선택이 필요합니다" in response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    assert missing.status_code == 404
+
+
+def test_build_http_app_daily_curate_trigger_is_read_only_and_bounded(monkeypatch) -> None:
+    from starlette.testclient import TestClient
+    import photos_mcp.interfaces.mcp.server as server_module
+
+    calls = []
+
+    async def fake_workflow(**kwargs):
+        calls.append(kwargs)
+        return {"run_id": "daily-http-1", "status": "pending", "terminal": False}
+
+    monkeypatch.setattr(server_module, "facade_photos_workflow", fake_workflow)
+    config = load_config()
+    state_store = PhotosMcpStateStore(endpoint=config.endpoint, health_endpoint=config.health_endpoint)
+    app = build_http_app(config=config, state_store=state_store)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/automation/daily-curate",
+            json={
+                "source": "apple",
+                "limit": 9999,
+                "action_base_url": "https://photos-mac.tail123.ts.net/photos-actions",
+            },
+        )
+        invalid = client.post("/automation/daily-curate", json={"source": "gcs"})
+        unsafe = client.post(
+            "/automation/daily-curate",
+            json={"source": "google", "action_base_url": "https://public.example.com/actions"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    assert calls[0]["action"] == "daily_curate"
+    assert calls[0]["options"]["limit"] == 500
+    assert calls[0]["options"]["mode"] == "review_only"
+    assert calls[0]["options"]["action_base_url"] == "https://photos-mac.tail123.ts.net/photos-actions"
+    assert "target_album_name" not in calls[0]["options"]
+    assert invalid.status_code == 400
+    assert unsafe.status_code == 400
+
+
 def test_load_vendor_server_uses_package_namespace_for_photo_ranker(monkeypatch) -> None:
     server_root = str(VENDOR_ROOT / "photo-ranker")
     monkeypatch.setattr(

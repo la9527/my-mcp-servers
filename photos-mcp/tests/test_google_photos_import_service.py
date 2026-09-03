@@ -174,6 +174,59 @@ async def test_google_import_can_prepare_without_starting_classification(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_google_import_skips_previously_processed_asset_keys(tmp_path: Path) -> None:
+    source = descriptor_from_legacy_source("google", account_id="account")
+    picker = FakeGooglePhotosPickerAdapter()
+    sessions = PickerSessionRepository(tmp_path / "picker.db")
+    selection = CloudSelectionService(picker, sessions)
+    started = await selection.start(source, max_item_count=10)
+    old_photo = fake_google_asset(source.source_id, "photo-old", filename="old.jpg")
+    new_photo = fake_google_asset(source.source_id, "photo-new", filename="new.jpg")
+    picker.complete_with_assets(started.session_id, (old_photo, new_photo))
+    await selection.poll(started.session_id)
+
+    downloaded: list[str] = []
+
+    async def resolve_url(asset_id: str, _max_pixels: int | None):
+        downloaded.append(asset_id)
+        return (
+            f"https://content.example/{asset_id}",
+            "image/jpeg",
+            datetime.now(timezone.utc) + timedelta(minutes=10),
+        )
+
+    async def fetch_bytes(_url: str, _limit: int):
+        return b"image"
+
+    leases = GoogleImportLeaseRepository(tmp_path / "imports.db")
+    service = GooglePhotosImportService(
+        selection=selection,
+        content_adapter=GooglePickedContentAdapter(
+            resolve_url=resolve_url,
+            fetch_bytes=fetch_bytes,
+            cache_root=tmp_path / "cache",
+        ),
+        leases=leases,
+        classification_starter=lambda *_args: None,
+    )
+
+    prepared = await service.prepare_ready_selection(
+        source,
+        started.session_id,
+        exclude_asset_keys={old_photo.stable_key},
+    )
+
+    assert downloaded == ["photo-new"]
+    assert prepared["materialized_photo_count"] == 1
+    assert prepared["previously_processed_count"] == 1
+    assert prepared["asset_refs"] == (
+        {"source_id": source.source_id, "provider_asset_id": "photo-new"},
+    )
+    leases.close()
+    sessions.close()
+
+
+@pytest.mark.asyncio
 async def test_google_import_uses_original_download_and_local_source_reads_sidecar(tmp_path: Path) -> None:
     source = descriptor_from_legacy_source("google", account_id="account")
     picker = FakeGooglePhotosPickerAdapter()
@@ -427,7 +480,13 @@ async def test_google_classification_starter_forces_local_bridge_and_disables_fa
         captured.update(kwargs)
         return {"job_id": "job-1"}
 
+    async def fake_call_vendor(_server, tool, job_id):
+        assert tool == "get_job_status"
+        assert job_id == "job-1"
+        return json.dumps({"job_id": job_id, "status": "completed"})
+
     monkeypatch.setattr(module, "photos_run", fake_photos_run)
+    monkeypatch.setattr(module, "call_vendor", fake_call_vendor)
     await start_google_materialized_classification(
         (str(path),),
         "general",

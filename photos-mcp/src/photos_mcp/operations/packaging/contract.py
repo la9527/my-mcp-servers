@@ -32,7 +32,15 @@ PY2APP_INCLUDES = [
     "uvicorn.loops.asyncio",
     "uvicorn.protocols.http.h11_impl",
 ]
-PY2APP_EXCLUDES = ["_tkinter", "idlelib", "tkinter"]
+PY2APP_EXCLUDES = [
+    "_tkinter",
+    "idlelib",
+    # Browser control runs as an external Chrome DevTools MCP worker. The menu
+    # app bundle does not launch or embed that runtime.
+    "photos_mcp.infrastructure.browser_assist",
+    "photos_mcp.infrastructure.browser_assist.chrome_devtools_mcp",
+    "tkinter",
+]
 SITE_PACKAGES_RESOURCE_NAMES = {
     "AVFoundation",
     "AppKit",

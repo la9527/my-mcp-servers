@@ -114,6 +114,31 @@ def list_photos(
 
 
 @mcp.tool()
+def list_added_photos(
+    source: str = "apple",
+    date_added_from: str = "",
+    date_added_to: str = "",
+    cursor: str = "",
+    limit: int = 100,
+) -> dict:
+    """보관함 추가 시각 순서로 신규 사진 한 페이지를 반환합니다."""
+    if source != "apple":
+        if source == "google":
+            _google_picker_required()
+        raise ValueError("list_added_photos currently supports Apple Photos only")
+    page = _get_apple_source().list_added_photos(
+        date_added_from=date_added_from or None,
+        date_added_to=date_added_to or None,
+        cursor=cursor,
+        limit=limit,
+    )
+    return {
+        "items": [photo.to_dict() for photo in page["items"]],
+        "next_cursor": str(page.get("next_cursor") or ""),
+    }
+
+
+@mcp.tool()
 def list_albums(source: str = "apple", limit: int = 200) -> list[dict]:
     """사진 소스의 앨범 목록을 읽기 전용으로 반환합니다."""
     if source == "apple":

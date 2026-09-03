@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Awaitable, Callable
 
 from photos_mcp.application.action_options import ActionValidationError, validate_action_options
+from photos_mcp.application.daily_curation import reconcile_daily_curation, start_daily_curation
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
+
+
+_DAILY_CURATE_LOCK = asyncio.Lock()
 
 
 async def handle_workflow(
@@ -30,6 +35,23 @@ async def handle_workflow(
     selected_action = validated.action
     opts = dict(validated.options)
     opts.pop("approval_token", None)
+    if selected_action == "daily_curate":
+        if state_store is None:
+            return {"status": "blocked", "error_code": "state_store_unavailable"}
+        async with _DAILY_CURATE_LOCK:
+            for previous in state_store.run_repository.list_automation_runs(statuses={"pending", "running"}):
+                analysis_run_id = str(previous.get("analysis_run_id") or "")
+                if analysis_run_id:
+                    reconcile_daily_curation(
+                        repository=state_store.run_repository,
+                        automation_run=previous,
+                        analysis_snapshot=state_store.get_job_snapshot(analysis_run_id),
+                    )
+            return await start_daily_curation(
+                repository=state_store.run_repository,
+                options=opts,
+                photos_run_fn=photos_run_fn,
+            )
     if selected_action == "resume":
         if state_store is None:
             return {"status": "blocked", "error_code": "state_store_unavailable"}

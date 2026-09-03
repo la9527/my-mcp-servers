@@ -9,6 +9,8 @@
 - [Google Photos Picker 실연동](03-google-photos-picker-integration-2026-08-13.md): OAuth·Picker REST·temporary cache·분류 bridge·새 앱 생성 앨범 업로드와 복구 backend까지 자동 구현·계약 검증을 마쳤다. 실계정에서 56장 선택·50장 분류·추천 30장 새 album 업로드와 Picker 취소·재선택·만료 정리를 검증했다. refresh token 철회 뒤 재연결과 실제 네트워크 단절 기반 부분 업로드 복구 E2E가 남아 있다.
 - [Google Photos 입력·결과 앨범 AppKit UX](04-google-photos-appkit-ux-2026-08-13.md): source 선택, browser Picker 대기, 결과 앨범 업로드 승인 흐름을 구현하고 controller 테스트를 완료했다. 실제 계정 화면 검증은 Google 외부 설정 후 진행한다.
 - [Google Photos OAuth 앱 설정](05-google-photos-oauth-app-settings-2026-08-15.md): OAuth Client ID·Redirect URI·선택적 Client secret을 앱에서 입력해 macOS Keychain에 저장하고 즉시 runtime에 반영한다. callback URL 자동 수신과 실제 계정 E2E는 후속 검증 대상이다.
+- [일일 사진 큐레이션 자동화](06-daily-photo-curation-automation-2026-09-03.md): Apple Photos의 신규 자산을 증분 발견해 장면별 우수 후보를 매일 선별하고 Hermes cron·Telegram으로 검토하는 계획이다. Google Photos는 공식 Picker 경계를 유지한 사용자 선택형 inbox로 분리하고, 14일 read-only shadow 뒤 add-only 앨범 정책을 단계적으로 도입한다.
+- [일일 사진 큐레이션 단계별 구현 계획](07-daily-photo-curation-implementation-plan-2026-09-03.md): `date_added` 증분 탐색부터 처리 원장, `daily_curate`, Google Picker 사용자 조치, Hermes 텔레그램 브리지까지의 구현 순서와 검증 gate를 추적한다.
 
 ## 선호 학습
 

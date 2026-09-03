@@ -36,6 +36,8 @@ class PhotoSourcePort(Protocol):
 
     async def list_photos(self, source: str, **filters: Any) -> list[dict[str, Any]]: ...
 
+    async def list_added_photos(self, source: str, **filters: Any) -> dict[str, Any]: ...
+
     async def list_albums(self, source: str, *, limit: int = 200) -> list[dict[str, Any]]: ...
 
     async def search_photos(self, query: str, *, source: str, path_or_bucket: str, limit: int) -> list[dict[str, Any]]: ...
@@ -88,6 +90,16 @@ class VendorPhotoSourcePort:
     async def list_photos(self, source: str, **filters: Any) -> list[dict[str, Any]]:
         result = await self._call("list_photos", source, **filters)
         return [dict(item) for item in result if isinstance(item, dict)] if isinstance(result, list) else []
+
+    async def list_added_photos(self, source: str, **filters: Any) -> dict[str, Any]:
+        result = await self._call("list_added_photos", source, **filters)
+        if not isinstance(result, dict):
+            return {"items": [], "next_cursor": ""}
+        items = result.get("items")
+        return {
+            "items": [dict(item) for item in items if isinstance(item, dict)] if isinstance(items, list) else [],
+            "next_cursor": str(result.get("next_cursor") or ""),
+        }
 
     async def list_albums(self, source: str, *, limit: int = 200) -> list[dict[str, Any]]:
         result = await self._call("list_albums", source, limit=limit)

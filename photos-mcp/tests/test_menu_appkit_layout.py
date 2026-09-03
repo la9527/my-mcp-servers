@@ -46,6 +46,7 @@ from photos_mcp.local_file_selection_appkit import (
 from photos_mcp.interfaces.appkit.main.controller import PhotosMcpMainWindowController
 from photos_mcp.interfaces.appkit.people.controller import PhotosMcpPeopleManagerController
 from photos_mcp.interfaces.appkit.people.drag_views import IdentityDragHandle, IdentityDropRowView
+from photos_mcp.interfaces.appkit.classification import controller as classification_controller_module
 from photos_mcp.application.person_identity_management import PeopleCatalog, PersonFace, PersonIdentity
 from photos_mcp.ui_theme import scaled_font_size
 
@@ -2665,4 +2666,42 @@ def test_direct_classification_window_closes_after_job_is_accepted() -> None:
     assert refreshed.is_set()
     assert rebuilt.is_set()
     assert not controller.window().isVisible()
+    controller.shutdown()
+
+
+def test_google_classification_job_handoff_closes_picker_automation(monkeypatch) -> None:
+    NSApplication.sharedApplication()
+    captured = {}
+    repository = object()
+    menu_controller = SimpleNamespace(
+        _state_store=SimpleNamespace(run_repository=repository),
+        _daemon_controller=SimpleNamespace(refresh_jobs_once=lambda: None),
+        rebuildMenu=lambda: None,
+    )
+    controller = PhotosMcpDirectClassificationController.alloc().initWithMenuController_service_(
+        menu_controller,
+        SimpleNamespace(),
+    )
+    controller._selected_source = "google_photos"
+    controller._google_prepared = {
+        "session_id": "picker-session-1",
+        "materialized_photo_count": 19,
+        "excluded_video_count": 1,
+    }
+    controller._pending_run_payload = {"job_id": "accepted-google-job"}
+    monkeypatch.setattr(
+        classification_controller_module,
+        "complete_google_picker_action",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    controller.classificationStarted_(None)
+
+    assert captured == {
+        "repository": repository,
+        "analysis_run_id": "accepted-google-job",
+        "picker_session_id": "picker-session-1",
+        "selected_photo_count": 19,
+        "excluded_video_count": 1,
+    }
     controller.shutdown()

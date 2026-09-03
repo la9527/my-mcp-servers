@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from photos_mcp.application.action_options import ActionValidationError, validate_action_options
+from photos_mcp.application.daily_curation import reconcile_daily_curation
 from photos_mcp.application.library_service import photos_library
 from photos_mcp.application.result_service import photos_result
 from photos_mcp.application.status_service import photos_status
@@ -32,6 +33,35 @@ async def handle_query(
         if state_store is None:
             return {"status": "blocked", "error_code": "state_store_unavailable"}
         return state_store.get_recovery_plan(str(opts["run_id"]))
+    if selected_action == "automation_status":
+        if state_store is None:
+            return {"status": "blocked", "error_code": "state_store_unavailable"}
+        payload = state_store.run_repository.get_automation_run(str(opts["automation_run_id"]))
+        if payload is not None and payload.get("analysis_run_id"):
+            payload = reconcile_daily_curation(
+                repository=state_store.run_repository,
+                automation_run=payload,
+                analysis_snapshot=state_store.get_job_snapshot(str(payload["analysis_run_id"])),
+            )
+        return payload or {
+            "status": "not_found",
+            "automation_run_id": str(opts["automation_run_id"]),
+        }
+    if selected_action == "automation_actions":
+        if state_store is None:
+            return {"status": "blocked", "error_code": "state_store_unavailable"}
+        requested_status = str(opts.get("status") or "pending")
+        statuses = None if requested_status == "all" else {requested_status}
+        items = state_store.run_repository.list_user_action_requests(
+            statuses=statuses,
+            limit=int(opts.get("limit") or 50),
+        )
+        return {
+            "status": "completed",
+            "action": "automation_actions",
+            "count": len(items),
+            "items": items,
+        }
     if selected_action in {"list", "ready_only", "search", "inspect", "prefetch"}:
         return await photos_library(
             state_store=state_store,

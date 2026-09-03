@@ -14,6 +14,8 @@
 | 도구 | Action | 필수 옵션 | 용도 |
 | --- | --- | --- | --- |
 | `photos_query` | `artifacts` | 없음 | 실행 산출물 조회 |
+| `photos_query` | `automation_actions` | 없음 | 텔레그램 브리지가 처리할 사용자 조치 요청 조회 |
+| `photos_query` | `automation_status` | `automation_run_id` | 일일 큐레이션 실행 상태 조회 |
 | `photos_query` | `cancel` | 없음 | 실행 취소 |
 | `photos_query` | `guide` | 없음 | 목표별 안전 호출 안내 |
 | `photos_query` | `inspect` | `photo_id` | 사진 메타데이터와 미리보기 조회 |
@@ -33,6 +35,7 @@
 | `photos_workflow` | `classify_then_organize_by_category` | 없음 | 분류 후 카테고리 앨범 정리 |
 | `photos_workflow` | `curate_to_album` | `target_album_name` | 선별 후 단일 앨범에 추가 |
 | `photos_workflow` | `curate_to_directory` | `output_dir` | 선별 후 디렉토리에 내보내기 |
+| `photos_workflow` | `daily_curate` | 없음 | 새로 추가된 Apple 사진을 읽기 전용으로 선별 시작 |
 | `photos_workflow` | `import_then_curate_to_album` | `photo_paths`, `target_album_name` | 로컬 사진 가져오기와 앨범 선별 |
 | `photos_workflow` | `resume` | `run_id` | 저장된 workflow 재개 |
 | `photos_write` | `add_photo_ids_to_album` | `photo_ids` | 지정 사진을 앨범에 추가 |

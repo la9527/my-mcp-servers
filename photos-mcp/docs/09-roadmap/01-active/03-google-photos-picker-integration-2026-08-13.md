@@ -130,10 +130,22 @@ Picker의 `baseUrl=d` 다운로드는 위치 metadata를 제외한 EXIF를 유�
 | 최초 계정 연결과 scope 동의 | 사용자 필수 | macOS `ASWebAuthenticationSession`으로 Google 로그인과 동의를 한 번만 진행한다. |
 | 이후 access token 갱신 | 자동 | Keychain의 refresh token으로 access token을 조용히 갱신한다. |
 | Picker session 생성·browser 열기 | 자동 시작 | 사용자가 `Google Photos에서 선택`을 누르면 앱이 session을 만들고 `pickerUri`를 연다. |
-| 기존 Google Photos에서 항목 선택 | 사용자 필수 | Google Photos 화면에서 사용자가 선택·완료한다. iframe, headless browser, 자동 클릭은 사용하지 않는다. |
+| 기존 Google Photos에서 항목 선택 | 세션별 필요 | 기본 공식 흐름에서는 사용자가 선택한다. 이 Mac의 전용 visible Chrome 보조 흐름은 날짜·개수 검증을 통과한 최근 사진을 선택하고 완료까지 자동화한다. 로그인·MFA·CAPTCHA가 나타나면 사용자에게 넘긴다. |
 | 선택 완료 감지 | 자동 | Google이 제공한 polling interval과 timeout으로 session을 감시한다. |
 | 이미지 다운로드 | 자동 | 앱이 `Authorization: Bearer` header로 `baseUrl`을 직접 요청하여 임시 캐시에 저장한다. 브라우저 다운로드 UI는 없다. |
 | 분류·결과 표시·임시 파일 및 session 정리 | 자동 | bounded concurrency, 진행률, 오류 복구를 적용하고 완료·취소·실패 뒤 삭제한다. |
+
+#### 2026-09-03 로컬 browser assistant 재검토
+
+개인 Mac에서 사용자가 명시적으로 Remote Debugging을 허용한 현재 Chrome과 Chrome DevTools MCP를 사용하면 Picker 화면을 열고 최신순 개별 사진을 제한 수량만큼 미리 선택할 수 있다. 이는 OAuth 연결을 영구 권한으로 바꾸는 기능이 아니라, 매 Picker session 안에서 사용자 최종 확인 전 선택을 로컬 agent가 보조하는 별도 계층이다.
+
+기본 자동화는 Chrome DevTools MCP가 Picker dialog의 접근성 역할과 label을 검증해 실행일 포함 최근 10일의 개별 사진을 선택한다. 기본 상한은 Picker session 한도와 같은 100장이며 날짜 그룹 checkbox는 제외한다. 검증을 통과하면 고유한 활성 완료 버튼까지 자동 클릭한다. 선택 완료 뒤 파일은 browser download가 아니라 기존 Picker REST adapter의 `mediaItems.list`와 `baseUrl`로 받는다.
+
+완료 자동 클릭은 Google이 안정적인 DOM 계약으로 보증한 API가 아니므로 날짜 범위, 개별 사진 구조, 선택 수, 고유한 활성 완료 버튼을 모두 다시 확인한 경우에만 수행한다. Picker UI 변경, 계정 재인증, MFA, CAPTCHA 또는 모호한 버튼 상태에서는 클릭하지 않고 `AWAITING_USER_ACTION`으로 전환한다. 상세 경계와 acceptance gate는 [일일 사진 큐레이션 자동화 계획](06-daily-photo-curation-automation-2026-09-03.md#94-로컬-chromechrome-devtools-mcp-보조안)에 따른다.
+
+운영 경로는 개인용 기본 Chrome에 `--auto-connect`하지 않는다. PhotosMcp가 `~/.photos-mcp/chrome/google-picker-profile`의 영구 전용 프로필을 일반 Chrome 프로세스로 먼저 실행하고, MCP는 `--browser-url=http://127.0.0.1:9333`으로 나중에 연결한다. 프로필 디렉터리는 `0700`으로 제한한다. 최초 Google 로그인·2단계 인증·OAuth 동의는 MCP를 연결하지 않은 전용 창에서 사용자가 직접 수행하고, account chooser·CAPTCHA·재인증에서는 자동화를 중지한다. 이 방식은 Chrome의 live-session 연결 승인 창과 WebDriver 상태의 Google 로그인 차단을 피하면서 개인용 Chrome 쿠키와 자동화 세션을 분리한다. [Chrome DevTools MCP 전용 프로필과 기존 세션 연결](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/advanced-usage.md#connecting-to-a-running-chrome-instance)
+
+자동화를 중지한 상태는 `AWAITING_USER_ACTION`으로 저장하고 Telegram private DM으로 알린다. raw `pickerUri`나 Google 계정·사진 정보를 메시지에 넣지 않고, opaque action request ID와 Tailscale-only action center의 짧은 1회용 링크만 제공한다. 계정 선택·MFA·OAuth 동의·CAPTCHA·Picker 최종 확인·UI 변경·session 만료를 구분하며, 알림 실패가 run 상태를 없애지 않게 한다. 상세 메시지·재개·quiet-hours 계약은 [일일 사진 큐레이션 자동화 계획](06-daily-photo-curation-automation-2026-09-03.md#95-사용자-액션-요청과-메시지-알림)에 따른다.
 
 macOS에서는 `ASWebAuthenticationSession`이 기본 browser 또는 Safari에서 OAuth 인증을 수행한 뒤 callback을 호출하므로, 앱 내 임베디드 로그인 화면을 별도로 만들 필요가 없다. Picker URI는 보안상 iframe에 넣을 수 없으므로 기본 browser에서 연다. [Apple ASWebAuthenticationSession](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession), [Picker session 참조](https://developers.google.com/photos/picker/reference/rest/v1/sessions)
 

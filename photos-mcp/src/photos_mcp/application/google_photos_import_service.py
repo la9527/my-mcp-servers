@@ -8,9 +8,11 @@ import json
 import logging
 from pathlib import Path
 import os
+import time
 from typing import Any
 
 from photos_mcp.application.cloud_selection_service import CloudSelectionService
+from photos_mcp.application.run_support import call_vendor, parse_payload
 from photos_mcp.application.run_service import photos_run
 from photos_mcp.domain.models.source import (
     MaterializedPhotoContent,
@@ -52,7 +54,7 @@ async def start_google_materialized_classification(
     effective_limit = min(max(1, int(limit)), len(paths))
     selected_paths = paths[:effective_limit]
     root = os.path.commonpath([str(Path(path).resolve().parent) for path in selected_paths])
-    return await photos_run(
+    started = await photos_run(
         state_store=state_store,
         intent="classify" if mode == "classify" else "curate",
         source="local",
@@ -64,6 +66,31 @@ async def start_google_materialized_classification(
         origin_provider="google_photos",
         face_analysis_enabled=False,
     )
+    if mode != "classify":
+        return started
+    job_id = str(started.get("job_id") or started.get("run_id") or "")
+    if not job_id:
+        raise RuntimeError("Google Photos classification did not return a job ID")
+    timeout_seconds = max(
+        60.0,
+        float(os.environ.get("PHOTOS_MCP_GOOGLE_CLASSIFICATION_TIMEOUT_SECONDS", "3600")),
+    )
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        status_payload = parse_payload(
+            await call_vendor("photo-ranker", "get_job_status", job_id)
+        )
+        if not isinstance(status_payload, dict):
+            raise RuntimeError("Google Photos classification returned invalid status")
+        status = str(status_payload.get("status") or "")
+        if status == "completed":
+            return {**started, **status_payload, "job_id": job_id, "run_id": job_id}
+        if status in {"failed", "cancelled", "interrupted"}:
+            detail = str(status_payload.get("error_message") or status)
+            raise RuntimeError(f"Google Photos classification ended before completion: {detail}")
+        await asyncio.sleep(2.0)
+    await call_vendor("photo-ranker", "cancel_job", job_id)
+    raise TimeoutError("Google Photos classification timed out")
 
 
 class GooglePhotosImportService:
@@ -107,6 +134,7 @@ class GooglePhotosImportService:
         *,
         max_pixels: int | None = None,
         limit: int = 1000,
+        exclude_asset_keys: set[str] | None = None,
         progress_callback: PreparationProgress | None = None,
     ) -> dict[str, Any]:
         """Download Picker-selected photos without starting an analysis job."""
@@ -120,7 +148,12 @@ class GooglePhotosImportService:
         )
         assets = await self._selection.consume(session_id)
         all_photos = tuple(asset for asset in assets if asset.media_type == "photo")
-        photos = all_photos[:limit]
+        excluded_keys = exclude_asset_keys or set()
+        unprocessed_photos = tuple(
+            asset for asset in all_photos if asset.stable_key not in excluded_keys
+        )
+        photos = unprocessed_photos[:limit]
+        previously_processed_count = len(all_photos) - len(unprocessed_photos)
         excluded_video_count = len(assets) - len(all_photos)
         semaphore = asyncio.Semaphore(self._max_concurrent_downloads)
         total_photo_count = len(photos)
@@ -198,6 +231,14 @@ class GooglePhotosImportService:
             "total_photo_count": total_photo_count,
             "materialized_photo_count": len(paths),
             "excluded_video_count": excluded_video_count,
+            "previously_processed_count": previously_processed_count,
+            "asset_refs": tuple(
+                {
+                    "source_id": content.asset.source_id,
+                    "provider_asset_id": content.asset.provider_asset_id,
+                }
+                for _, content in completed
+            ),
             "paths": paths,
             "face_analysis_enabled": False,
         }

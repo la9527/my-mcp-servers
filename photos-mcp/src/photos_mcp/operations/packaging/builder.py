@@ -199,7 +199,11 @@ def build_app_packages() -> list[str]:
     for package_name in APP_PACKAGES:
         includes.extend([package_name, f"{package_name}.*"])
 
-    return find_packages(where="src", include=includes)
+    return [
+        package_name
+        for package_name in find_packages(where="src", include=includes)
+        if not package_name.startswith("photos_mcp.infrastructure.browser_assist")
+    ]
 
 
 def build_py2app_setup_kwargs() -> dict:

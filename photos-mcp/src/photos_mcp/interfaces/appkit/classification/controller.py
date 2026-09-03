@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, timedelta
+import logging
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any
@@ -47,6 +48,7 @@ from photos_mcp.application.classification_service import (
     DirectClassificationService,
     common_local_source_path,
 )
+from photos_mcp.application.daily_curation import complete_google_picker_action
 from photos_mcp.interfaces.appkit.shared.theme import accent_color, app_font, panel_background_color, subtle_border_color
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
@@ -73,6 +75,8 @@ _DIRECT_ERROR_MESSAGES = {
     "No photos found from source": "선택한 범위에서 분석 가능한 사진을 찾지 못했습니다.",
     "No photos remained after screenshot exclusion": "스크린샷을 제외한 뒤 분석할 사진이 남지 않았습니다.",
 }
+
+logger = logging.getLogger(__name__)
 
 
 class PhotosMcpDirectClassificationController(NSWindowController):
@@ -894,6 +898,8 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         self._run_accepted = True
         self._update_step_states()
         job_id = str(payload.get("job_id") or payload.get("run_id") or "")
+        if job_id and self._selected_source == "google_photos":
+            self._complete_google_automation_action(job_id)
         self._status_label.setStringValue_(
             "사진 분류 작업을 시작했습니다. 최근 작업에서 진행 상황을 확인할 수 있습니다."
         )
@@ -909,6 +915,25 @@ class PhotosMcpDirectClassificationController(NSWindowController):
             self._menu_controller.showMainJobs_(None)
         else:
             self.window().performClose_(None)
+
+    @objc.python_method
+    def _complete_google_automation_action(self, job_id: str) -> None:
+        state_store = getattr(self._menu_controller, "_state_store", None)
+        repository = getattr(state_store, "run_repository", None)
+        if repository is None:
+            return
+        try:
+            complete_google_picker_action(
+                repository=repository,
+                analysis_run_id=job_id,
+                picker_session_id=str(self._google_prepared.get("session_id") or ""),
+                selected_photo_count=int(self._google_prepared.get("materialized_photo_count") or 0),
+                excluded_video_count=int(self._google_prepared.get("excluded_video_count") or 0),
+            )
+        except Exception:
+            # The accepted analysis job must remain usable even if automation
+            # bookkeeping is temporarily unavailable.
+            logger.exception("failed to close Google Picker automation action")
 
     def commandFromControls(self) -> ClassificationCommand:
         profile = {"일반": "general", "인물": "person", "풍경": "landscape"}.get(

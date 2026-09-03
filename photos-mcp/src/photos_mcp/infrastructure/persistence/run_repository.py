@@ -129,6 +129,54 @@ class RunRepository:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (source, asset_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS photo_automation_checkpoints (
+                    automation_key TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    cursor TEXT NOT NULL DEFAULT '',
+                    overlap_started_at TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS photo_automation_runs (
+                    automation_run_id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    analysis_run_id TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_photo_automation_runs_status
+                    ON photo_automation_runs(status, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS processed_photo_assets (
+                    provider TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    provider_asset_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL DEFAULT '',
+                    automation_run_id TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    first_seen_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (provider, source_id, provider_asset_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_processed_photo_assets_status
+                    ON processed_photo_assets(provider, status, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS user_action_requests (
+                    request_id TEXT PRIMARY KEY,
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    request_type TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    expires_at TEXT NOT NULL DEFAULT '',
+                    notified_at TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_user_action_requests_status
+                    ON user_action_requests(status, updated_at DESC);
                 """
             )
             self._conn.commit()
@@ -242,6 +290,252 @@ class RunRepository:
         if row is None:
             return None
         return _decode(row["payload_json"], {}), str(row["updated_at"] or "")
+
+    def save_automation_checkpoint(self, automation_key: str, payload: dict[str, Any]) -> None:
+        now = _utcnow_iso()
+        normalized = dict(payload)
+        normalized["automation_key"] = automation_key
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO photo_automation_checkpoints
+                   (automation_key, provider, cursor, overlap_started_at, payload_json, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(automation_key) DO UPDATE SET
+                     provider=excluded.provider, cursor=excluded.cursor,
+                     overlap_started_at=excluded.overlap_started_at,
+                     payload_json=excluded.payload_json, updated_at=excluded.updated_at""",
+                (
+                    automation_key,
+                    str(normalized.get("provider") or ""),
+                    str(normalized.get("cursor") or ""),
+                    str(normalized.get("overlap_started_at") or ""),
+                    _json(normalized),
+                    now,
+                ),
+            )
+            self._conn.commit()
+
+    def get_automation_checkpoint(self, automation_key: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM photo_automation_checkpoints WHERE automation_key = ?",
+                (automation_key,),
+            ).fetchone()
+        return _decode(row["payload_json"], {}) if row is not None else None
+
+    def upsert_automation_run(self, payload: dict[str, Any]) -> None:
+        run_id = str(payload.get("automation_run_id") or "")
+        if not run_id:
+            raise ValueError("Automation run requires automation_run_id")
+        normalized = dict(payload)
+        now = _utcnow_iso()
+        created_at = str(normalized.get("created_at") or now)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO photo_automation_runs
+                   (automation_run_id, provider, status, analysis_run_id, payload_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(automation_run_id) DO UPDATE SET
+                     provider=excluded.provider, status=excluded.status,
+                     analysis_run_id=excluded.analysis_run_id,
+                     payload_json=excluded.payload_json, updated_at=excluded.updated_at""",
+                (
+                    run_id,
+                    str(normalized.get("provider") or ""),
+                    str(normalized.get("status") or "pending"),
+                    str(normalized.get("analysis_run_id") or ""),
+                    _json(normalized),
+                    created_at,
+                    now,
+                ),
+            )
+            self._conn.commit()
+
+    def get_automation_run(self, automation_run_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM photo_automation_runs WHERE automation_run_id = ?",
+                (automation_run_id,),
+            ).fetchone()
+        return _decode(row["payload_json"], {}) if row is not None else None
+
+    def list_automation_runs(self, *, statuses: set[str] | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT payload_json FROM photo_automation_runs"
+        params: tuple[Any, ...] = ()
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            sql += f" WHERE status IN ({placeholders})"  # noqa: S608
+            params = tuple(sorted(statuses))
+        sql += " ORDER BY updated_at ASC"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [_decode(row["payload_json"], {}) for row in rows]
+
+    def upsert_processed_photo_asset(self, payload: dict[str, Any]) -> None:
+        provider = str(payload.get("provider") or "")
+        source_id = str(payload.get("source_id") or "")
+        asset_id = str(payload.get("provider_asset_id") or payload.get("asset_id") or "")
+        if not provider or not source_id or not asset_id:
+            raise ValueError("Processed asset requires provider, source_id, and provider_asset_id")
+        normalized = dict(payload)
+        normalized["provider_asset_id"] = asset_id
+        now = _utcnow_iso()
+        first_seen_at = str(normalized.get("first_seen_at") or now)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO processed_photo_assets
+                   (provider, source_id, provider_asset_id, status, fingerprint,
+                    automation_run_id, payload_json, first_seen_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(provider, source_id, provider_asset_id) DO UPDATE SET
+                     status=excluded.status, fingerprint=excluded.fingerprint,
+                     automation_run_id=excluded.automation_run_id,
+                     payload_json=excluded.payload_json, updated_at=excluded.updated_at""",
+                (
+                    provider,
+                    source_id,
+                    asset_id,
+                    str(normalized.get("status") or "discovered"),
+                    str(normalized.get("fingerprint") or ""),
+                    str(normalized.get("automation_run_id") or ""),
+                    _json(normalized),
+                    first_seen_at,
+                    now,
+                ),
+            )
+            self._conn.commit()
+
+    def get_processed_photo_asset(self, provider: str, source_id: str, provider_asset_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT payload_json FROM processed_photo_assets
+                   WHERE provider = ? AND source_id = ? AND provider_asset_id = ?""",
+                (provider, source_id, provider_asset_id),
+            ).fetchone()
+        return _decode(row["payload_json"], {}) if row is not None else None
+
+    def list_processed_photo_assets(
+        self,
+        *,
+        provider: str,
+        source_id: str,
+        statuses: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT payload_json FROM processed_photo_assets WHERE provider = ? AND source_id = ?"
+        params: list[Any] = [provider, source_id]
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            sql += f" AND status IN ({placeholders})"  # noqa: S608
+            params.extend(sorted(statuses))
+        sql += " ORDER BY first_seen_at ASC"
+        with self._lock:
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [_decode(row["payload_json"], {}) for row in rows]
+
+    def update_processed_photo_assets_status(self, automation_run_id: str, status: str) -> int:
+        now = _utcnow_iso()
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT provider, source_id, provider_asset_id, payload_json
+                   FROM processed_photo_assets WHERE automation_run_id = ?""",
+                (automation_run_id,),
+            ).fetchall()
+            for row in rows:
+                payload = _decode(row["payload_json"], {})
+                payload["status"] = status
+                self._conn.execute(
+                    """UPDATE processed_photo_assets SET status = ?, payload_json = ?, updated_at = ?
+                       WHERE provider = ? AND source_id = ? AND provider_asset_id = ?""",
+                    (
+                        status,
+                        _json(payload),
+                        now,
+                        str(row["provider"]),
+                        str(row["source_id"]),
+                        str(row["provider_asset_id"]),
+                    ),
+                )
+            self._conn.commit()
+        return len(rows)
+
+    def save_user_action_request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request_id = str(payload.get("request_id") or "")
+        dedupe_key = str(payload.get("dedupe_key") or "")
+        if not request_id or not dedupe_key:
+            raise ValueError("User action request requires request_id and dedupe_key")
+        normalized = dict(payload)
+        now = _utcnow_iso()
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT payload_json FROM user_action_requests WHERE dedupe_key = ?",
+                (dedupe_key,),
+            ).fetchone()
+            if existing is not None:
+                return _decode(existing["payload_json"], {})
+            self._conn.execute(
+                """INSERT INTO user_action_requests
+                   (request_id, dedupe_key, request_type, provider, status, payload_json,
+                    expires_at, notified_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    request_id,
+                    dedupe_key,
+                    str(normalized.get("request_type") or ""),
+                    str(normalized.get("provider") or ""),
+                    str(normalized.get("status") or "pending"),
+                    _json(normalized),
+                    str(normalized.get("expires_at") or ""),
+                    str(normalized.get("notified_at") or ""),
+                    str(normalized.get("created_at") or now),
+                    now,
+                ),
+            )
+            self._conn.commit()
+        return normalized
+
+    def get_user_action_request(self, request_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM user_action_requests WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+        return _decode(row["payload_json"], {}) if row is not None else None
+
+    def list_user_action_requests(
+        self,
+        *,
+        statuses: set[str] | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT payload_json FROM user_action_requests"
+        params: list[Any] = []
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            sql += f" WHERE status IN ({placeholders})"  # noqa: S608
+            params.extend(sorted(statuses))
+        sql += " ORDER BY created_at ASC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._lock:
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [_decode(row["payload_json"], {}) for row in rows]
+
+    def update_user_action_status(self, request_id: str, status: str, *, notified_at: str = "") -> dict[str, Any] | None:
+        current = self.get_user_action_request(request_id)
+        if current is None:
+            return None
+        current["status"] = status
+        if notified_at:
+            current["notified_at"] = notified_at
+        now = _utcnow_iso()
+        with self._lock:
+            self._conn.execute(
+                """UPDATE user_action_requests
+                   SET status = ?, payload_json = ?, notified_at = ?, updated_at = ?
+                   WHERE request_id = ?""",
+                (status, _json(current), str(current.get("notified_at") or ""), now, request_id),
+            )
+            self._conn.commit()
+        return current
 
     def delete_runs(self, statuses: set[str]) -> list[str]:
         if not statuses:

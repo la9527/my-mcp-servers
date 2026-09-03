@@ -14,6 +14,7 @@ from photos_mcp.interfaces.mcp.facade.public_tools import photos_select as facad
 from photos_mcp.interfaces.mcp.facade.public_tools import photos_workflow as facade_photos_workflow
 from photos_mcp.interfaces.mcp.facade.public_tools import photos_write as facade_photos_write
 from photos_mcp.application.run_support import call_vendor
+from photos_mcp.domain.models.automation import validate_private_action_base_url
 from photos_mcp.application.mutation_approval import (
     _safe_mutation_error,
     begin_mutation_receipt,
@@ -322,6 +323,7 @@ def build_server(
                 },
             )
         if normalized_action in {
+            "daily_curate",
             "curate_to_album",
             "curate_to_directory",
             "classify_then_organize_by_category",
@@ -367,6 +369,75 @@ def build_server(
     @mcp.custom_route(config.health_path, methods=["GET"], include_in_schema=False)
     async def http_health_status(_request) -> JSONResponse:
         return JSONResponse(build_health_payload(config, state_store))
+
+    @mcp.custom_route("/actions/{request_id}", methods=["GET"], include_in_schema=False)
+    async def http_user_action(request):
+        from starlette.responses import HTMLResponse
+        from photos_mcp.interfaces.http.user_actions import render_user_action_page
+
+        request_id = str(request.path_params.get("request_id") or "")
+        payload = (
+            state_store.run_repository.get_user_action_request(request_id)
+            if state_store is not None and request_id
+            else None
+        )
+        html, status_code = render_user_action_page(payload, request_id=request_id)
+        return HTMLResponse(
+            html,
+            status_code=status_code,
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+            },
+        )
+
+    @mcp.custom_route("/automation/daily-curate", methods=["POST"], include_in_schema=False)
+    async def http_daily_curate(request):
+        # This resource-using but non-mutating trigger is deliberately loopback-only.
+        if config.host not in {"127.0.0.1", "localhost", "::1"}:
+            return JSONResponse({"status": "blocked", "error_code": "loopback_required"}, status_code=403)
+        try:
+            content_length = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            content_length = 0
+        if content_length > 8192:
+            return JSONResponse({"status": "blocked", "error_code": "request_too_large"}, status_code=413)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return JSONResponse({"status": "blocked", "error_code": "invalid_json"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"status": "blocked", "error_code": "invalid_json_object"}, status_code=400)
+        source = str(body.get("source") or "apple").strip().lower()
+        if source not in {"apple", "google"}:
+            return JSONResponse({"status": "blocked", "error_code": "unsupported_daily_curate_source"}, status_code=400)
+        try:
+            options = {
+                "source": source,
+                "source_id": str(body.get("source_id") or ("system-library" if source == "apple" else "default-account")),
+                "limit": max(1, min(int(body.get("limit") or 50), 500)),
+                "selection_profile": str(body.get("selection_profile") or "general"),
+                "exclude_screenshots": bool(body.get("exclude_screenshots", True)),
+                "lookback_hours": max(1.0, min(float(body.get("lookback_hours") or 48.0), 24.0 * 31.0)),
+                "overlap_hours": max(0.0, min(float(body.get("overlap_hours") or 6.0), 48.0)),
+                "mode": "review_only",
+            }
+            if body.get("action_base_url"):
+                options["action_base_url"] = validate_private_action_base_url(
+                    str(body["action_base_url"])
+                )
+        except (TypeError, ValueError):
+            return JSONResponse({"status": "blocked", "error_code": "invalid_daily_curate_options"}, status_code=400)
+        payload = await facade_photos_workflow(
+            state_store=state_store,
+            action="daily_curate",
+            options=options,
+        )
+        normalized = _ingest_tool_response("photos_workflow", payload, state_store)
+        return JSONResponse(normalized if isinstance(normalized, dict) else {"result": normalized})
 
     @mcp.custom_route(f"{config.health_path}/capabilities", methods=["GET"], include_in_schema=False)
     async def http_health_capabilities(_request) -> JSONResponse:
