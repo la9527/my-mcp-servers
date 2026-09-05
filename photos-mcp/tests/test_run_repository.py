@@ -64,3 +64,63 @@ def test_repository_persists_photo_asset_readiness(tmp_path) -> None:
         "readiness": "ready",
         "local_path_available": True,
     }
+
+
+def test_repository_persists_safe_browser_mission_metrics(tmp_path) -> None:
+    path = tmp_path / "jobs.db"
+    repository = RunRepository(path)
+    repository.upsert_browser_mission_run(
+        {
+            "mission_run_id": "browser-mission-1",
+            "picker_session_id": "picker-1",
+            "control_policy": "qwen-agent",
+            "status": "completed",
+            "last_stage": "completed",
+            "model_metrics": {
+                "target": "linux-long-context",
+                "request_count": 5,
+                "request_elapsed_seconds": 12.5,
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+            },
+        }
+    )
+
+    reopened = RunRepository(path)
+    latest = reopened.list_browser_mission_runs(limit=1)[0]
+
+    assert latest["mission_run_id"] == "browser-mission-1"
+    assert latest["status"] == "completed"
+    assert latest["model_metrics"]["total_tokens"] == 120
+
+
+def test_recommendation_receipt_replaces_managed_destination_with_real_album_id(
+    tmp_path,
+) -> None:
+    repository = RunRepository(tmp_path / "jobs.db")
+    base = {
+        "receipt_id": "publish-stable",
+        "collection_id": "collection-1",
+        "group_id": "monthly:2026-09",
+        "local_asset_id": "local-asset-1",
+        "destination_type": "apple_album",
+        "destination_id": "managed:monthly:2026-09",
+        "state": "failed",
+    }
+    repository.upsert_recommendation_destination_receipt(base)
+    repository.upsert_recommendation_destination_receipt(
+        {
+            **base,
+            "destination_id": "apple-album-real-id",
+            "state": "completed",
+            "reconciled_at": "2026-09-05T05:00:00+00:00",
+        }
+    )
+
+    receipts = repository.list_recommendation_destination_receipts(
+        group_id="monthly:2026-09"
+    )
+    assert len(receipts) == 1
+    assert receipts[0]["destination_id"] == "apple-album-real-id"
+    assert receipts[0]["state"] == "completed"

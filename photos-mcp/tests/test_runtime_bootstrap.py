@@ -86,6 +86,25 @@ def test_default_terminal_python_uses_bundle_python(tmp_path: Path, monkeypatch)
     )
 
 
+def test_default_terminal_python_accepts_py2app_python_executable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("PHOTO_RANKER_TERMINAL_PYTHON_BIN", raising=False)
+    macos_dir = tmp_path / "PhotosMcp.app" / "Contents" / "MacOS"
+    macos_dir.mkdir(parents=True)
+    python_path = macos_dir / "python"
+    python_path.write_text("", encoding="utf-8")
+
+    assert (
+        default_terminal_python(
+            "PHOTO_RANKER_TERMINAL_PYTHON_BIN",
+            tmp_path,
+            executable_path=python_path,
+        )
+        == str(python_path)
+    )
+
+
 def test_default_terminal_python_uses_ancestor_source_venv(
     tmp_path: Path, monkeypatch
 ) -> None:

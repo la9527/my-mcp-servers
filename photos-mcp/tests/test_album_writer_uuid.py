@@ -13,6 +13,12 @@ import pytest
 from photos_mcp.infrastructure.vendor_adapter.loader import prepare_vendor_runtime
 
 
+@pytest.fixture(autouse=True)
+def _use_direct_mode_for_unit_fakes(monkeypatch):
+    """Keep in-process fake-library tests independent of the production Terminal default."""
+    monkeypatch.setenv("PHOTO_RANKER_APPLE_EVENTS_MODE", "direct")
+
+
 def _album_writer_module():
     prepare_vendor_runtime("photo-ranker")
     return importlib.import_module("photos_mcp_vendor_photo_ranker.album_writer")

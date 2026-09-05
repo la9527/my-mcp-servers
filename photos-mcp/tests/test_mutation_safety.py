@@ -5,6 +5,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from apple_terminal_helper import TerminalHelperError
 
 from photos_mcp.app.config import load_config
+from photos_mcp.application.recommendation_storage import RecommendationStorageService
 from photos_mcp.application.mutation_approval import (
     finalize_mutation_receipt,
     require_mutation_approval,
@@ -21,6 +22,128 @@ class MockMcpClient:
 
     async def call(self, name: str, arguments: dict):
         return await self._tools[name].run(arguments, convert_result=False)
+
+
+@pytest.mark.asyncio
+async def test_recommendation_group_publish_requires_exact_approved_plan(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "recommendations"
+    source = tmp_path / "photo.jpg"
+    source.write_bytes(b"recommended-photo")
+    monkeypatch.setenv("PHOTOS_MCP_RECOMMENDATION_ROOT", str(root))
+    store = PhotosMcpStateStore(
+        endpoint="http://local/mcp",
+        health_endpoint="http://local/health",
+        run_repository=RunRepository(tmp_path / "state.sqlite3"),
+    )
+    materialized = RecommendationStorageService(
+        repository=store.run_repository,
+        root=root,
+    ).materialize(
+        analysis_run_id="analysis-approved",
+        automation_run_id="daily-approved",
+        provider="apple_photos",
+        source_id="system-library",
+        items=[
+            {
+                "photo_id": "apple-photo-uuid",
+                "provider_asset_id": "apple-photo-uuid",
+                "source_photo_path": str(source),
+                "recommended_in_cluster": True,
+                "recommendation_slot": 1,
+                "scene_cluster_id": "scene",
+                "capture_date": "2026-09-03T12:00:00+09:00",
+                "total_score": 95,
+                "quality_score": 94,
+                "technical_score": 93,
+            }
+        ],
+    )
+    assert materialized["status"] == "completed"
+    writes: list[list[str]] = []
+
+    async def vendor(_server, function, *args, **_kwargs):
+        assert function == "add_to_album"
+        import json
+
+        writes.append(json.loads(args[0]))
+        return {
+            "album": "2026년 09월 추천 사진",
+            "album_id": "apple-album-approved",
+            "added": 1,
+            "failed": 0,
+        }
+
+    async def photos_run(**_kwargs):
+        raise AssertionError("Apple-origin recommendation must not be reimported")
+
+    monkeypatch.setattr(
+        "photos_mcp.interfaces.mcp.facade.public_tools.call_vendor",
+        vendor,
+    )
+    monkeypatch.setattr(
+        "photos_mcp.interfaces.mcp.facade.public_tools.photos_run",
+        photos_run,
+    )
+    client = MockMcpClient(store)
+    arguments = {
+        "action": "publish_recommendation_group",
+        "options": {"group_id": "monthly:2026-09"},
+    }
+
+    approval = await client.call("photos_write", arguments)
+
+    assert approval["status"] == "awaiting_approval"
+    assert approval["mutation_plan"]["photo_count"] == 1
+    assert approval["mutation_plan"]["destination_provider"] == "apple_photos"
+    assert approval["mutation_plan"]["content_fingerprint"]
+    assert writes == []
+
+    assert store.decide_mutation_plan(approval["approval_token"], "approved") is True
+    completed = await client.call(
+        "photos_write",
+        {
+            "action": "publish_recommendation_group",
+            "options": {
+                "group_id": "monthly:2026-09",
+                "approval_token": approval["approval_token"],
+            },
+        },
+    )
+
+    assert completed["status"] == "completed"
+    assert completed["published_count"] == 1
+    assert completed["mutation_receipt"]["status"] == "completed"
+    assert writes == [["apple-photo-uuid"]]
+
+
+@pytest.mark.asyncio
+async def test_blocked_recommendation_plan_never_creates_approval_token(tmp_path) -> None:
+    store = PhotosMcpStateStore(
+        endpoint="http://local/mcp",
+        health_endpoint="http://local/health",
+        run_repository=RunRepository(tmp_path / "state.sqlite3"),
+    )
+    client = MockMcpClient(store)
+
+    result = await client.call(
+        "photos_write",
+        {
+            "action": "configure_recommendation_group",
+            "options": {
+                "group_id": "monthly:2099-01",
+                "destination_provider": "apple_photos",
+            },
+        },
+    )
+
+    assert result["status"] == "blocked"
+    assert result["error_code"] == "recommendation_group_not_found"
+    assert result["approval_required"] is False
+    assert "approval_token" not in result
+    assert store.snapshot().pending_mutation_plans == []
 
 
 @pytest.mark.asyncio
@@ -226,6 +349,53 @@ def test_pre_execution_blocked_receipt_allows_a_fresh_approval(tmp_path) -> None
     retried, _ = require_mutation_approval(
         "photos_write",
         "export_selected_bundle",
+        options,
+        repository=repository,
+        mutation_plan=plan,
+    )
+
+    assert retried is not None
+    assert retried["status"] == "awaiting_approval"
+    assert retried["approval_token"] != first["approval_token"]
+
+
+def test_recommendation_helper_missing_receipt_allows_a_fresh_approval(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "runs.sqlite3")
+    options = {"group_id": "monthly:2026-09"}
+    plan = {
+        "action": "publish_recommendation_group",
+        "group_id": "monthly:2026-09",
+        "photo_ids": ["local-1"],
+    }
+    first, _ = require_mutation_approval(
+        "photos_write",
+        "publish_recommendation_group",
+        options,
+        repository=repository,
+        mutation_plan=plan,
+    )
+    assert first is not None
+    assert repository.decide_mutation_plan(first["approval_token"], "approved")
+    assert repository.consume_mutation_plan(first["approval_token"])
+    repository.save_mutation_receipt(
+        finalize_mutation_receipt(
+            {
+                "receipt_id": "receipt-helper-missing",
+                "idempotency_key": first["idempotency_key"],
+                "action": "publish_recommendation_group",
+                "requested_photo_ids": ["local-1"],
+            },
+            {
+                "status": "failed",
+                "published_count": 0,
+                "error_code": "terminal_helper_python_missing",
+            },
+        )
+    )
+
+    retried, _ = require_mutation_approval(
+        "photos_write",
+        "publish_recommendation_group",
         options,
         repository=repository,
         mutation_plan=plan,

@@ -67,19 +67,23 @@ class GooglePhotosLibraryClient:
         *,
         album_name: str,
         job_id: str,
+        album_id: str = "",
     ) -> dict[str, Any]:
-        album = await self._json_request(
-            "POST",
-            f"{self._api_root}/albums",
-            {"album": {"title": album_name[:500]}},
-        )
-        album_id = str(album.get("id") or "")
-        if not album_id:
-            raise GooglePhotosApiError(
-                status=502,
-                code="missing_album_id",
-                message="Google Photos did not return an album id",
+        album: dict[str, Any] = {}
+        resolved_album_id = str(album_id or "")
+        if not resolved_album_id:
+            album = await self._json_request(
+                "POST",
+                f"{self._api_root}/albums",
+                {"album": {"title": album_name[:500]}},
             )
+            resolved_album_id = str(album.get("id") or "")
+            if not resolved_album_id:
+                raise GooglePhotosApiError(
+                    status=502,
+                    code="missing_album_id",
+                    message="Google Photos did not return an album id",
+                )
 
         completed: list[tuple[MaterializedPhotoContent, str]] = []
         failed: list[str] = []
@@ -93,13 +97,14 @@ class GooglePhotosLibraryClient:
 
         created_count = 0
         media_item_ids: list[str] = []
+        created_asset_keys: list[str] = []
         for start in range(0, len(completed), 50):
             batch = completed[start : start + 50]
             response = await self._json_request(
                 "POST",
                 f"{self._api_root}/mediaItems:batchCreate",
                 {
-                    "albumId": album_id,
+                    "albumId": resolved_album_id,
                     "newMediaItems": [
                         {
                             "simpleMediaItem": {
@@ -126,17 +131,20 @@ class GooglePhotosLibraryClient:
                     continue
                 if media_id:
                     media_item_ids.append(media_id)
+                created_asset_keys.append(content.asset.stable_key)
                 created_count += 1
 
         return {
             "job_id": job_id,
-            "album_id": album_id,
+            "album_id": resolved_album_id,
             "album_product_url": str(album.get("productUrl") or ""),
             "requested_count": len(contents),
             "uploaded_count": len(completed),
             "created_count": created_count,
             "failed_count": len(set(failed)),
             "media_item_ids": media_item_ids,
+            "created_asset_keys": created_asset_keys,
+            "failed_asset_keys": sorted(set(failed)),
             "state": "completed" if not failed else "partial_failure",
         }
 
@@ -313,6 +321,7 @@ class GoogleAppCreatedLibraryDestination:
             "total_bytes": total_bytes,
             "storage_warning_required": total_bytes > 25 * 1024 * 1024,
             "album_name": str(options.get("album_name") or ""),
+            "album_id": str(options.get("album_id") or ""),
             "content_fingerprint": _content_fingerprint(contents),
             "approved": False,
         }
@@ -339,6 +348,7 @@ class GoogleAppCreatedLibraryDestination:
                 contents,
                 album_name=str(approved_plan.get("album_name") or "Photos MCP"),
                 job_id=str(approved_plan.get("plan_id") or uuid4().hex),
+                album_id=str(approved_plan.get("album_id") or ""),
             )
         if self._uploader is None:
             raise RuntimeError("Google Photos Library destination is not configured")

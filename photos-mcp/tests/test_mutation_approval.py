@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 
 from photos_mcp.application.mutation_approval import (
+    begin_mutation_receipt,
     clear_pending_mutation_plans,
     require_mutation_approval,
 )
@@ -11,6 +12,50 @@ from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
 def setup_function() -> None:
     clear_pending_mutation_plans()
+
+
+def test_recommendation_receipt_carries_destination_album_for_recovery() -> None:
+    receipt = begin_mutation_receipt(
+        {
+            "idempotency_key": "mutation:test",
+            "mutation_plan": {
+                "action": "publish_recommendation_group",
+                "destination_album_name": "2026-09 추천",
+                "destination_album_id": "apple-album-id",
+                "photo_ids": ["local-1"],
+            },
+        },
+        {},
+    )
+
+    assert receipt["target_album_name"] == "2026-09 추천"
+    assert receipt["target_album_id"] == "apple-album-id"
+    assert receipt["folder"] == "Photos MCP"
+
+
+def test_completed_noop_plan_does_not_issue_approval_token(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "runs.sqlite3")
+    payload, approved = require_mutation_approval(
+        "photos_write",
+        "publish_recommendation_group",
+        {"group_id": "monthly:2026-09"},
+        repository=repository,
+        mutation_plan={
+            "status": "completed",
+            "group_id": "monthly:2026-09",
+            "duplicate_suppressed": True,
+            "already_published_count": 10,
+            "photo_ids": [],
+            "photo_count": 0,
+        },
+    )
+
+    assert approved is None
+    assert payload is not None
+    assert payload["status"] == "completed"
+    assert payload["approval_required"] is False
+    assert "approval_token" not in payload
+    assert repository.list_mutation_plans() == []
 
 
 def test_write_requires_plan_before_execution() -> None:

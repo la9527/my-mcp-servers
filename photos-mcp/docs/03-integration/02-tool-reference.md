@@ -15,6 +15,8 @@
 | --- | --- | --- | --- |
 | `photos_query` | `artifacts` | 없음 | 실행 산출물 조회 |
 | `photos_query` | `automation_actions` | 없음 | 텔레그램 브리지가 처리할 사용자 조치 요청 조회 |
+| `photos_query` | `recommendation_group` | `group_id` | 추천 그룹의 로컬 멤버와 목적지 영수증 조회 |
+| `photos_query` | `recommendation_groups` | 없음 | 날짜별 로컬 보관소와 연결된 추천 그룹 목록 조회 |
 | `photos_query` | `automation_status` | `automation_run_id` | 일일 큐레이션 실행 상태 조회 |
 | `photos_query` | `cancel` | 없음 | 실행 취소 |
 | `photos_query` | `guide` | 없음 | 목표별 안전 호출 안내 |
@@ -45,6 +47,8 @@
 | `photos_write` | `export_selected_bundle` | `run_id` | 로컬·앨범 복합 내보내기 |
 | `photos_write` | `import_to_album` | `photo_paths`, `target_album_name` | 로컬 사진을 Apple 사진 앨범으로 가져오기 |
 | `photos_write` | `organize_by_category` | `run_id` | 결과를 카테고리 앨범으로 정리 |
+| `photos_write` | `publish_recommendation_group` | `group_id` | 로컬 검증을 마친 추천 그룹을 고정된 Apple/Google 앨범에 승인 후 반영 |
+| `photos_write` | `configure_recommendation_group` | `group_id`, `destination_provider`; 선택 `destination_album_name`, `destination_album_id` | 그룹 목적지를 `apple_photos`, `google_photos`, `local_only` 중 하나로 승인 고정 |
 <!-- action-contract:end -->
 
 ## 공통 조회 옵션

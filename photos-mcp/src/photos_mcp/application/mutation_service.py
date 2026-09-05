@@ -6,6 +6,7 @@ from typing import Any
 
 from photos_mcp.application.action_options import ActionValidationError, validate_action_options
 from photos_mcp.application.run_support import call_vendor
+from photos_mcp.application.recommendation_publish import RecommendationGroupPublishService
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
@@ -59,6 +60,32 @@ async def resolve_mutation_plan(
         "photo_ids": [],
         "photo_targets": [],
     }
+
+    if selected_action == "publish_recommendation_group":
+        if state_store is None:
+            return {
+                "status": "blocked",
+                "error_code": "state_store_unavailable",
+                "action": selected_action,
+            }
+        return RecommendationGroupPublishService(
+            repository=state_store.run_repository,
+        ).prepare_plan(str(opts.get("group_id") or ""))
+    if selected_action == "configure_recommendation_group":
+        if state_store is None:
+            return {
+                "status": "blocked",
+                "error_code": "state_store_unavailable",
+                "action": selected_action,
+            }
+        return RecommendationGroupPublishService(
+            repository=state_store.run_repository,
+        ).prepare_destination_plan(
+            group_id=str(opts.get("group_id") or ""),
+            destination_provider=str(opts.get("destination_provider") or ""),
+            destination_album_name=str(opts.get("destination_album_name") or ""),
+            destination_album_id=str(opts.get("destination_album_id") or ""),
+        )
 
     if selected_action in {
         "add_selected_to_album",

@@ -7,6 +7,8 @@ import pytest
 
 from photos_mcp.app.config import load_config
 import photos_mcp.interfaces.mcp.facade.public_tools as public_tools
+import photos_mcp.interfaces.mcp.server as server_module
+import photos_mcp.application.usage_service as usage_service
 from photos_mcp.interfaces.mcp.facade.public_tools import photos_workflow, photos_write
 from photos_mcp.application.write_service import handle_write
 from photos_mcp.interfaces.mcp.server import build_server
@@ -113,7 +115,23 @@ async def test_photos_query_status_routes_to_status_summary() -> None:
 
 
 @pytest.mark.asyncio
-async def test_photos_query_guide_returns_runtime_and_safe_flow() -> None:
+async def test_photos_query_guide_returns_runtime_and_safe_flow(monkeypatch) -> None:
+    monkeypatch.setattr(
+        server_module,
+        "vision_runtime_summary",
+        lambda **_kwargs: {
+            "provider": "linux_qwen36",
+            "model": "Qwen3.8-Flash-Next-UD-IQ4_XS.gguf",
+        },
+    )
+    monkeypatch.setattr(
+        usage_service,
+        "vision_runtime_summary",
+        lambda **_kwargs: {
+            "provider": "linux_qwen36",
+            "model": "Qwen3.8-Flash-Next-UD-IQ4_XS.gguf",
+        },
+    )
     client = _client()
 
     payload = await client.call_tool(
@@ -124,7 +142,7 @@ async def test_photos_query_guide_returns_runtime_and_safe_flow() -> None:
     assert payload["status"] == "ok"
     assert payload["goal"] == "album"
     assert payload["vision_runtime"]["provider"] == "linux_qwen36"
-    assert payload["vision_runtime"]["model"] == "Qwen3.8-27B-Q4_K_M.gguf"
+    assert payload["vision_runtime"]["model"] == "Qwen3.8-Flash-Next-UD-IQ4_XS.gguf"
     assert payload["safety"]["write_plan_approval_required"] is True
     assert payload["guide"]["steps"][-1] == {
         "tool": "photos_write",

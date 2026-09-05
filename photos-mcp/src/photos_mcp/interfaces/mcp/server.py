@@ -22,6 +22,7 @@ from photos_mcp.application.mutation_approval import (
     require_mutation_approval,
 )
 from photos_mcp.application.mutation_service import resolve_mutation_plan
+from photos_mcp.application.recommendation_storage import reconcile_pending_recommendations
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore, TERMINAL_JOB_STATUSES, job_snapshot_from_payload
 from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
 
@@ -164,11 +165,17 @@ def build_health_payload(config, state_store: PhotosMcpStateStore | None) -> dic
     daemon_status = snapshot.daemon_status if snapshot else "stopped"
     preflight_status = snapshot.preflight_status if snapshot else "pending"
     transport_status = "ok" if daemon_status in {"ready", "busy"} else daemon_status
+    browser_missions = (
+        state_store.run_repository.list_browser_mission_runs(limit=1)
+        if state_store is not None
+        else []
+    )
     capabilities = {
         "status": preflight_status,
         "checks": snapshot.preflight_checks if snapshot else [],
         "last_checked_at": snapshot.last_preflight_at if snapshot else "",
         "vision_runtime": vision_runtime_summary(check_ready=True),
+        "latest_browser_mission": browser_missions[0] if browser_missions else {},
     }
     return {
         "status": transport_status,
@@ -438,6 +445,29 @@ def build_server(
         )
         normalized = _ingest_tool_response("photos_workflow", payload, state_store)
         return JSONResponse(normalized if isinstance(normalized, dict) else {"result": normalized})
+
+    @mcp.custom_route(
+        "/automation/reconcile-recommendations",
+        methods=["POST"],
+        include_in_schema=False,
+    )
+    async def http_reconcile_recommendations(_request):
+        # Local recommendation copies are a private background workflow and are
+        # never exposed as a public/Tailscale write endpoint.
+        if config.host not in {"127.0.0.1", "localhost", "::1"}:
+            return JSONResponse(
+                {"status": "blocked", "error_code": "loopback_required"},
+                status_code=403,
+            )
+        if state_store is None:
+            return JSONResponse(
+                {"status": "blocked", "error_code": "state_store_unavailable"},
+                status_code=503,
+            )
+        payload = await reconcile_pending_recommendations(
+            repository=state_store.run_repository,
+        )
+        return JSONResponse(payload)
 
     @mcp.custom_route(f"{config.health_path}/capabilities", methods=["GET"], include_in_schema=False)
     async def http_health_capabilities(_request) -> JSONResponse:

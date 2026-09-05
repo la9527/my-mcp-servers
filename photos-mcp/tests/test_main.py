@@ -175,6 +175,15 @@ def test_build_health_payload_reflects_state_store_status() -> None:
         health_endpoint="http://127.0.0.1:18791/health",
     )
     state_store.set_daemon_status("ready")
+    state_store.run_repository.upsert_browser_mission_run(
+        {
+            "mission_run_id": "browser-mission-health",
+            "status": "completed",
+            "control_policy": "qwen-agent",
+            "last_stage": "completed",
+            "model_metrics": {"request_count": 4, "total_tokens": 321},
+        }
+    )
 
     payload = build_health_payload(load_config(), state_store)
 
@@ -184,6 +193,12 @@ def test_build_health_payload_reflects_state_store_status() -> None:
     assert payload["transport"]["status"] == "ok"
     assert payload["transport"]["daemon_status"] == "ready"
     assert payload["capabilities"]["status"] == "pending"
+    assert payload["capabilities"]["latest_browser_mission"]["mission_run_id"] == (
+        "browser-mission-health"
+    )
+    assert payload["capabilities"]["latest_browser_mission"]["model_metrics"][
+        "total_tokens"
+    ] == 321
     assert payload["endpoint"] == "http://127.0.0.1:18791/mcp"
 
 
@@ -303,6 +318,36 @@ def test_build_http_app_daily_curate_trigger_is_read_only_and_bounded(monkeypatc
     assert "target_album_name" not in calls[0]["options"]
     assert invalid.status_code == 400
     assert unsafe.status_code == 400
+
+
+def test_build_http_app_reconciles_recommendations_on_loopback(monkeypatch) -> None:
+    from starlette.testclient import TestClient
+    import photos_mcp.interfaces.mcp.server as server_module
+
+    calls = []
+
+    async def fake_reconcile(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "completed",
+            "completed_run_count": 1,
+            "new_file_count": 2,
+        }
+
+    monkeypatch.setattr(server_module, "reconcile_pending_recommendations", fake_reconcile)
+    config = load_config()
+    state_store = PhotosMcpStateStore(
+        endpoint=config.endpoint,
+        health_endpoint=config.health_endpoint,
+    )
+    app = build_http_app(config=config, state_store=state_store)
+
+    with TestClient(app) as client:
+        response = client.post("/automation/reconcile-recommendations", json={})
+
+    assert response.status_code == 200
+    assert response.json()["new_file_count"] == 2
+    assert calls == [{"repository": state_store.run_repository}]
 
 
 def test_load_vendor_server_uses_package_namespace_for_photo_ranker(monkeypatch) -> None:

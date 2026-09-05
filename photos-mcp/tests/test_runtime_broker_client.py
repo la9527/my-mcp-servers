@@ -77,7 +77,7 @@ def test_default_runtime_broker_client_uses_linux_prepare_command(monkeypatch) -
     assert isinstance(client, runtime_broker.CommandRuntimeBrokerClient)
     assert client.command.endswith("/bin/ensure-linux-llama-cpp")
     assert client.activity_command.endswith("/bin/touch-linux-llm-activity")
-    assert client.timeout_seconds == 330.0
+    assert client.timeout_seconds == 600.0
 
 
 @pytest.mark.asyncio

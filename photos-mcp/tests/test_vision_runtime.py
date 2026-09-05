@@ -42,7 +42,7 @@ def test_default_runtime_uses_linux_qwen38_model(monkeypatch) -> None:
     assert settings.api_base == "http://127.0.0.1:12801/v1"
     assert settings.target == "linux-qwen36-vlm"
     assert settings.prepare_command.endswith("/bin/ensure-linux-llama-cpp")
-    assert settings.prepare_timeout_seconds == 330.0
+    assert settings.prepare_timeout_seconds == 600.0
 
 
 def test_local_only_policy_forces_local_mlx(monkeypatch) -> None:
@@ -85,10 +85,17 @@ def test_runtime_summary_reports_ready_without_exposing_api_key(monkeypatch) -> 
     _clear_runtime_env(monkeypatch)
     monkeypatch.setenv("PHOTO_RANKER_VLM_API_KEY", "secret")
     monkeypatch.setattr(vision_runtime, "_openai_compat_ready", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        vision_runtime,
+        "_openai_compat_active_model",
+        lambda *_args, **_kwargs: "Qwen3.8-Flash-Next-UD-IQ4_XS.gguf",
+    )
 
     payload = vision_runtime.vision_runtime_summary(check_ready=True)
 
     assert payload["status"] == "ready"
     assert payload["ready"] is True
-    assert payload["model"] == "Qwen3.8-27B-Q4_K_M.gguf"
+    assert payload["model"] == "Qwen3.8-Flash-Next-UD-IQ4_XS.gguf"
+    assert payload["configured_model"] == "Qwen3.8-27B-Q4_K_M.gguf"
+    assert payload["active_model"] == "Qwen3.8-Flash-Next-UD-IQ4_XS.gguf"
     assert "api_key" not in payload

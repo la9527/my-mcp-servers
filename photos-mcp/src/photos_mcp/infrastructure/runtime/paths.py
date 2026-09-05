@@ -4,12 +4,23 @@ from pathlib import Path
 import os
 
 
+PRIVATE_DIRECTORY_MODE = 0o700
+
+
 def _env_first(*names: str, default: str) -> str:
     for name in names:
         value = os.environ.get(name)
         if value:
             return value
     return default
+
+
+def ensure_private_directory(path: str | Path) -> Path:
+    """Create an application-owned data directory and remove broad access."""
+    target = Path(path).expanduser()
+    target.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIRECTORY_MODE)
+    target.chmod(PRIVATE_DIRECTORY_MODE)
+    return target
 
 
 def photos_mcp_home() -> Path:

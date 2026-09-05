@@ -20,6 +20,7 @@ from photos_mcp.application.preflight_service import prepare_photos_library_runt
 from photos_mcp.infrastructure.persistence.run_repository import default_run_repository_path
 from photos_mcp.app.single_instance import AlreadyRunningError, acquire_single_instance_lock
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
+from photos_mcp.infrastructure.runtime.paths import ensure_private_directory
 from photos_mcp.infrastructure.vendor_adapter.loader import load_vendor_server, prepare_vendor_runtime
 
 
@@ -84,6 +85,9 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             "[--health|--runtime-import-smoke|--vendor-runtime-smoke|--version]"
         )
         return 0
+
+    for private_root in (config.runtime_root, config.cache_root, config.logs_root):
+        ensure_private_directory(private_root)
 
     log_path = configure_root_logging(
         build_dated_log_path(config.logs_root, "photos-mcp-app.log")

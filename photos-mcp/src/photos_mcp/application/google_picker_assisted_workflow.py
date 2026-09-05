@@ -71,8 +71,36 @@ async def run_google_picker_assisted_workflow(
                 clicked_count=int(preselection.get("clicked_count") or 0),
                 selected_before=int(preselection.get("selected_before") or 0),
                 requested_count=int(preselection.get("requested_count") or preselect_count),
-                final_confirmation_clicked=False,
+                final_confirmation_clicked=bool(
+                    preselection.get("final_confirmation_clicked", False)
+                ),
             )
+            if str(preselection.get("status") or "") == "no_recent_photos":
+                await runtime.importer.cancel_selection(session.session_id)
+                completed_action = complete_google_picker_action(
+                    repository=repository,
+                    analysis_run_id="",
+                    picker_session_id=session.session_id,
+                    selected_photo_count=0,
+                    excluded_video_count=0,
+                    result="no_new_photos",
+                    previously_processed_count=0,
+                )
+                report(
+                    "no_new_photos",
+                    session_id=session.session_id,
+                    previously_processed_count=0,
+                )
+                return {
+                    "status": "completed",
+                    "result": "no_new_photos",
+                    "session_id": session.session_id,
+                    "analysis_run_id": "",
+                    "selected_photo_count": 0,
+                    "excluded_video_count": 0,
+                    "previously_processed_count": 0,
+                    "action_request_id": str((completed_action or {}).get("request_id") or ""),
+                }
             if auto_confirm:
                 confirmation = await browser_assistant.confirm_selection(
                     max_selected_count=preselect_count,

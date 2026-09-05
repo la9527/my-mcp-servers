@@ -29,6 +29,27 @@ Photos MCP는 별도 설정 파일보다 환경 변수를 우선 사용한다. �
 | `PHOTO_RANKER_MODEL_CACHE_ROOT` | `<cache>/models/photo-ranker` |
 | `PHOTO_SOURCE_CACHE_ROOT` | `<cache>/photo-source` |
 
+## 추천 사진 보관
+
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `PHOTOS_MCP_RECOMMENDATION_ROOT` | `/Volumes/ExtData/02_Services/PhotosMcp/recommendations` | 촬영일별 추천 primary 파일과 manifest를 보존하는 비공개 관리 root |
+| `PHOTO_RANKER_APPLE_EVENTS_MODE` | `terminal` | Apple Photos 앨범 쓰기를 제한시간이 있는 Terminal helper로 격리. 진단 목적 외에는 `direct` 사용 금지 |
+| `PHOTO_RANKER_ALBUM_TERMINAL_TIMEOUT_SECS` | `240` | Apple Photos 앨범 생성·가져오기 helper의 최대 대기 시간 |
+| `PHOTOS_MCP_RECOMMENDATION_DEFAULT_DESTINATION` | `apple_photos` | 새 월별 그룹의 2차 목적지: `apple_photos`, `google_photos`, `local_only` |
+| `PHOTOS_MCP_RECOMMENDATION_APPLE_FOLDER` | `Photos MCP` | Apple Photos에 생성하는 관리 앨범의 상위 folder |
+
+추천 root가 `/Volumes/<name>/...` 아래에 있으면 해당 외장 볼륨이 연결되지 않은
+경우 내장 디스크로 fallback하지 않고 저장을 실패 처리한다. root와 날짜 폴더는
+`0700`, 사진과 manifest는 `0600` 권한을 적용한다. 이 경로를 HTTP, WebUI 또는
+Tailscale serve 대상으로 직접 연결하지 않는다.
+
+추천 앨범 발행 receipt는 실제 album ID가 생기기 전 `managed:<group>` 임시 ID를
+가질 수 있다. 재시도 후 실제 ID가 생기면 동일한 안정적 `receipt_id`를 갱신한다.
+사진 가져오기 이후 receipt 저장 중 오류가 나면 즉시 다시 가져오지 말고, 먼저
+대상 앨범의 존재·album ID·사진 수와 앱 로그의 `imported` 수를 대조해
+reconciliation한다.
+
 ## 권장 원칙
 
 - port를 변경하면 Nanobot 연결 URL도 함께 변경한다.

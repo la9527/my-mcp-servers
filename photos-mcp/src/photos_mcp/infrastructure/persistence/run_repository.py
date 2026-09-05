@@ -149,6 +149,18 @@ class RunRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_photo_automation_runs_status
                     ON photo_automation_runs(status, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS browser_mission_runs (
+                    mission_run_id TEXT PRIMARY KEY,
+                    picker_session_id TEXT NOT NULL DEFAULT '',
+                    control_policy TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    last_stage TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_browser_mission_runs_updated
+                    ON browser_mission_runs(updated_at DESC);
                 CREATE TABLE IF NOT EXISTS processed_photo_assets (
                     provider TEXT NOT NULL,
                     source_id TEXT NOT NULL,
@@ -177,6 +189,100 @@ class RunRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_user_action_requests_status
                     ON user_action_requests(status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS recommendation_collections (
+                    collection_id TEXT PRIMARY KEY,
+                    analysis_run_id TEXT NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    automation_run_id TEXT NOT NULL DEFAULT '',
+                    provider TEXT NOT NULL,
+                    source_id TEXT NOT NULL DEFAULT '',
+                    local_run_date TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    recommended_count INTEGER NOT NULL DEFAULT 0,
+                    materialized_count INTEGER NOT NULL DEFAULT 0,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(analysis_run_id, policy_version)
+                );
+                CREATE INDEX IF NOT EXISTS idx_recommendation_collections_status
+                    ON recommendation_collections(status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS recommendation_members (
+                    collection_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    provider_asset_id TEXT NOT NULL,
+                    photo_id TEXT NOT NULL,
+                    recommendation_slot INTEGER NOT NULL DEFAULT 0,
+                    scene_cluster_id TEXT NOT NULL DEFAULT '',
+                    capture_date_local TEXT NOT NULL DEFAULT '',
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    local_asset_id TEXT NOT NULL DEFAULT '',
+                    materialization_status TEXT NOT NULL DEFAULT 'pending',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (collection_id, provider, provider_asset_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_recommendation_members_local_asset
+                    ON recommendation_members(local_asset_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS local_recommendation_assets (
+                    local_asset_id TEXT PRIMARY KEY,
+                    content_hash TEXT NOT NULL UNIQUE,
+                    relative_path TEXT NOT NULL,
+                    mime_type TEXT NOT NULL DEFAULT '',
+                    byte_size INTEGER NOT NULL DEFAULT 0,
+                    capture_date_local TEXT NOT NULL DEFAULT '',
+                    resource_role TEXT NOT NULL DEFAULT 'primary',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    verified_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_local_recommendation_assets_date
+                    ON local_recommendation_assets(capture_date_local, relative_path);
+
+                CREATE TABLE IF NOT EXISTS recommendation_groups (
+                    group_id TEXT PRIMARY KEY,
+                    group_type TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    date_from TEXT NOT NULL DEFAULT '',
+                    date_to TEXT NOT NULL DEFAULT '',
+                    destination_provider TEXT NOT NULL DEFAULT 'local_only',
+                    destination_album_id TEXT NOT NULL DEFAULT '',
+                    destination_album_name TEXT NOT NULL DEFAULT '',
+                    policy_state TEXT NOT NULL DEFAULT 'draft',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS recommendation_group_members (
+                    group_id TEXT NOT NULL,
+                    local_asset_id TEXT NOT NULL,
+                    collection_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (group_id, local_asset_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS recommendation_destination_receipts (
+                    receipt_id TEXT PRIMARY KEY,
+                    collection_id TEXT NOT NULL,
+                    group_id TEXT NOT NULL DEFAULT '',
+                    local_asset_id TEXT NOT NULL,
+                    destination_type TEXT NOT NULL,
+                    destination_id TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    reconciled_at TEXT NOT NULL DEFAULT '',
+                    UNIQUE(group_id, local_asset_id, destination_type, destination_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_recommendation_destination_state
+                    ON recommendation_destination_receipts(state, updated_at DESC);
                 """
             )
             self._conn.commit()
@@ -369,6 +475,457 @@ class RunRepository:
         sql += " ORDER BY updated_at ASC"
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
+        return [_decode(row["payload_json"], {}) for row in rows]
+
+    def upsert_browser_mission_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(payload.get("mission_run_id") or "")
+        if not run_id:
+            raise ValueError("Browser mission run requires mission_run_id")
+        normalized = dict(payload)
+        normalized["mission_run_id"] = run_id
+        now = _utcnow_iso()
+        created_at = str(normalized.get("created_at") or now)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO browser_mission_runs
+                   (mission_run_id, picker_session_id, control_policy, status,
+                    last_stage, payload_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(mission_run_id) DO UPDATE SET
+                     picker_session_id=excluded.picker_session_id,
+                     control_policy=excluded.control_policy,
+                     status=excluded.status, last_stage=excluded.last_stage,
+                     payload_json=excluded.payload_json, updated_at=excluded.updated_at""",
+                (
+                    run_id,
+                    str(normalized.get("picker_session_id") or ""),
+                    str(normalized.get("control_policy") or ""),
+                    str(normalized.get("status") or "running"),
+                    str(normalized.get("last_stage") or ""),
+                    _json(normalized),
+                    created_at,
+                    now,
+                ),
+            )
+            self._conn.commit()
+        return normalized
+
+    def list_browser_mission_runs(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        bounded_limit = max(1, min(int(limit), 100))
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT payload_json FROM browser_mission_runs "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (bounded_limit,),
+            ).fetchall()
+        return [_decode(row["payload_json"], {}) for row in rows]
+
+    def upsert_recommendation_collection(self, payload: dict[str, Any]) -> dict[str, Any]:
+        collection_id = str(payload.get("collection_id") or "")
+        analysis_run_id = str(payload.get("analysis_run_id") or "")
+        policy_version = str(payload.get("policy_version") or "")
+        provider = str(payload.get("provider") or "")
+        if not collection_id or not analysis_run_id or not policy_version or not provider:
+            raise ValueError(
+                "Recommendation collection requires collection_id, analysis_run_id, "
+                "policy_version, and provider"
+            )
+        normalized = dict(payload)
+        now = _utcnow_iso()
+        created_at = str(normalized.get("created_at") or now)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO recommendation_collections
+                   (collection_id, analysis_run_id, policy_version, automation_run_id,
+                    provider, source_id, local_run_date, status, recommended_count,
+                    materialized_count, payload_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(analysis_run_id, policy_version) DO UPDATE SET
+                     automation_run_id=excluded.automation_run_id,
+                     provider=excluded.provider, source_id=excluded.source_id,
+                     local_run_date=excluded.local_run_date, status=excluded.status,
+                     recommended_count=excluded.recommended_count,
+                     materialized_count=excluded.materialized_count,
+                     payload_json=excluded.payload_json, updated_at=excluded.updated_at""",
+                (
+                    collection_id,
+                    analysis_run_id,
+                    policy_version,
+                    str(normalized.get("automation_run_id") or ""),
+                    provider,
+                    str(normalized.get("source_id") or ""),
+                    str(normalized.get("local_run_date") or ""),
+                    str(normalized.get("status") or "pending"),
+                    max(0, int(normalized.get("recommended_count") or 0)),
+                    max(0, int(normalized.get("materialized_count") or 0)),
+                    _json(normalized),
+                    created_at,
+                    now,
+                ),
+            )
+            self._conn.commit()
+        return self.get_recommendation_collection(
+            analysis_run_id=analysis_run_id,
+            policy_version=policy_version,
+        ) or normalized
+
+    def get_recommendation_collection(
+        self,
+        *,
+        collection_id: str = "",
+        analysis_run_id: str = "",
+        policy_version: str = "",
+    ) -> dict[str, Any] | None:
+        if collection_id:
+            sql = "SELECT payload_json FROM recommendation_collections WHERE collection_id = ?"
+            params: tuple[Any, ...] = (collection_id,)
+        elif analysis_run_id and policy_version:
+            sql = (
+                "SELECT payload_json FROM recommendation_collections "
+                "WHERE analysis_run_id = ? AND policy_version = ?"
+            )
+            params = (analysis_run_id, policy_version)
+        else:
+            raise ValueError("Collection lookup requires collection_id or analysis_run_id + policy_version")
+        with self._lock:
+            row = self._conn.execute(sql, params).fetchone()
+        return _decode(row["payload_json"], {}) if row is not None else None
+
+    def list_recommendation_collections(
+        self,
+        *,
+        statuses: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT payload_json FROM recommendation_collections"
+        params: tuple[Any, ...] = ()
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            sql += f" WHERE status IN ({placeholders})"  # noqa: S608
+            params = tuple(sorted(statuses))
+        sql += " ORDER BY updated_at ASC"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [_decode(row["payload_json"], {}) for row in rows]
+
+    def upsert_recommendation_member(self, payload: dict[str, Any]) -> None:
+        collection_id = str(payload.get("collection_id") or "")
+        provider = str(payload.get("provider") or "")
+        provider_asset_id = str(payload.get("provider_asset_id") or "")
+        photo_id = str(payload.get("photo_id") or "")
+        if not collection_id or not provider or not provider_asset_id or not photo_id:
+            raise ValueError(
+                "Recommendation member requires collection_id, provider, provider_asset_id, and photo_id"
+            )
+        normalized = dict(payload)
+        now = _utcnow_iso()
+        created_at = str(normalized.get("created_at") or now)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO recommendation_members
+                   (collection_id, provider, provider_asset_id, photo_id,
+                    recommendation_slot, scene_cluster_id, capture_date_local,
+                    content_hash, local_asset_id, materialization_status,
+                    payload_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(collection_id, provider, provider_asset_id) DO UPDATE SET
+                     photo_id=excluded.photo_id,
+                     recommendation_slot=excluded.recommendation_slot,
+                     scene_cluster_id=excluded.scene_cluster_id,
+                     capture_date_local=excluded.capture_date_local,
+                     content_hash=excluded.content_hash,
+                     local_asset_id=excluded.local_asset_id,
+                     materialization_status=excluded.materialization_status,
+                     payload_json=excluded.payload_json, updated_at=excluded.updated_at""",
+                (
+                    collection_id,
+                    provider,
+                    provider_asset_id,
+                    photo_id,
+                    int(normalized.get("recommendation_slot") or 0),
+                    str(normalized.get("scene_cluster_id") or ""),
+                    str(normalized.get("capture_date_local") or ""),
+                    str(normalized.get("content_hash") or ""),
+                    str(normalized.get("local_asset_id") or ""),
+                    str(normalized.get("materialization_status") or "pending"),
+                    _json(normalized),
+                    created_at,
+                    now,
+                ),
+            )
+            self._conn.commit()
+
+    def list_recommendation_members(self, collection_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT payload_json FROM recommendation_members
+                   WHERE collection_id = ? ORDER BY recommendation_slot, photo_id""",
+                (collection_id,),
+            ).fetchall()
+        return [_decode(row["payload_json"], {}) for row in rows]
+
+    def list_recommendation_members_for_local_asset(
+        self,
+        local_asset_id: str,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT payload_json FROM recommendation_members
+                   WHERE local_asset_id = ? ORDER BY created_at""",
+                (local_asset_id,),
+            ).fetchall()
+        return [_decode(row["payload_json"], {}) for row in rows]
+
+    def upsert_local_recommendation_asset(self, payload: dict[str, Any]) -> dict[str, Any]:
+        local_asset_id = str(payload.get("local_asset_id") or "")
+        content_hash = str(payload.get("content_hash") or "")
+        relative_path = str(payload.get("relative_path") or "")
+        if not local_asset_id or not content_hash or not relative_path:
+            raise ValueError("Local recommendation asset requires id, hash, and relative path")
+        normalized = dict(payload)
+        now = _utcnow_iso()
+        created_at = str(normalized.get("created_at") or now)
+        verified_at = str(normalized.get("verified_at") or now)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO local_recommendation_assets
+                   (local_asset_id, content_hash, relative_path, mime_type, byte_size,
+                    capture_date_local, resource_role, payload_json, created_at,
+                    verified_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(content_hash) DO UPDATE SET
+                     relative_path=excluded.relative_path, mime_type=excluded.mime_type,
+                     byte_size=excluded.byte_size,
+                     capture_date_local=excluded.capture_date_local,
+                     resource_role=excluded.resource_role,
+                     payload_json=excluded.payload_json,
+                     verified_at=excluded.verified_at, updated_at=excluded.updated_at""",
+                (
+                    local_asset_id,
+                    content_hash,
+                    relative_path,
+                    str(normalized.get("mime_type") or ""),
+                    max(0, int(normalized.get("byte_size") or 0)),
+                    str(normalized.get("capture_date_local") or ""),
+                    str(normalized.get("resource_role") or "primary"),
+                    _json(normalized),
+                    created_at,
+                    verified_at,
+                    now,
+                ),
+            )
+            self._conn.commit()
+        return self.get_local_recommendation_asset(content_hash) or normalized
+
+    def get_local_recommendation_asset(self, content_hash: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM local_recommendation_assets WHERE content_hash = ?",
+                (content_hash,),
+            ).fetchone()
+        return _decode(row["payload_json"], {}) if row is not None else None
+
+    def list_local_recommendation_assets(
+        self,
+        *,
+        capture_date_local: str = "",
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT payload_json FROM local_recommendation_assets"
+        params: tuple[Any, ...] = ()
+        if capture_date_local:
+            sql += " WHERE capture_date_local = ?"
+            params = (capture_date_local,)
+        sql += " ORDER BY relative_path"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [_decode(row["payload_json"], {}) for row in rows]
+
+    def upsert_recommendation_group(self, payload: dict[str, Any]) -> dict[str, Any]:
+        group_id = str(payload.get("group_id") or "")
+        group_type = str(payload.get("group_type") or "")
+        display_name = str(payload.get("display_name") or "")
+        destination_provider = str(payload.get("destination_provider") or "local_only")
+        if not group_id or not group_type or not display_name:
+            raise ValueError("Recommendation group requires id, type, and display name")
+        if destination_provider not in {"apple_photos", "google_photos", "local_only"}:
+            raise ValueError("Unsupported recommendation group destination")
+        normalized = dict(payload)
+        now = _utcnow_iso()
+        created_at = str(normalized.get("created_at") or now)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO recommendation_groups
+                   (group_id, group_type, display_name, date_from, date_to,
+                    destination_provider, destination_album_id,
+                    destination_album_name, policy_state, payload_json,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(group_id) DO UPDATE SET
+                     display_name=excluded.display_name, date_from=excluded.date_from,
+                     date_to=excluded.date_to,
+                     destination_provider=excluded.destination_provider,
+                     destination_album_id=excluded.destination_album_id,
+                     destination_album_name=excluded.destination_album_name,
+                     policy_state=excluded.policy_state,
+                     payload_json=excluded.payload_json, updated_at=excluded.updated_at""",
+                (
+                    group_id,
+                    group_type,
+                    display_name,
+                    str(normalized.get("date_from") or ""),
+                    str(normalized.get("date_to") or ""),
+                    destination_provider,
+                    str(normalized.get("destination_album_id") or ""),
+                    str(normalized.get("destination_album_name") or ""),
+                    str(normalized.get("policy_state") or "draft"),
+                    _json(normalized),
+                    created_at,
+                    now,
+                ),
+            )
+            self._conn.commit()
+        return self.get_recommendation_group(group_id) or normalized
+
+    def get_recommendation_group(self, group_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM recommendation_groups WHERE group_id = ?",
+                (group_id,),
+            ).fetchone()
+        return _decode(row["payload_json"], {}) if row is not None else None
+
+    def list_recommendation_groups(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT payload_json FROM recommendation_groups ORDER BY date_from, group_id"
+            ).fetchall()
+        return [_decode(row["payload_json"], {}) for row in rows]
+
+    def add_recommendation_group_member(
+        self,
+        *,
+        group_id: str,
+        local_asset_id: str,
+        collection_id: str,
+    ) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                """INSERT INTO recommendation_group_members
+                   (group_id, local_asset_id, collection_id, created_at)
+                   VALUES (?, ?, ?, ?) ON CONFLICT(group_id, local_asset_id) DO NOTHING""",
+                (group_id, local_asset_id, collection_id, _utcnow_iso()),
+            )
+            self._conn.commit()
+        return cursor.rowcount == 1
+
+    def list_recommendation_group_members(self, group_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT m.group_id, m.local_asset_id, m.collection_id,
+                          a.payload_json AS asset_json
+                   FROM recommendation_group_members AS m
+                   JOIN local_recommendation_assets AS a
+                     ON a.local_asset_id = m.local_asset_id
+                   WHERE m.group_id = ? ORDER BY a.relative_path""",
+                (group_id,),
+            ).fetchall()
+        return [
+            {
+                "group_id": str(row["group_id"]),
+                "local_asset_id": str(row["local_asset_id"]),
+                "collection_id": str(row["collection_id"]),
+                "asset": _decode(row["asset_json"], {}),
+            }
+            for row in rows
+        ]
+
+    def upsert_recommendation_destination_receipt(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        required = {
+            "receipt_id",
+            "collection_id",
+            "local_asset_id",
+            "destination_type",
+            "state",
+        }
+        if any(not str(payload.get(key) or "") for key in required):
+            raise ValueError("Recommendation destination receipt is missing required fields")
+        normalized = dict(payload)
+        now = _utcnow_iso()
+        created_at = str(normalized.get("created_at") or now)
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT receipt_id FROM recommendation_destination_receipts WHERE receipt_id = ?",
+                (str(normalized["receipt_id"]),),
+            ).fetchone()
+            if existing is None:
+                existing = self._conn.execute(
+                    """SELECT receipt_id FROM recommendation_destination_receipts
+                       WHERE group_id = ? AND local_asset_id = ?
+                         AND destination_type = ? AND destination_id = ?""",
+                    (
+                        str(normalized.get("group_id") or ""),
+                        str(normalized["local_asset_id"]),
+                        str(normalized["destination_type"]),
+                        str(normalized.get("destination_id") or ""),
+                    ),
+                ).fetchone()
+            if existing is not None:
+                normalized["receipt_id"] = str(existing["receipt_id"])
+            self._conn.execute(
+                """INSERT INTO recommendation_destination_receipts
+                   (receipt_id, collection_id, group_id, local_asset_id,
+                    destination_type, destination_id, state, payload_json,
+                    created_at, updated_at, reconciled_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(receipt_id) DO UPDATE SET
+                     collection_id=excluded.collection_id,
+                     group_id=excluded.group_id,
+                     local_asset_id=excluded.local_asset_id,
+                     destination_type=excluded.destination_type,
+                     destination_id=excluded.destination_id,
+                     state=excluded.state,
+                     payload_json=excluded.payload_json,
+                     updated_at=excluded.updated_at,
+                     reconciled_at=excluded.reconciled_at""",
+                (
+                    str(normalized["receipt_id"]),
+                    str(normalized["collection_id"]),
+                    str(normalized.get("group_id") or ""),
+                    str(normalized["local_asset_id"]),
+                    str(normalized["destination_type"]),
+                    str(normalized.get("destination_id") or ""),
+                    str(normalized["state"]),
+                    _json(normalized),
+                    created_at,
+                    now,
+                    str(normalized.get("reconciled_at") or ""),
+                ),
+            )
+            self._conn.commit()
+        return normalized
+
+    def list_recommendation_destination_receipts(
+        self,
+        *,
+        collection_id: str = "",
+        group_id: str = "",
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if collection_id:
+            clauses.append("collection_id = ?")
+            params.append(collection_id)
+        if group_id:
+            clauses.append("group_id = ?")
+            params.append(group_id)
+        sql = "SELECT payload_json FROM recommendation_destination_receipts"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at"
+        with self._lock:
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
         return [_decode(row["payload_json"], {}) for row in rows]
 
     def upsert_processed_photo_asset(self, payload: dict[str, Any]) -> None:

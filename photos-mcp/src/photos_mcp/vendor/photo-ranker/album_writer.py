@@ -25,7 +25,10 @@ class AlbumWriter:
 
     def __init__(self) -> None:
         self._lib = None
-        self._apple_events_mode = os.getenv("PHOTO_RANKER_APPLE_EVENTS_MODE", "direct")
+        # Album writes can block indefinitely when photoscript runs inside the
+        # long-lived menu app.  The Terminal helper supplies a bounded IPC
+        # boundary and switches back to direct mode only inside that helper.
+        self._apple_events_mode = os.getenv("PHOTO_RANKER_APPLE_EVENTS_MODE", "terminal")
         self._app_dir = Path(__file__).resolve().parent
         self._terminal_python = default_terminal_python(
             "PHOTO_RANKER_TERMINAL_PYTHON_BIN",

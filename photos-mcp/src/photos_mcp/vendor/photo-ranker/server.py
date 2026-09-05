@@ -1426,6 +1426,68 @@ async def get_review_items(
     return json.dumps(items, ensure_ascii=False)
 
 
+@mcp.tool()
+async def get_recommended_items(
+    job_id: str,
+    top_n: int = 100000,
+) -> str:
+    """Return the immutable scene recommendations, independent of UI selection state."""
+
+    db = _get_job_db()
+    job = db.load_job(job_id)
+    if job is None:
+        return json.dumps({
+            "status": "failed",
+            "error_code": "job_not_found",
+            "job_id": job_id,
+        })
+    items = [
+        item
+        for item in _build_review_items(
+            db,
+            job_id,
+            top_n=max(1, min(int(top_n), 100000)),
+            selected_only=False,
+        )
+        if bool(item.get("recommended_in_cluster"))
+        and int(item.get("recommendation_slot") or 0) in {1, 2}
+        and str(item.get("photo_id") or "")
+    ]
+    if str(job.source or "") == "apple" and items:
+        _prepare_apple_original_ids(
+            db,
+            job_id,
+            job,
+            [str(item["photo_id"]) for item in items],
+        )
+        refreshed = _build_review_items(
+            db,
+            job_id,
+            top_n=100000,
+            selected_only=False,
+        )
+        recommended_ids = {str(item["photo_id"]) for item in items}
+        items = [
+            item
+            for item in _prepare_original_export_items(db, job_id, refreshed)
+            if str(item.get("photo_id") or "") in recommended_ids
+            and bool(item.get("recommended_in_cluster"))
+            and int(item.get("recommendation_slot") or 0) in {1, 2}
+        ]
+    origin_provider = str(dict(job.request_options or {}).get("origin_provider") or "")
+    return json.dumps(
+        [
+            {
+                **item,
+                "provider_asset_id": str(item.get("photo_id") or ""),
+                "origin_provider": origin_provider,
+            }
+            for item in items
+        ],
+        ensure_ascii=False,
+    )
+
+
 def _prepare_original_export_items(db, job_id: str, items: list[dict]) -> list[dict]:
     """Replace Apple derivative paths with verified original paths only."""
 
@@ -1455,6 +1517,60 @@ def _prepare_original_export_items(db, job_id: str, items: list[dict]) -> list[d
             original_path = None
         prepared.append({**item, "source_photo_path": str(original_path or "")})
     return prepared
+
+
+def _prepare_apple_original_ids(db, job_id: str, job, requested_ids: list[str]) -> dict:
+    """Prepare exact Apple originals without consulting mutable review selections."""
+    try:
+        database = get_apple_photos_db()
+    except Exception:
+        return {
+            "status": "failed",
+            "error_code": "apple_photos_database_unavailable",
+            "requested": len(requested_ids),
+            "ready": 0,
+            "pending": len(requested_ids),
+            "retry_available": True,
+        }
+
+    from .sources import download_apple_original
+
+    assets = db.list_job_assets(job_id)
+    ready_before = 0
+    downloaded = 0
+    pending = 0
+    for photo_id in requested_ids:
+        try:
+            photo = database.get_photo(photo_id)
+            if photo is None:
+                pending += 1
+                continue
+            current_path = str(dict(assets.get(photo_id) or {}).get("source_photo_path") or "")
+            original_path = preferred_original_path(photo, current_path)
+            if original_path:
+                ready_before += 1
+            else:
+                original_path = download_apple_original(photo)
+                if original_path:
+                    downloaded += 1
+            if not original_path:
+                pending += 1
+                continue
+            db.update_job_asset_source_path(job_id, photo_id, original_path)
+        except Exception:
+            logger.warning("Failed to prepare an Apple Photos original")
+            pending += 1
+
+    ready = ready_before + downloaded
+    return {
+        "status": "completed" if pending == 0 else "partial",
+        "requested": len(requested_ids),
+        "ready_before": ready_before,
+        "downloaded": downloaded,
+        "ready": ready,
+        "pending": pending,
+        "retry_available": pending > 0,
+    }
 
 
 @mcp.tool()
@@ -1491,57 +1607,10 @@ async def prepare_apple_originals(job_id: str, photo_ids_json: str = "[]") -> st
             "ready": 0,
             "pending": 0,
         })
-
-    try:
-        database = get_apple_photos_db()
-    except Exception:
-        return json.dumps({
-            "status": "failed",
-            "error_code": "apple_photos_database_unavailable",
-            "requested": len(requested_ids),
-            "ready": 0,
-            "pending": len(requested_ids),
-            "retry_available": True,
-        })
-
-    from .sources import download_apple_original
-
-    assets = db.list_job_assets(job_id)
-    ready_before = 0
-    downloaded = 0
-    pending = 0
-    for photo_id in requested_ids:
-        try:
-            photo = database.get_photo(photo_id)
-            if photo is None:
-                pending += 1
-                continue
-            current_path = str(dict(assets.get(photo_id) or {}).get("source_photo_path") or "")
-            original_path = preferred_original_path(photo, current_path)
-            if original_path:
-                ready_before += 1
-            else:
-                original_path = download_apple_original(photo)
-                if original_path:
-                    downloaded += 1
-            if not original_path:
-                pending += 1
-                continue
-            db.update_job_asset_source_path(job_id, photo_id, original_path)
-        except Exception:
-            logger.warning("Failed to prepare an Apple Photos original")
-            pending += 1
-
-    ready = ready_before + downloaded
-    return json.dumps({
-        "status": "completed" if pending == 0 else "partial",
-        "requested": len(requested_ids),
-        "ready_before": ready_before,
-        "downloaded": downloaded,
-        "ready": ready,
-        "pending": pending,
-        "retry_available": pending > 0,
-    }, ensure_ascii=False)
+    return json.dumps(
+        _prepare_apple_original_ids(db, job_id, job, requested_ids),
+        ensure_ascii=False,
+    )
 
 
 @mcp.tool()

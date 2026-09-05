@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
+import re
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -17,7 +19,7 @@ DEFAULT_BACKEND = "openai_compat"
 DEFAULT_MODEL = "Qwen3.8-27B-Q4_K_M.gguf"
 DEFAULT_API_BASE = "http://127.0.0.1:12801/v1"
 DEFAULT_TARGET = "linux-qwen36-vlm"
-DEFAULT_PREPARE_TIMEOUT_SECONDS = 330.0
+DEFAULT_PREPARE_TIMEOUT_SECONDS = 600.0
 DEFAULT_LOCAL_MODEL = "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
 DEFAULT_LOCAL_TARGET = "qwen3-vl-4b"
 
@@ -195,11 +197,35 @@ def _openai_compat_ready(api_base: str, timeout_seconds: float) -> bool:
         return False
 
 
+def _openai_compat_active_model(api_base: str, timeout_seconds: float) -> str:
+    request = Request(f"{api_base.rstrip('/')}/models", headers={"Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            if not 200 <= int(response.status) < 300:
+                return ""
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        return ""
+    models = payload.get("data") if isinstance(payload, dict) else None
+    first = models[0] if isinstance(models, list) and models else None
+    model_id = str(first.get("id") or "") if isinstance(first, dict) else ""
+    if not model_id:
+        return ""
+    name = Path(model_id).name
+    return re.sub(r"-00001-of-\d+(?=\.gguf$)", "", name, flags=re.IGNORECASE)
+
+
 def vision_runtime_summary(*, check_ready: bool = False) -> dict[str, object]:
     settings = resolve_vision_runtime_settings()
     ready = False
+    active_model = ""
     if check_ready and settings.backend == "openai_compat" and settings.api_base:
         ready = _openai_compat_ready(settings.api_base, timeout_seconds=0.35)
+        if ready:
+            active_model = _openai_compat_active_model(
+                settings.api_base,
+                timeout_seconds=0.35,
+            )
 
     if ready:
         status = "ready"
@@ -214,7 +240,9 @@ def vision_runtime_summary(*, check_ready: bool = False) -> dict[str, object]:
         "policy": settings.policy,
         "provider": settings.provider,
         "backend": settings.backend,
-        "model": settings.model,
+        "model": active_model or settings.model,
+        "configured_model": settings.model,
+        "active_model": active_model,
         "api_base": settings.api_base or "",
         "on_demand": settings.is_on_demand,
         "remote_allowed": settings.policy == REMOTE_ALLOWED,

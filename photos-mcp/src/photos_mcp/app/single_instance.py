@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterator
 
 from photos_mcp.app.config import PhotosMcpConfig
+from photos_mcp.infrastructure.runtime.paths import ensure_private_directory
 
 
 class AlreadyRunningError(RuntimeError):
@@ -26,7 +27,7 @@ def acquire_single_instance_lock(config: PhotosMcpConfig) -> Iterator[None]:
             yield
         return
 
-    config.runtime_root.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(config.runtime_root)
     lock_path = config.runtime_root / "photos-mcp.lock"
 
     with lock_path.open("a+", encoding="utf-8") as lock_file:

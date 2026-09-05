@@ -8,6 +8,16 @@ from types import SimpleNamespace
 from photos_mcp.infrastructure.vendor_adapter.loader import load_vendor_server
 
 
+def test_photo_ranker_album_writer_defaults_to_bounded_terminal_mode(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("PHOTO_RANKER_APPLE_EVENTS_MODE", raising=False)
+
+    module = load_vendor_server("photo-ranker")
+    writer = module.AlbumWriter()
+
+    assert writer._should_use_terminal_helper() is True
+
+
 def test_photo_ranker_album_writer_terminal_mode_checks_platform(monkeypatch) -> None:
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setenv("PHOTO_RANKER_APPLE_EVENTS_MODE", "terminal")

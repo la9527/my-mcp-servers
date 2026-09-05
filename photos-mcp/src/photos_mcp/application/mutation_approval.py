@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import hashlib
 import json
+import os
 import secrets
 import time
 from typing import Any
@@ -24,6 +25,10 @@ _PRE_EXECUTION_BLOCK_CODES = {
     "resume_receipt_run_mismatch",
     "selected_external_files_unavailable",
     "unsupported_source_for_write",
+    "terminal_helper_helper_script_missing",
+    "terminal_helper_python_missing",
+    "terminal_helper_terminal_launch_failed",
+    "terminal_helper_unsupported_platform",
 }
 
 
@@ -81,9 +86,17 @@ def _plan_summary(action: str, options: dict[str, Any]) -> dict[str, Any]:
 def _is_pre_execution_block(receipt: dict[str, Any]) -> bool:
     """Only discard durable records when the saved result proves no write ran."""
     result = receipt.get("result")
-    if not isinstance(result, dict) or str(result.get("status") or "") != "blocked":
+    if not isinstance(result, dict):
         return False
-    return str(result.get("error_code") or "") in _PRE_EXECUTION_BLOCK_CODES
+    error_code = str(result.get("error_code") or "")
+    if str(result.get("status") or "") == "blocked":
+        return error_code in _PRE_EXECUTION_BLOCK_CODES
+    return (
+        str(receipt.get("action") or "") == "publish_recommendation_group"
+        and str(result.get("status") or "") == "failed"
+        and int(result.get("published_count") or 0) == 0
+        and error_code in _PRE_EXECUTION_BLOCK_CODES
+    )
 
 
 def require_mutation_approval(
@@ -103,6 +116,21 @@ def require_mutation_approval(
     normalized = dict(validated.options)
     approval_token = str(normalized.pop("approval_token", "") or "").strip()
     resolved_plan = dict(mutation_plan or _plan_summary(validated.action, normalized))
+    if str(resolved_plan.get("status") or "") == "blocked":
+        blocked = dict(resolved_plan)
+        blocked.setdefault("terminal", True)
+        blocked.setdefault("tool", tool)
+        blocked.setdefault("action", validated.action)
+        blocked.setdefault("approval_required", False)
+        blocked.setdefault("next_suggested_action", "review_block_reason")
+        return blocked, None
+    if str(resolved_plan.get("status") or "") == "completed":
+        completed = dict(resolved_plan)
+        completed.setdefault("terminal", True)
+        completed.setdefault("tool", tool)
+        completed.setdefault("action", validated.action)
+        completed.setdefault("approval_required", False)
+        return completed, None
     fingerprint = _fingerprint(
         tool,
         validated.action,
@@ -236,6 +264,15 @@ def require_mutation_approval(
 
 def begin_mutation_receipt(context: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
     plan = dict(context.get("mutation_plan") or {})
+    target_album_name = str(
+        plan.get("target_album_name") or plan.get("destination_album_name") or ""
+    )
+    target_album_id = str(
+        plan.get("target_album_id") or plan.get("destination_album_id") or ""
+    )
+    folder = str(plan.get("folder") or "")
+    if plan.get("action") == "publish_recommendation_group" and not folder:
+        folder = os.getenv("PHOTOS_MCP_RECOMMENDATION_APPLE_FOLDER", "Photos MCP").strip()
     return {
         "receipt_id": f"receipt-{uuid.uuid4().hex[:16]}",
         "idempotency_key": str(context["idempotency_key"]),
@@ -243,9 +280,9 @@ def begin_mutation_receipt(context: dict[str, Any], options: dict[str, Any]) -> 
         "status": "started",
         "started_at": _utcnow_iso(),
         "action": str(plan.get("action") or ""),
-        "target_album_name": str(plan.get("target_album_name") or ""),
-        "target_album_id": str(plan.get("target_album_id") or ""),
-        "folder": str(plan.get("folder") or ""),
+        "target_album_name": target_album_name,
+        "target_album_id": target_album_id,
+        "folder": folder,
         "output_dir": str(plan.get("output_dir") or ""),
         "metadata_mode": str(plan.get("metadata_mode") or ""),
         "requested_photo_ids": list(plan.get("photo_ids") or []),

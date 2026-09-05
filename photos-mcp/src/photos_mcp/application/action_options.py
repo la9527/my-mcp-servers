@@ -85,6 +85,19 @@ _register(ActionSpec(
 ))
 _register(ActionSpec(
     tool="photos_query",
+    action="recommendation_groups",
+    allowed=_set(),
+    usage_hint="List local recommendation groups and their fixed cloud destinations.",
+))
+_register(ActionSpec(
+    tool="photos_query",
+    action="recommendation_group",
+    allowed=_set("group_id"),
+    required=_set("group_id"),
+    usage_hint="Inspect one recommendation group, local member count, and destination receipts.",
+))
+_register(ActionSpec(
+    tool="photos_query",
     action="list",
     allowed=_set("source", "album", "person", "date_from", "date_to", "limit", "include_thumbnail", "include_metadata", "max_size"),
     defaults={"source": "apple", "limit": 20, "include_thumbnail": False, "include_metadata": False, "max_size": 512},
@@ -167,6 +180,34 @@ _register(ActionSpec(
     required=_set("photo_ids"),
     forbidden=_set("album_prefix", "group_by_date", "min_score", "selection_profile", "date_from", "date_to", "run_id"),
     defaults={"source": "apple", "folder": ""},
+))
+_register(ActionSpec(
+    tool="photos_write",
+    action="publish_recommendation_group",
+    allowed=_set("group_id"),
+    required=_set("group_id"),
+    defaults={},
+    usage_hint=(
+        "Publish only locally verified members of one fixed recommendation group to its "
+        "configured Apple Photos or Google Photos album. The first call returns an exact "
+        "approval plan."
+    ),
+))
+_register(ActionSpec(
+    tool="photos_write",
+    action="configure_recommendation_group",
+    allowed=_set(
+        "group_id",
+        "destination_provider",
+        "destination_album_name",
+        "destination_album_id",
+    ),
+    required=_set("group_id", "destination_provider"),
+    defaults={"destination_album_name": "", "destination_album_id": ""},
+    usage_hint=(
+        "Fix one recommendation group to apple_photos, google_photos, or local_only. "
+        "A cloud destination cannot be changed after completed publication receipts exist."
+    ),
 ))
 _register(ActionSpec(
     tool="photos_write",

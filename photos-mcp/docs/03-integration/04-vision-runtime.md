@@ -13,7 +13,7 @@ Photos MCP는 사진 분석 요청과 VLM 프로세스 수명 주기를 분리�
 | model | `Qwen3.8-27B-Q4_K_M.gguf` |
 | API base | `http://127.0.0.1:12801/v1` |
 | runtime target | `linux-qwen36-vlm` |
-| 준비 제한 시간 | 330초 |
+| 준비 제한 시간 | 600초 |
 | Mac 로컬 model | `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` |
 | Mac 로컬 target | `qwen3-vl-4b` |
 
@@ -74,3 +74,14 @@ curl -fsS http://127.0.0.1:12801/v1/models
 ```
 
 첫 번째 응답의 `vision_runtime.ready`는 짧은 준비 상태 확인 결과다. Linux 깨우기나 모델 적재 중에는 아직 `false`일 수 있으므로 장기 분석 작업의 상태와 함께 판단한다.
+
+상태 응답의 `model`은 가능하면 `/v1/models`에서 확인한 실제 활성 모델을 표시한다.
+설정값과 실제 모델이 다른 경우에는 `configured_model`, `active_model`을 함께 반환해
+설정 드리프트를 진단할 수 있게 한다. 원격 경로나 shard 이름은 상태 응답에 그대로
+노출하지 않고 안전한 모델 식별자로 정규화한다.
+
+Google Picker의 Qwen 브라우저 미션은 별도 `browser_mission_runs` 원장에 안전한
+집계값만 보존한다. 최근 실행은 `/health` 또는 `/health/capabilities`의
+`latest_browser_mission`에서 확인한다. 요청 수, 모델 누적시간과
+prompt/completion/total token은 포함하지만 접근성 snapshot, 페이지 텍스트,
+Picker URI와 사진 식별자는 포함하지 않는다.

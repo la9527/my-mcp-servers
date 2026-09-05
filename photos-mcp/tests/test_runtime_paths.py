@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from photos_mcp.infrastructure.runtime.paths import (
+    ensure_private_directory,
     photo_ranker_model_cache_root,
     photo_ranker_runtime_root,
     photo_ranker_vlm_cache_root,
@@ -11,6 +12,14 @@ from photos_mcp.infrastructure.runtime.paths import (
     photos_mcp_home,
     photos_mcp_runtime_root,
 )
+
+
+def test_ensure_private_directory_creates_and_hardens_existing_directory(tmp_path: Path) -> None:
+    target = tmp_path / "private"
+    target.mkdir(mode=0o755)
+
+    assert ensure_private_directory(target) == target
+    assert target.stat().st_mode & 0o777 == 0o700
 
 
 def test_runtime_paths_default_to_photos_mcp_home(monkeypatch) -> None:

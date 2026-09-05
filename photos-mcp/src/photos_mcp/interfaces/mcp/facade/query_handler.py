@@ -62,6 +62,62 @@ async def handle_query(
             "count": len(items),
             "items": items,
         }
+    if selected_action == "recommendation_groups":
+        if state_store is None:
+            return {"status": "blocked", "error_code": "state_store_unavailable"}
+        groups = state_store.run_repository.list_recommendation_groups()
+        return {
+            "status": "completed",
+            "action": selected_action,
+            "count": len(groups),
+            "items": [
+                {
+                    **group,
+                    "member_count": len(
+                        state_store.run_repository.list_recommendation_group_members(
+                            str(group.get("group_id") or "")
+                        )
+                    ),
+                }
+                for group in groups
+            ],
+        }
+    if selected_action == "recommendation_group":
+        if state_store is None:
+            return {"status": "blocked", "error_code": "state_store_unavailable"}
+        group_id = str(opts.get("group_id") or "")
+        group = state_store.run_repository.get_recommendation_group(group_id)
+        if group is None:
+            return {
+                "status": "not_found",
+                "action": selected_action,
+                "group_id": group_id,
+            }
+        members = state_store.run_repository.list_recommendation_group_members(group_id)
+        receipts = state_store.run_repository.list_recommendation_destination_receipts(
+            group_id=group_id
+        )
+        return {
+            "status": "completed",
+            "action": selected_action,
+            "group": group,
+            "member_count": len(members),
+            "members": [
+                {
+                    "local_asset_id": str(member.get("local_asset_id") or ""),
+                    "collection_id": str(member.get("collection_id") or ""),
+                    "capture_date_local": str(
+                        dict(member.get("asset") or {}).get("capture_date_local") or ""
+                    ),
+                    "content_hash_prefix": str(
+                        dict(member.get("asset") or {}).get("content_hash") or ""
+                    )[:12],
+                }
+                for member in members
+            ],
+            "destination_receipt_count": len(receipts),
+            "destination_receipts": receipts,
+        }
     if selected_action in {"list", "ready_only", "search", "inspect", "prefetch"}:
         return await photos_library(
             state_store=state_store,

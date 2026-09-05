@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable
 from photos_mcp.application.action_options import ActionValidationError, validate_action_options
 from photos_mcp.application.run_support import call_vendor
 from photos_mcp.application.result_service import photos_result
+from photos_mcp.application.recommendation_publish import RecommendationGroupPublishService
 from photos_mcp.application.run_service import photos_run
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
@@ -180,6 +181,43 @@ async def handle_write(
     approved_photo_ids = [
         str(value) for value in dict(mutation_plan or {}).get("photo_ids") or [] if str(value)
     ]
+    if selected_action == "publish_recommendation_group":
+        if state_store is None:
+            return {
+                "status": "blocked",
+                "error_code": "state_store_unavailable",
+                "action": selected_action,
+            }
+        if mutation_plan is None:
+            return {
+                "status": "blocked",
+                "error_code": "approved_recommendation_plan_required",
+                "action": selected_action,
+            }
+        return await RecommendationGroupPublishService(
+            repository=state_store.run_repository,
+            call_vendor_fn=call_vendor_fn,
+            photos_run_fn=photos_run_fn,
+        ).execute(str(opts["group_id"]), dict(mutation_plan))
+    if selected_action == "configure_recommendation_group":
+        if state_store is None:
+            return {
+                "status": "blocked",
+                "error_code": "state_store_unavailable",
+                "action": selected_action,
+            }
+        if mutation_plan is None:
+            return {
+                "status": "blocked",
+                "error_code": "approved_recommendation_plan_required",
+                "action": selected_action,
+            }
+        return RecommendationGroupPublishService(
+            repository=state_store.run_repository,
+        ).configure_destination(
+            group_id=str(opts["group_id"]),
+            approved_plan=dict(mutation_plan),
+        )
     if selected_action == "add_selected_to_album":
         run_id = str(opts["run_id"])
         target_album_name = str(opts.get("target_album_name") or "")

@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 
 from _script_bootstrap import prepare_photo_source_runtime
-from apple_terminal_helper import write_terminal_response
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +47,7 @@ def main() -> int:
     os.environ["PHOTO_SOURCE_APPLE_FETCH_MODE"] = "direct"
     prepare_photo_source_runtime(__file__)
 
+    from apple_terminal_helper import write_terminal_response
     from photos_mcp.infrastructure.vendor_adapter.compat import photo_source_cache_root
 
     import osxphotos

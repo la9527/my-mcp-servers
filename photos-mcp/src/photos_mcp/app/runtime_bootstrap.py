@@ -76,7 +76,10 @@ def default_terminal_python(
         return configured
 
     resolved_executable_path = Path(executable_path or sys.executable).resolve()
-    if resolved_executable_path.name == "PhotosMcp" and resolved_executable_path.parent.name == "MacOS":
+    if (
+        resolved_executable_path.parent.name == "MacOS"
+        and resolved_executable_path.parent.parent.name == "Contents"
+    ):
         bundled_python = resolved_executable_path.with_name("python")
         if bundled_python.exists():
             return str(bundled_python)

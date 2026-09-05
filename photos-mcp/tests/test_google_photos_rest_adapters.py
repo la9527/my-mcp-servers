@@ -296,12 +296,81 @@ async def test_library_destination_uses_resumable_upload_and_batch_create(
     assert result["state"] == "completed"
     assert result["created_count"] == 1
     assert result["album_id"] == "album-1"
+    assert result["created_asset_keys"] == [content.asset.stable_key]
     assert transport.calls[1]["headers"]["X-Goog-Upload-Protocol"] == "resumable"
     assert transport.calls[2]["headers"]["X-Goog-Upload-Command"] == "upload, finalize"
     receipt = receipts.get(plan["plan_id"], content.asset.stable_key)
     assert receipt is not None
     assert receipt.state == "uploaded"
     assert receipt.upload_token == "upload-token-1"
+    receipts.close()
+
+
+@pytest.mark.asyncio
+async def test_library_destination_reuses_approved_app_created_album_id(
+    tmp_path: Path,
+) -> None:
+    photo_path = tmp_path / "photo.jpg"
+    photo_path.write_bytes(b"jpeg-payload")
+    source = descriptor_from_legacy_source("google", account_id="account")
+    content = MaterializedPhotoContent(
+        asset=PhotoAssetRef(
+            source_id=source.source_id,
+            provider_asset_id="asset-1",
+            filename="photo.jpg",
+        ),
+        local_path=photo_path,
+        mime_type="image/jpeg",
+    )
+    transport = QueueTransport(
+        [
+            GoogleHttpResponse(
+                status=200,
+                headers={
+                    "X-Goog-Upload-URL": "https://upload.example.test/session-1",
+                    "X-Goog-Upload-Chunk-Granularity": "262144",
+                },
+                body=b"",
+            ),
+            _response(200, b"upload-token-1"),
+            _response(
+                200,
+                {
+                    "newMediaItemResults": [
+                        {"status": {"code": 0}, "mediaItem": {"id": "media-1"}}
+                    ]
+                },
+            ),
+        ]
+    )
+
+    async def access_token() -> str:
+        return "append-token"
+
+    receipts = GoogleUploadReceiptRepository(tmp_path / "uploads.db")
+    destination = GoogleAppCreatedLibraryDestination(
+        client=GooglePhotosLibraryClient(
+            access_token=access_token,
+            transport=transport,
+            receipts=receipts,
+        )
+    )
+    plan = await destination.plan_write(
+        source,
+        (content,),
+        options={"album_name": "Photos MCP - 추천", "album_id": "album-existing"},
+    )
+    result = await destination.execute_write(
+        source,
+        (content,),
+        approved_plan={**plan, "approved": True},
+    )
+
+    assert result["album_id"] == "album-existing"
+    assert len(transport.calls) == 3
+    assert not any(call["url"].endswith("/albums") for call in transport.calls)
+    batch_payload = json.loads(transport.calls[-1]["body"])
+    assert batch_payload["albumId"] == "album-existing"
     receipts.close()
 
 

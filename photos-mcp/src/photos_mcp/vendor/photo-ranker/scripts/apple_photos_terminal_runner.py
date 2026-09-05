@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 
 from _script_bootstrap import prepare_photo_ranker_runtime
-from apple_terminal_helper import write_terminal_response
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,6 +24,7 @@ def main() -> int:
 
     prepare_photo_ranker_runtime(__file__)
 
+    from apple_terminal_helper import write_terminal_response
     from photos_mcp_vendor_photo_ranker.album_writer import AlbumWriter
 
     request = json.loads(Path(args.request).read_text(encoding="utf-8"))
