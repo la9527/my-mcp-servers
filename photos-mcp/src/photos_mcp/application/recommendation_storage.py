@@ -22,6 +22,7 @@ from photos_mcp.infrastructure.sources.google_photos.import_repository import (
     GoogleImportLeaseRepository,
 )
 from photos_mcp.infrastructure.vendor_adapter.gateway import call_vendor
+from photos_mcp.application.story_generation import refresh_recommendation_story
 
 
 DEFAULT_RECOMMENDATION_ROOT = Path(
@@ -325,6 +326,13 @@ class RecommendationStorageService:
                 "total_score": float(item.get("total_score") or 0.0),
                 "quality_score": float(item.get("quality_score") or 0.0),
                 "technical_score": float(item.get("technical_score") or 0.0),
+                "meaningful_score": int(item.get("meaningful_score") or 0),
+                "scene_description": " ".join(
+                    str(item.get("scene_description") or "").split()
+                )[:320],
+                "event_type": " ".join(
+                    str(item.get("event_type") or "").split()
+                )[:60],
                 "capture_date": str(item.get("capture_date") or ""),
                 "materialization_status": "pending",
             }
@@ -723,6 +731,21 @@ async def reconcile_pending_recommendations(
     materialized = 0
     new_files = 0
     duplicates = 0
+    story_refresh_count = 0
+    story_fallback_count = 0
+    story_failed_count = 0
+
+    async def refresh_story_safely() -> None:
+        nonlocal story_refresh_count, story_fallback_count, story_failed_count
+        try:
+            story = await refresh_recommendation_story(repository)
+            story_refresh_count += 1
+            generation = story.get("generation") if isinstance(story, dict) else {}
+            if isinstance(generation, dict) and generation.get("source") == "deterministic_fallback":
+                story_fallback_count += 1
+        except Exception:  # story presentation must never change storage success
+            story_failed_count += 1
+
     for automation_run in repository.list_automation_runs():
         if inspected >= max(1, min(int(limit), 100)):
             break
@@ -755,6 +778,7 @@ async def reconcile_pending_recommendations(
                         "recommendation_storage": storage_summary,
                     }
                 )
+            await refresh_story_safely()
             continue
         inspected += 1
         storage_result = await materialize_recommendations_for_run(
@@ -836,6 +860,8 @@ async def reconcile_pending_recommendations(
             automation_run=updated,
             storage_result=storage_result,
         )
+        if storage_status in {"completed", "partial"}:
+            await refresh_story_safely()
     return {
         "status": "completed" if not failed and not partial else "partial",
         "inspected_run_count": inspected,
@@ -846,4 +872,7 @@ async def reconcile_pending_recommendations(
         "materialized_photo_count": materialized,
         "new_file_count": new_files,
         "duplicate_count": duplicates,
+        "story_refresh_count": story_refresh_count,
+        "story_fallback_count": story_fallback_count,
+        "story_failed_count": story_failed_count,
     }

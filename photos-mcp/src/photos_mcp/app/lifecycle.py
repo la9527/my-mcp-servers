@@ -4,6 +4,7 @@ import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
 import logging
+import os
 from pathlib import Path
 from threading import Event, Thread
 import time
@@ -17,6 +18,7 @@ from photos_mcp.infrastructure.persistence.job_state import (
     synthetic_review_result,
 )
 from photos_mcp.interfaces.mcp.server import build_http_app, build_server
+from photos_mcp.interfaces.http.story_web import build_public_share_app, load_session_secret
 from photos_mcp.infrastructure.persistence.state_store import (
     HISTORICAL_JOB_STATUSES,
     PhotosMcpStateStore,
@@ -90,6 +92,8 @@ class PhotosMcpDaemonController:
         self._state_store = state_store
         self._server: uvicorn.Server | None = None
         self._server_thread: Thread | None = None
+        self._share_server: uvicorn.Server | None = None
+        self._share_server_thread: Thread | None = None
         self._poll_thread: Thread | None = None
         self._poll_stop_event = Event()
 
@@ -102,6 +106,10 @@ class PhotosMcpDaemonController:
         logger.info("daemon starting host=%s port=%s", self._config.host, self._config.port)
         mcp = build_server(config=self._config, state_store=self._state_store)
         app = build_http_app(config=self._config, state_store=self._state_store, mcp=mcp)
+        share_app = build_public_share_app(
+            repository=self._state_store.run_repository,
+            session_secret=load_session_secret(),
+        )
         job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
         reconciled_job_ids = job_store.reconcile_orphaned_jobs_after_restart()
         if reconciled_job_ids:
@@ -123,10 +131,28 @@ class PhotosMcpDaemonController:
         self._server = uvicorn.Server(config)
         self._server_thread = Thread(target=self._serve, name="photos-mcp-http", daemon=True)
         self._server_thread.start()
+        share_port = int(os.getenv("PHOTOS_MCP_PUBLIC_SHARE_PORT", "18792"))
+        share_config = uvicorn.Config(
+            share_app,
+            host="127.0.0.1",
+            port=share_port,
+            log_level="info",
+            loop="asyncio",
+            http="h11",
+            ws="none",
+            lifespan="on",
+        )
+        self._share_server = uvicorn.Server(share_config)
+        self._share_server_thread = Thread(
+            target=self._serve_share,
+            name="photos-mcp-public-share",
+            daemon=True,
+        )
+        self._share_server_thread.start()
 
         deadline = time.time() + 10.0
         while time.time() < deadline:
-            if self._server.started:
+            if self._server.started and self._share_server.started:
                 self._state_store.set_daemon_status("ready")
                 logger.info("daemon started endpoint=%s", self._config.endpoint)
                 self.refresh_jobs_once()
@@ -150,10 +176,16 @@ class PhotosMcpDaemonController:
         logger.info("daemon stopping")
         self._stop_job_poller()
         self._server.should_exit = True
+        if self._share_server:
+            self._share_server.should_exit = True
         if self._server_thread:
             self._server_thread.join(timeout=10)
+        if self._share_server_thread:
+            self._share_server_thread.join(timeout=10)
         self._server = None
         self._server_thread = None
+        self._share_server = None
+        self._share_server_thread = None
         self._state_store.set_daemon_status("stopped")
         logger.info("daemon stopped")
         return True
@@ -511,6 +543,14 @@ class PhotosMcpDaemonController:
             self._stop_job_poller()
             self._state_store.set_daemon_status("stopped")
             logger.info("uvicorn serve loop exited")
+
+    def _serve_share(self) -> None:
+        assert self._share_server is not None
+        try:
+            logger.info("public share gateway serve loop entering")
+            asyncio.run(self._share_server.serve())
+        finally:
+            logger.info("public share gateway serve loop exited")
 
     def _start_job_poller(self) -> None:
         if self._poll_thread and self._poll_thread.is_alive():

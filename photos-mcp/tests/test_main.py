@@ -350,6 +350,104 @@ def test_build_http_app_reconciles_recommendations_on_loopback(monkeypatch) -> N
     assert calls == [{"repository": state_store.run_repository}]
 
 
+def test_owner_can_refresh_story_and_cross_site_request_is_blocked(monkeypatch) -> None:
+    from starlette.testclient import TestClient
+    import photos_mcp.interfaces.mcp.server as server_module
+
+    calls = []
+
+    async def fake_refresh(repository, **kwargs):
+        calls.append((repository, kwargs))
+        return {"status": "ready"}
+
+    monkeypatch.setattr(server_module, "refresh_recommendation_story", fake_refresh)
+    config = load_config()
+    state_store = PhotosMcpStateStore(
+        endpoint=config.endpoint,
+        health_endpoint=config.health_endpoint,
+    )
+    app = build_http_app(config=config, state_store=state_store)
+
+    with TestClient(app) as client:
+        blocked = client.post(
+            "/photos/story/refresh",
+            headers={"Origin": "https://attacker.example"},
+        )
+        refreshed = client.post(
+            "/photos/story/refresh",
+            follow_redirects=False,
+        )
+
+    assert blocked.status_code == 403
+    assert refreshed.status_code == 303
+    assert refreshed.headers["location"] == "/photos"
+    assert calls == [(state_store.run_repository, {"force": True})]
+
+
+def test_owner_story_creates_30_day_share_derivatives_and_blocks_cross_site_post(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from datetime import datetime
+    from PIL import Image
+    from starlette.testclient import TestClient
+
+    recommendation_root = tmp_path / "recommendations"
+    source = recommendation_root / "2026" / "2026-09-06" / "pick.jpg"
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (2200, 1400), "#526c68").save(source)
+    monkeypatch.setenv("PHOTOS_MCP_RECOMMENDATION_ROOT", str(recommendation_root))
+    monkeypatch.setenv("PHOTOS_MCP_CACHE_ROOT", str(tmp_path / "cache"))
+    monkeypatch.setenv("PHOTOS_MCP_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv(
+        "PHOTOS_MCP_SHARE_SESSION_SECRET",
+        "owner-route-session-secret-with-at-least-32-bytes",
+    )
+    config = load_config()
+    state_store = PhotosMcpStateStore(
+        endpoint=config.endpoint,
+        health_endpoint=config.health_endpoint,
+        repository_path=tmp_path / "jobs.db",
+    )
+    state_store.run_repository.upsert_local_recommendation_asset(
+        {
+            "local_asset_id": "local-owner-route-asset",
+            "content_hash": "b" * 64,
+            "relative_path": "2026/2026-09-06/pick.jpg",
+            "mime_type": "image/jpeg",
+            "byte_size": source.stat().st_size,
+            "capture_date_local": "2026-09-06",
+        }
+    )
+    app = build_http_app(config=config, state_store=state_store)
+
+    with TestClient(app) as client:
+        owner = client.get("/photos")
+        blocked = client.post(
+            "/photos/share",
+            data={"duration_days": "30", "download_enabled": "1"},
+            headers={"Origin": "https://attacker.example"},
+        )
+        created = client.post(
+            "/photos/share",
+            data={"duration_days": "30", "download_enabled": "1"},
+        )
+
+    assert owner.status_code == 200
+    assert "공유 만들기" in owner.text
+    assert blocked.status_code == 403
+    assert created.status_code == 201
+    assert "잠금 코드" in created.text
+    packages = state_store.run_repository.list_shared_story_packages()
+    assert len(packages) == 1
+    assert packages[0]["download_enabled"] is True
+    created_at = datetime.fromisoformat(packages[0]["created_at"])
+    expires_at = datetime.fromisoformat(packages[0]["expires_at"])
+    assert (expires_at - created_at).days == 30
+    derivatives = list((tmp_path / "cache" / "shared-story-assets").rglob("*.jpg"))
+    assert {path.name.split("-")[0] for path in derivatives} == {"thumb", "preview", "download"}
+
+
 def test_load_vendor_server_uses_package_namespace_for_photo_ranker(monkeypatch) -> None:
     server_root = str(VENDOR_ROOT / "photo-ranker")
     monkeypatch.setattr(

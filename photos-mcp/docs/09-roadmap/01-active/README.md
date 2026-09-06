@@ -12,6 +12,7 @@
 - [일일 사진 큐레이션 자동화](06-daily-photo-curation-automation-2026-09-03.md): Apple Photos의 신규 자산을 증분 발견해 장면별 우수 후보를 매일 선별하고 Hermes cron·Telegram으로 검토하는 계획이다. Google Photos는 공식 Picker 경계를 유지한 사용자 선택형 inbox로 분리하고, 14일 read-only shadow 뒤 add-only 앨범 정책을 단계적으로 도입한다.
 - [일일 사진 큐레이션 단계별 구현 계획](07-daily-photo-curation-implementation-plan-2026-09-03.md): `date_added` 증분 탐색부터 처리 원장, `daily_curate`, Google Picker 사용자 조치, Hermes 텔레그램 브리지까지의 구현 순서와 검증 gate를 추적한다.
 - [추천 사진 통합 보관과 그룹 앨범 이중 저장 계획](08-recommended-photo-storage-and-album-plan-2026-09-04.md): Apple·Google 추천 사진의 실제 바이트를 촬영 날짜별 로컬 기준 사본으로 모은 뒤, 그룹마다 지정한 Apple 또는 Google 앨범 한 곳에 add/import/upload하는 이중 저장·중복 방지·승인 계획이다.
+- [Tailscale 추천 사진 생성형 Story Album·Swiper·외부 공유 계획](09-tailscale-swiper-recommendation-gallery-plan-2026-09-06.md): 외부 공유 Vertical Slice를 운영 반영했다. Tailnet 전용 소유자 grid와 별도 8443 Funnel gateway, immutable SharedStoryPackage, passcode/session, 기본 30일 만료, 2048px·EXIF 제거 JPEG 다운로드와 즉시 폐기를 실제 URL에서 검증했다. Qwen3.8 Story Director, GPS 근거와 날짜·위치 chapter는 후속 고도화 범위다.
 
 ## 선호 학습
 

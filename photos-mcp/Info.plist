@@ -12,5 +12,10 @@
 	<string>PhotosMcp needs Photos library access to export thumbnails and analyze selected photos.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>PhotosMcp needs Apple Events access to read and organize photos in Apple Photos.</string>
+	<key>LSEnvironment</key>
+	<dict>
+		<key>PHOTOS_MCP_STORY_DIRECTOR_ENABLED</key>
+		<string>1</string>
+	</dict>
 </dict>
 </plist>

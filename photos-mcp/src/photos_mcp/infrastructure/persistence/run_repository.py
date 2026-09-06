@@ -283,6 +283,31 @@ class RunRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_recommendation_destination_state
                     ON recommendation_destination_receipts(state, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS story_manifests (
+                    story_id TEXT PRIMARY KEY,
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'ready',
+                    manifest_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_story_manifests_updated
+                    ON story_manifests(updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS shared_story_packages (
+                    share_id TEXT PRIMARY KEY,
+                    story_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    expires_at TEXT NOT NULL,
+                    session_version INTEGER NOT NULL DEFAULT 1,
+                    package_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_shared_story_packages_status
+                    ON shared_story_packages(status, expires_at);
                 """
             )
             self._conn.commit()
@@ -675,6 +700,45 @@ class RunRepository:
             ).fetchall()
         return [_decode(row["payload_json"], {}) for row in rows]
 
+    def get_photo_analysis_result(
+        self,
+        *,
+        job_id: str,
+        photo_id: str,
+    ) -> dict[str, Any] | None:
+        """Read the share-safe subset of a photo-ranker result.
+
+        The photo-ranker and coordinator normally share this database. Older
+        or isolated coordinator databases may not have the vendor table, so a
+        missing table is treated as unavailable evidence instead of a runtime
+        failure. Person labels are deliberately excluded.
+        """
+        if not job_id or not photo_id:
+            return None
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    """SELECT scene_description, event_type, meaningful_score,
+                              capture_date, total_score, quality_score,
+                              technical_score
+                       FROM photo_results
+                       WHERE job_id = ? AND photo_id = ?""",
+                    (job_id, photo_id),
+                ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if row is None:
+            return None
+        return {
+            "scene_description": str(row["scene_description"] or ""),
+            "event_type": str(row["event_type"] or ""),
+            "meaningful_score": int(row["meaningful_score"] or 0),
+            "capture_date": str(row["capture_date"] or ""),
+            "total_score": float(row["total_score"] or 0.0),
+            "quality_score": float(row["quality_score"] or 0.0),
+            "technical_score": float(row["technical_score"] or 0.0),
+        }
+
     def upsert_local_recommendation_asset(self, payload: dict[str, Any]) -> dict[str, Any]:
         local_asset_id = str(payload.get("local_asset_id") or "")
         content_hash = str(payload.get("content_hash") or "")
@@ -721,6 +785,17 @@ class RunRepository:
             row = self._conn.execute(
                 "SELECT payload_json FROM local_recommendation_assets WHERE content_hash = ?",
                 (content_hash,),
+            ).fetchone()
+        return _decode(row["payload_json"], {}) if row is not None else None
+
+    def get_local_recommendation_asset_by_id(
+        self,
+        local_asset_id: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload_json FROM local_recommendation_assets WHERE local_asset_id = ?",
+                (local_asset_id,),
             ).fetchone()
         return _decode(row["payload_json"], {}) if row is not None else None
 
@@ -837,6 +912,113 @@ class RunRepository:
             }
             for row in rows
         ]
+
+    def upsert_story_manifest(self, payload: dict[str, Any]) -> dict[str, Any]:
+        story_id = str(payload.get("story_id") or "")
+        title = str(payload.get("title") or "")
+        if not story_id or not title:
+            raise ValueError("Story manifest requires story_id and title")
+        normalized = dict(payload)
+        now = _utcnow_iso()
+        created_at = str(normalized.get("created_at") or now)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO story_manifests
+                   (story_id, revision, title, status, manifest_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(story_id) DO UPDATE SET
+                     revision=excluded.revision, title=excluded.title,
+                     status=excluded.status, manifest_json=excluded.manifest_json,
+                     updated_at=excluded.updated_at""",
+                (
+                    story_id,
+                    max(1, int(normalized.get("revision") or 1)),
+                    title,
+                    str(normalized.get("status") or "ready"),
+                    _json(normalized),
+                    created_at,
+                    now,
+                ),
+            )
+            self._conn.commit()
+        return self.get_story_manifest(story_id) or normalized
+
+    def get_story_manifest(self, story_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT manifest_json FROM story_manifests WHERE story_id = ?",
+                (story_id,),
+            ).fetchone()
+        return _decode(row["manifest_json"], {}) if row is not None else None
+
+    def list_story_manifests(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        bounded = max(1, min(int(limit), 200))
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT manifest_json FROM story_manifests ORDER BY updated_at DESC LIMIT ?",
+                (bounded,),
+            ).fetchall()
+        return [_decode(row["manifest_json"], {}) for row in rows]
+
+    def upsert_shared_story_package(self, payload: dict[str, Any]) -> dict[str, Any]:
+        share_id = str(payload.get("share_id") or "")
+        story_id = str(payload.get("story_id") or "")
+        expires_at = str(payload.get("expires_at") or "")
+        if not share_id or not story_id or not expires_at:
+            raise ValueError("Shared story package requires share_id, story_id, and expires_at")
+        normalized = dict(payload)
+        now = _utcnow_iso()
+        created_at = str(normalized.get("created_at") or now)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO shared_story_packages
+                   (share_id, story_id, status, expires_at, session_version,
+                    package_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(share_id) DO UPDATE SET
+                     status=excluded.status, expires_at=excluded.expires_at,
+                     session_version=excluded.session_version,
+                     package_json=excluded.package_json, updated_at=excluded.updated_at""",
+                (
+                    share_id,
+                    story_id,
+                    str(normalized.get("status") or "active"),
+                    expires_at,
+                    max(1, int(normalized.get("session_version") or 1)),
+                    _json(normalized),
+                    created_at,
+                    now,
+                ),
+            )
+            self._conn.commit()
+        return self.get_shared_story_package(share_id) or normalized
+
+    def get_shared_story_package(self, share_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT package_json FROM shared_story_packages WHERE share_id = ?",
+                (share_id,),
+            ).fetchone()
+        return _decode(row["package_json"], {}) if row is not None else None
+
+    def list_shared_story_packages(
+        self,
+        *,
+        story_id: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        bounded = max(1, min(int(limit), 500))
+        sql = "SELECT package_json FROM shared_story_packages"
+        params: tuple[Any, ...]
+        if story_id:
+            sql += " WHERE story_id = ?"
+            params = (story_id, bounded)
+        else:
+            params = (bounded,)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [_decode(row["package_json"], {}) for row in rows]
 
     def upsert_recommendation_destination_receipt(
         self,

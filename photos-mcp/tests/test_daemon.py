@@ -30,6 +30,11 @@ def test_start_reconciles_orphaned_vendor_jobs_before_serving(monkeypatch) -> No
     )
     fake_server = SimpleNamespace(started=False, should_exit=False)
 
+    async def serve_fake_server() -> None:
+        fake_server.started = True
+
+    fake_server.serve = serve_fake_server
+
     monkeypatch.setattr(
         "photos_mcp.app.lifecycle.PhotoRankerJobStore",
         lambda _module: fake_job_store,
@@ -51,6 +56,7 @@ def test_start_reconciles_orphaned_vendor_jobs_before_serving(monkeypatch) -> No
 
     assert controller.start() is True
     assert reconciled == ["called"]
+    controller.stop()
 
 
 def test_cancel_job_persists_queue_state(monkeypatch) -> None:

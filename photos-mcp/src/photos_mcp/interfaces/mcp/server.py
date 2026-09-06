@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import json
 from typing import Any
+from urllib.parse import parse_qs
 
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
@@ -23,8 +24,22 @@ from photos_mcp.application.mutation_approval import (
 )
 from photos_mcp.application.mutation_service import resolve_mutation_plan
 from photos_mcp.application.recommendation_storage import reconcile_pending_recommendations
+from photos_mcp.application.story_generation import refresh_recommendation_story
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore, TERMINAL_JOB_STATUSES, job_snapshot_from_payload
 from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
+from photos_mcp.application.share_image_service import ShareImageError
+from photos_mcp.application.story_sharing import StoryShareService, build_recommendation_story
+from photos_mcp.interfaces.http.story_web import (
+    PUBLIC_HEADERS,
+    STORY_CSS,
+    STORY_JS,
+    default_public_base_url,
+    load_session_secret,
+    owner_allowed,
+    owner_assets,
+    owner_mutation_allowed,
+    render_owner,
+)
 
 
 async def _reconcile_album_mutation(receipt: dict[str, Any]) -> dict[str, Any]:
@@ -376,6 +391,193 @@ def build_server(
     @mcp.custom_route(config.health_path, methods=["GET"], include_in_schema=False)
     async def http_health_status(_request) -> JSONResponse:
         return JSONResponse(build_health_payload(config, state_store))
+
+    @mcp.custom_route("/story-assets/story.css", methods=["GET"], include_in_schema=False)
+    async def http_story_css(_request):
+        from starlette.responses import PlainTextResponse
+
+        return PlainTextResponse(
+            STORY_CSS,
+            media_type="text/css",
+            headers={"Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @mcp.custom_route("/story-assets/story.js", methods=["GET"], include_in_schema=False)
+    async def http_story_js(_request):
+        from starlette.responses import PlainTextResponse
+
+        return PlainTextResponse(
+            STORY_JS,
+            media_type="application/javascript",
+            headers={"Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @mcp.custom_route("/photos", methods=["GET"], include_in_schema=False)
+    async def http_owner_story(request):
+        from starlette.responses import HTMLResponse
+
+        if not owner_allowed(request):
+            return HTMLResponse("Forbidden", status_code=403, headers=PUBLIC_HEADERS)
+        if state_store is None:
+            return HTMLResponse("Unavailable", status_code=503, headers=PUBLIC_HEADERS)
+        story = build_recommendation_story(state_store.run_repository)
+        service = StoryShareService(
+            state_store.run_repository,
+            session_secret=load_session_secret(),
+        )
+        active_shares = []
+        for candidate in state_store.run_repository.list_shared_story_packages(limit=100):
+            candidate_id = str(candidate.get("share_id") or "")
+            package, share_state = service.get_active(candidate_id)
+            if share_state == "active" and package is not None:
+                active_shares.append(service.public_metadata(package, include_story=False))
+            elif share_state == "expired":
+                owner_assets(state_store.run_repository).purge_share(candidate_id)
+        return HTMLResponse(
+            render_owner(
+                story,
+                public_base=default_public_base_url(),
+                active_shares=active_shares,
+            ),
+            headers=PUBLIC_HEADERS,
+        )
+
+    @mcp.custom_route("/photos/share", methods=["POST"], include_in_schema=False)
+    async def http_owner_create_share(request):
+        from starlette.responses import HTMLResponse
+
+        if not owner_mutation_allowed(request):
+            return HTMLResponse("Forbidden", status_code=403, headers=PUBLIC_HEADERS)
+        if state_store is None:
+            return HTMLResponse("Unavailable", status_code=503, headers=PUBLIC_HEADERS)
+        raw = await request.body()
+        if len(raw) > 4096:
+            return HTMLResponse("Request too large", status_code=413, headers=PUBLIC_HEADERS)
+        values = parse_qs(raw.decode("utf-8", errors="replace"), keep_blank_values=True)
+        try:
+            duration_days = int((values.get("duration_days") or ["30"])[0])
+        except ValueError:
+            return HTMLResponse("Invalid duration", status_code=400, headers=PUBLIC_HEADERS)
+        story = build_recommendation_story(state_store.run_repository)
+        if not story.get("photos"):
+            return HTMLResponse(
+                render_owner(story),
+                status_code=409,
+                headers=PUBLIC_HEADERS,
+            )
+        service = StoryShareService(
+            state_store.run_repository,
+            session_secret=load_session_secret(),
+        )
+        created, passcode = service.create(
+            story,
+            duration_days=duration_days,
+            download_enabled=(values.get("download_enabled") or [""])[0] == "1",
+        )
+        package = state_store.run_repository.get_shared_story_package(
+            str(created["share_id"])
+        ) or {}
+        image_service = owner_assets(state_store.run_repository)
+        try:
+            for photo in package.get("photos") or []:
+                kinds = ["thumb", "preview"]
+                if package.get("download_enabled"):
+                    kinds.append("download")
+                for kind in kinds:
+                    image_service.derivative(
+                        share_id=str(package["share_id"]),
+                        public_asset_id=str(photo["public_asset_id"]),
+                        local_asset_id=str(photo["local_asset_id"]),
+                        kind=kind,
+                    )
+        except (KeyError, ShareImageError):
+            service.revoke(str(created["share_id"]))
+            image_service.purge_share(str(created["share_id"]))
+            return HTMLResponse(
+                "공유 이미지를 안전하게 만들지 못했습니다.",
+                status_code=500,
+                headers=PUBLIC_HEADERS,
+            )
+        active_shares = []
+        for candidate in state_store.run_repository.list_shared_story_packages(limit=100):
+            candidate_id = str(candidate.get("share_id") or "")
+            active_package, share_state = service.get_active(candidate_id)
+            if share_state == "active" and active_package is not None:
+                active_shares.append(
+                    service.public_metadata(active_package, include_story=False)
+                )
+            elif share_state == "expired":
+                image_service.purge_share(candidate_id)
+        return HTMLResponse(
+            render_owner(
+                story,
+                created=created,
+                passcode=passcode,
+                public_base=default_public_base_url(),
+                active_shares=active_shares,
+            ),
+            status_code=201,
+            headers=PUBLIC_HEADERS,
+        )
+
+    @mcp.custom_route("/photos/story/refresh", methods=["POST"], include_in_schema=False)
+    async def http_owner_refresh_story(request):
+        from starlette.responses import RedirectResponse, Response
+
+        if not owner_mutation_allowed(request):
+            return Response(status_code=403, headers=PUBLIC_HEADERS)
+        if state_store is None:
+            return Response(status_code=503, headers=PUBLIC_HEADERS)
+        await refresh_recommendation_story(
+            state_store.run_repository,
+            force=True,
+        )
+        return RedirectResponse("/photos", status_code=303, headers=PUBLIC_HEADERS)
+
+    @mcp.custom_route(
+        "/photos/shares/{share_id}/revoke",
+        methods=["POST"],
+        include_in_schema=False,
+    )
+    async def http_owner_revoke_share(request):
+        from starlette.responses import RedirectResponse, Response
+
+        if not owner_mutation_allowed(request):
+            return Response(status_code=403, headers=PUBLIC_HEADERS)
+        if state_store is None:
+            return Response(status_code=503, headers=PUBLIC_HEADERS)
+        share_id = str(request.path_params.get("share_id") or "")
+        service = StoryShareService(
+            state_store.run_repository,
+            session_secret=load_session_secret(),
+        )
+        if not service.revoke(share_id):
+            return Response(status_code=404, headers=PUBLIC_HEADERS)
+        owner_assets(state_store.run_repository).purge_share(share_id)
+        return RedirectResponse("/photos", status_code=303, headers=PUBLIC_HEADERS)
+
+    @mcp.custom_route("/photos/assets/{asset_id}/{kind}", methods=["GET"], include_in_schema=False)
+    async def http_owner_asset(request):
+        from starlette.responses import FileResponse, Response
+
+        if not owner_allowed(request):
+            return Response(status_code=403, headers=PUBLIC_HEADERS)
+        if state_store is None:
+            return Response(status_code=503, headers=PUBLIC_HEADERS)
+        asset_id = str(request.path_params.get("asset_id") or "")
+        kind = str(request.path_params.get("kind") or "")
+        if kind not in {"thumb", "preview"}:
+            return Response(status_code=404, headers=PUBLIC_HEADERS)
+        try:
+            path = owner_assets(state_store.run_repository).derivative(
+                share_id="owner-gallery",
+                public_asset_id=asset_id,
+                local_asset_id=asset_id,
+                kind=kind,
+            )
+        except ShareImageError:
+            return Response(status_code=404, headers=PUBLIC_HEADERS)
+        return FileResponse(path, media_type="image/jpeg", headers=PUBLIC_HEADERS)
 
     @mcp.custom_route("/actions/{request_id}", methods=["GET"], include_in_schema=False)
     async def http_user_action(request):
