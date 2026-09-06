@@ -15,6 +15,7 @@ from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
 
 STORY_ID = "recommendations-latest"
+STORY_SCHEMA_VERSION = "recommendation-story-v2"
 PROMPT_VERSION = "photos-story-director-v1"
 ALLOWED_THEMES = {"day_in_life", "weekend_journal", "seasonal_digest", "mixed_archive"}
 _UNSAFE_TEXT = re.compile(r"https?://|<\s*/?\s*(?:script|iframe|style)|file://", re.IGNORECASE)
@@ -60,6 +61,39 @@ def _date_title(date_from: str, date_to: str) -> str:
     if start.year == end.year:
         return f"{start.year}년 {start.month}월 {start.day}일 — {end.month}월 {end.day}일"
     return f"{start.year}년 {start.month}월 {start.day}일 — {end.year}년 {end.month}월 {end.day}일"
+
+
+def _location_groups(photos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for photo in photos:
+        label = str(photo.get("location") or "").strip() or "위치 미상"
+        grouped.setdefault(label, []).append(photo)
+    return [
+        {
+            "label": label,
+            "status": (
+                "unknown"
+                if label == "위치 미상"
+                else "contextual_estimate"
+                if any(item.get("location_status") == "contextual_estimate" for item in items)
+                else "confirmed_gps"
+            ),
+            "photo_refs": [str(item.get("photo_ref") or "") for item in items],
+            "asset_ids": [str(item.get("asset_id") or "") for item in items],
+        }
+        for label, items in grouped.items()
+    ]
+
+
+def _location_overview(photos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "label": group["label"],
+            "count": len(group["asset_ids"]),
+            "status": group["status"],
+        }
+        for group in _location_groups(photos)
+    ]
 
 
 def build_story_evidence(repository: RunRepository) -> dict[str, Any]:
@@ -116,6 +150,8 @@ def build_story_evidence(repository: RunRepository) -> dict[str, Any]:
             "event_type": event_type,
             "coarse_location": location,
             "location_status": location_status,
+            "location_confidence": round(float(owner_location.get("confidence") or 0.0), 2),
+            "location_timezone": _clean_text(owner_location.get("location_timezone"), 80),
             "selection_reason_codes": reason_codes,
             "recommendation_slot": max(0, int(member.get("recommendation_slot") or 0)),
             "quality_score": round(float(member.get("quality_score") or analysis.get("quality_score") or 0.0), 2),
@@ -139,6 +175,8 @@ def build_story_evidence(repository: RunRepository) -> dict[str, Any]:
                 "location_provenance": _clean_text(
                     owner_location.get("provenance"), 40
                 ),
+                "location_confidence": evidence_photo["location_confidence"],
+                "location_timezone": evidence_photo["location_timezone"],
                 "recommendation_slot": evidence_photo["recommendation_slot"],
             }
         )
@@ -198,6 +236,7 @@ def _deterministic_manifest(
                         if str(item.get("location") or "")
                     }
                 ),
+                "location_groups": _location_groups(items),
             }
         )
     theme = "day_in_life" if len(chapters) == 1 else "seasonal_digest"
@@ -211,6 +250,7 @@ def _deterministic_manifest(
         generation["error_code"] = error_code
     return {
         "story_id": STORY_ID,
+        "schema_version": STORY_SCHEMA_VERSION,
         "status": "ready",
         "theme": theme,
         "title": _date_title(date_from, date_to) if dated else "추천 사진 이야기",
@@ -222,6 +262,7 @@ def _deterministic_manifest(
         "privacy_profile": "personal_balanced",
         "photos": photos,
         "chapters": chapters,
+        "location_overview": _location_overview(photos),
         "generation": generation,
         "evidence_hash": bundle["evidence_hash"],
         "created_at": observed.astimezone(UTC).isoformat(),
@@ -281,6 +322,7 @@ def _model_manifest(
                         if str(by_ref[ref].get("location") or "")
                     }
                 ),
+                "location_groups": _location_groups([by_ref[ref] for ref in refs]),
             }
         )
     if sorted(seen) != sorted(expected_refs) or len(seen) != len(set(seen)):
@@ -288,6 +330,7 @@ def _model_manifest(
     dated = [photo["capture_date"] for photo in photos if photo["capture_date"] != "undated"]
     return {
         "story_id": STORY_ID,
+        "schema_version": STORY_SCHEMA_VERSION,
         "status": "ready",
         "theme": theme,
         "title": _safe_model_text(direction.get("title"), 160),
@@ -299,6 +342,7 @@ def _model_manifest(
         "privacy_profile": "personal_balanced",
         "photos": photos,
         "chapters": chapters,
+        "location_overview": _location_overview(photos),
         "generation": {
             "source": "hermes-router",
             "target": "linux-long-context",
@@ -323,10 +367,60 @@ def _persist_revision(
     if existing and existing.get("evidence_hash") == manifest.get("evidence_hash"):
         old_generation = existing.get("generation") if isinstance(existing.get("generation"), dict) else {}
         new_generation = manifest.get("generation") if isinstance(manifest.get("generation"), dict) else {}
-        if old_generation.get("source") == new_generation.get("source"):
+        if (
+            old_generation.get("source") == new_generation.get("source")
+            and existing.get("schema_version") == manifest.get("schema_version")
+        ):
             return existing
     manifest["revision"] = max(1, int((existing or {}).get("revision") or 0) + 1)
     return repository.upsert_story_manifest(manifest)
+
+
+def _upgrade_manifest_structure(
+    existing: dict[str, Any],
+    bundle: dict[str, Any],
+) -> dict[str, Any]:
+    """Add server-derived v2 fields while preserving validated editorial text."""
+    photos = list(bundle["photos"])
+    by_ref = {str(photo.get("photo_ref") or ""): photo for photo in photos}
+    expected_refs = set(by_ref)
+    seen: list[str] = []
+    chapters: list[dict[str, Any]] = []
+    for raw in existing.get("chapters") or []:
+        if not isinstance(raw, dict):
+            raise ValueError("invalid_legacy_story_chapter")
+        refs = [str(value) for value in raw.get("photo_refs") or []]
+        if not refs or any(ref not in by_ref for ref in refs):
+            raise ValueError("invalid_legacy_story_refs")
+        if any(by_ref[ref]["capture_date"] != str(raw.get("date") or "") for ref in refs):
+            raise ValueError("legacy_story_date_mismatch")
+        seen.extend(refs)
+        chapter_photos = [by_ref[ref] for ref in refs]
+        chapters.append(
+            {
+                **raw,
+                "photo_refs": refs,
+                "asset_ids": [photo["asset_id"] for photo in chapter_photos],
+                "locations": sorted(
+                    {
+                        str(photo.get("location") or "")
+                        for photo in chapter_photos
+                        if str(photo.get("location") or "")
+                    }
+                ),
+                "location_groups": _location_groups(chapter_photos),
+            }
+        )
+    if set(seen) != expected_refs or len(seen) != len(set(seen)):
+        raise ValueError("legacy_story_photo_coverage_mismatch")
+    return {
+        **existing,
+        "schema_version": STORY_SCHEMA_VERSION,
+        "photos": photos,
+        "chapters": chapters,
+        "location_overview": _location_overview(photos),
+        "evidence_hash": bundle["evidence_hash"],
+    }
 
 
 def ensure_recommendation_story(
@@ -337,8 +431,20 @@ def ensure_recommendation_story(
     """Return the current manifest, creating only an evidence-changed fallback."""
     bundle = build_story_evidence(repository)
     existing = repository.get_story_manifest(STORY_ID)
-    if existing and existing.get("evidence_hash") == bundle["evidence_hash"]:
+    if (
+        existing
+        and existing.get("evidence_hash") == bundle["evidence_hash"]
+        and existing.get("schema_version") == STORY_SCHEMA_VERSION
+    ):
         return existing
+    if existing and existing.get("evidence_hash") == bundle["evidence_hash"]:
+        try:
+            return _persist_revision(
+                repository,
+                _upgrade_manifest_structure(existing, bundle),
+            )
+        except ValueError:
+            pass
     return _persist_revision(
         repository,
         _deterministic_manifest(bundle, observed=now or _utcnow()),
@@ -381,7 +487,9 @@ async def refresh_recommendation_story(
     existing = repository.get_story_manifest(STORY_ID)
     active_director = director if director is not None else configured_story_director()
     evidence_unchanged = bool(
-        existing and existing.get("evidence_hash") == bundle["evidence_hash"]
+        existing
+        and existing.get("evidence_hash") == bundle["evidence_hash"]
+        and existing.get("schema_version") == STORY_SCHEMA_VERSION
     )
     if evidence_unchanged and active_director is None:
         return existing  # type: ignore[return-value]

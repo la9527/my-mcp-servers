@@ -146,6 +146,28 @@ def test_deterministic_story_is_idempotent_for_unchanged_evidence(tmp_path: Path
     assert first["evidence_hash"] == second["evidence_hash"]
     assert len(first["chapters"]) == 2
     assert first["generation"]["source"] == "deterministic_fallback"
+    assert first["location_overview"] == [
+        {"label": "서울 일대", "count": 1, "status": "confirmed_gps"},
+        {"label": "위치 미상", "count": 1, "status": "unknown"},
+    ]
+    assert first["chapters"][0]["location_groups"][0]["label"] == "서울 일대"
+
+
+def test_legacy_story_schema_is_upgraded_even_when_evidence_is_unchanged(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    legacy = ensure_recommendation_story(repo, now=NOW)
+    legacy.pop("schema_version")
+    legacy["title"] = "보존해야 할 기존 Qwen 제목"
+    legacy["generation"]["source"] = "hermes-router"
+    repo.upsert_story_manifest(legacy)
+
+    upgraded = ensure_recommendation_story(repo, now=NOW)
+
+    assert upgraded["schema_version"] == "recommendation-story-v2"
+    assert upgraded["revision"] == 2
+    assert upgraded["title"] == "보존해야 할 기존 Qwen 제목"
+    assert upgraded["generation"]["source"] == "hermes-router"
+    assert upgraded["location_overview"]
 
 
 @pytest.mark.asyncio
@@ -202,6 +224,8 @@ async def test_public_share_copies_safe_chapters_without_local_ids(tmp_path: Pat
     assert "local-private-asset" not in encoded
     assert "provider-secret" not in encoded
     assert public["photos"][0]["location"] == "서울 일대"
+    assert public["location_overview"][0]["label"] == "서울 일대"
+    assert public["chapters"][0]["location_groups"][0]["public_asset_ids"]
     assert "37.5665" not in encoded
 
     rendered = render_story(
@@ -212,5 +236,7 @@ async def test_public_share_copies_safe_chapters_without_local_ids(tmp_path: Pat
     )
     assert rendered.count('class="chapter"') == 2
     assert rendered.count("data-photo") == 2
+    assert 'class="location-overview"' in rendered
+    assert rendered.count('class="location-subchapter"') == 2
     assert "정원의 첫날" in rendered
     assert "local-private-asset" not in rendered

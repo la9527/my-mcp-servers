@@ -388,3 +388,44 @@ def test_materialization_extracts_gps_to_private_ledger_and_returns_safe_project
     assert safe["status"] == "confirmed_gps"
     assert "latitude" not in safe and "longitude" not in safe
     assert "37.56" not in json.dumps(repo.list_local_recommendation_assets())
+
+
+def test_materialization_infers_matching_scene_after_all_assets_are_saved(tmp_path) -> None:
+    repo = RunRepository(tmp_path / "jobs.db")
+    anchor = tmp_path / "anchor.jpg"
+    candidate = tmp_path / "candidate.jpg"
+    gps = {
+        piexif.GPSIFD.GPSLatitudeRef: b"N",
+        piexif.GPSIFD.GPSLatitude: ((37, 1), (33, 1), (594, 100)),
+        piexif.GPSIFD.GPSLongitudeRef: b"E",
+        piexif.GPSIFD.GPSLongitude: ((126, 1), (58, 1), (408, 100)),
+    }
+    Image.new("RGB", (64, 64), "#c98764").save(
+        anchor,
+        exif=piexif.dump({"GPS": gps}),
+    )
+    Image.new("RGB", (64, 64), "#6389a7").save(candidate)
+
+    result = RecommendationStorageService(
+        repository=repo,
+        root=tmp_path / "store",
+    ).materialize(
+        analysis_run_id="context-analysis",
+        automation_run_id="context-daily",
+        provider="apple_photos",
+        source_id="system-library",
+        items=[
+            _item(anchor, photo_id="anchor", slot=1),
+            _item(candidate, photo_id="candidate", slot=2),
+        ],
+    )
+
+    members = repo.list_recommendation_members(result["collection_id"])
+    candidate_member = next(member for member in members if member["photo_id"] == "candidate")
+    inferred = repo.get_recommendation_asset_location(candidate_member["local_asset_id"])
+
+    assert result["located_count"] == 1
+    assert result["inferred_location_count"] == 1
+    assert inferred is not None
+    assert inferred["label"] == "서울 일대 (추정)"
+    assert inferred["status"] == "contextual_estimate"

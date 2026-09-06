@@ -107,6 +107,7 @@ class StoryShareService:
                     "summary": str(photo.get("summary") or "")[:300],
                     "alt": str(photo.get("alt") or "공유 사진")[:160],
                     "location": str(photo.get("share_location") or "")[:80],
+                    "location_status": str(photo.get("location_status") or "unknown")[:40],
                 }
             )
         public_chapters = []
@@ -126,6 +127,13 @@ class StoryShareService:
                 ]
             if not ids:
                 continue
+            location_groups: dict[str, list[str]] = {}
+            for photo in public_photos:
+                public_id = str(photo.get("public_asset_id") or "")
+                if public_id not in ids:
+                    continue
+                label = str(photo.get("location") or "").strip() or "위치 미상"
+                location_groups.setdefault(label, []).append(public_id)
             public_chapters.append(
                 {
                     "chapter_id": str(chapter.get("chapter_id") or "")[:40],
@@ -141,8 +149,30 @@ class StoryShareService:
                             and str(photo.get("location") or "")
                         }
                     ),
+                    "location_groups": [
+                        {
+                            "label": label,
+                            "status": (
+                                "unknown"
+                                if label == "위치 미상"
+                                else "contextual_estimate"
+                                if any(
+                                    photo.get("location_status") == "contextual_estimate"
+                                    for photo in public_photos
+                                    if photo.get("public_asset_id") in group_ids
+                                )
+                                else "confirmed_gps"
+                            ),
+                            "public_asset_ids": group_ids,
+                        }
+                        for label, group_ids in location_groups.items()
+                    ],
                 }
             )
+        overview_groups: dict[str, list[dict[str, Any]]] = {}
+        for photo in public_photos:
+            label = str(photo.get("location") or "").strip() or "위치 미상"
+            overview_groups.setdefault(label, []).append(photo)
         package = {
             "share_id": share_id,
             "story_id": str(story.get("story_id") or ""),
@@ -163,6 +193,20 @@ class StoryShareService:
             "date_to": str(story.get("date_to") or ""),
             "photos": public_photos,
             "chapters": public_chapters,
+            "location_overview": [
+                {
+                    "label": label,
+                    "count": len(items),
+                    "status": (
+                        "unknown"
+                        if label == "위치 미상"
+                        else "contextual_estimate"
+                        if any(item.get("location_status") == "contextual_estimate" for item in items)
+                        else "confirmed_gps"
+                    ),
+                }
+                for label, items in overview_groups.items()
+            ],
             "download_enabled": bool(download_enabled),
             "derivative_policy": "share-jpeg-2048-q88-v1",
             "passcode_salt": _b64encode(salt),
@@ -295,6 +339,7 @@ class StoryShareService:
                 "download_enabled",
                 "created_at",
                 "expires_at",
+                "location_overview",
             )
         }
         if include_story:
@@ -302,6 +347,7 @@ class StoryShareService:
                 {key: photo.get(key) for key in (
                     "public_asset_id", "photo_ref", "sequence", "capture_date", "title",
                     "summary", "alt", "location",
+                    "location_status",
                 )}
                 for photo in package.get("photos") or []
                 if isinstance(photo, dict)
@@ -316,6 +362,7 @@ class StoryShareService:
                         "summary",
                         "locations",
                         "public_asset_ids",
+                        "location_groups",
                     )
                 }
                 for chapter in package.get("chapters") or []

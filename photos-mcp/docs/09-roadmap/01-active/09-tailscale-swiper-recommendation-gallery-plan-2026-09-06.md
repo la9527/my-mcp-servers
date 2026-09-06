@@ -3,12 +3,12 @@
 ## 문서 상태
 
 - 작성일: 2026-09-06
-- 상태: 30일 외부 공유·안전한 다운로드, 근거 기반 Story Director와 private GPS provenance 1차 구현 완료
-- 구현 상태: 공유 Vertical Slice 배포 완료, 날짜 StoryManifest·private 위치 원장·Tailnet 결과 알림 구현 및 회귀 검증 완료
+- 상태: 30일 외부 공유·안전한 다운로드, 근거 기반 Story Director와 위치 문맥 추론 구현 완료
+- 구현 상태: 공유 Vertical Slice, 날짜·위치 StoryManifest, private 위치 원장, Tailnet 결과 알림과 공유 정보 분리 전달 구현 및 회귀 검증 완료
 - 대상 저장소: PhotosMcp, HermesAgent
 - 목표: Telegram에서 전달한 Tailscale 링크를 열면 LLM이 추천 사진의 날짜·위치·시각 분석 증거를 바탕으로 편집한 Storyboard를 읽고, 여러 장의 contact grid와 선택형 Swiper viewer에서 사진별 정보를 확인한다. 소유자가 명시적으로 선택하면 같은 Story revision에서 공개 가능한 내용만 묶은 만료형 HTML Share Package를 만들어 Tailscale이 없는 다른 사람도 안전하게 볼 수 있게 한다.
 
-이 문서는 설계 결정과 실제 구현 결과를 함께 추적한다. 2026-09-06에는 추천 사진을 외부 수신자에게 30일 동안 공유하고 안전한 웹용 사본을 내려받게 하는 Vertical Slice를 운영 반영했다. 같은 날 2차 작업으로 Qwen 기반 Story Director, 근거 해시와 날짜 chapter를 구현하고 실데이터에 백필했다. 이어 3차 작업에서 provider/EXIF GPS를 일반 결과 JSON과 분리한 private 원장, 좌표 없는 도시 단위 projection, 공유 전용 위치 projection과 Telegram Tailnet 결과 링크를 구현했다.
+이 문서는 설계 결정과 실제 구현 결과를 함께 추적한다. 2026-09-06에는 추천 사진을 외부 수신자에게 30일 동안 공유하고 안전한 웹용 사본을 내려받게 하는 Vertical Slice를 운영 반영했다. 같은 날 2차 작업으로 Qwen 기반 Story Director, 근거 해시와 날짜 chapter를 구현하고 실데이터에 백필했다. 이어 3차 작업에서 provider/EXIF GPS를 일반 결과 JSON과 분리한 private 원장, 좌표 없는 도시 단위 projection, 공유 전용 위치 projection과 Telegram Tailnet 결과 링크를 구현했다. 4차 작업에서는 offline 도시·시간대 사전을 넓히고, GPS가 없는 사진을 같은 장면 또는 2시간 이내의 일치하는 GPS 근거로만 보수적으로 추정하며, 날짜 안에서 위치별 소장으로 나누는 Story Album을 완성했다.
 
 ## 2026-09-06 구현 결과
 
@@ -143,15 +143,53 @@ Apple provider metadata / local EXIF
 - 0장 정상 완료 알림도 생성되고 버튼이 HTTPS `*.ts.net/photos`를 가리킴을 검증
 - 외부 공유는 공유용 위치 label만 포함하며 내부 asset/provider ID와 정확 GPS는 포함하지 않음을 검증
 
-### 남은 위치 고도화 범위
+## 2026-09-06 위치 문맥 추론·Story Album 4차 구현 결과
 
-이번에 끝낸 범위는 30일 공유·다운로드의 보안 경계와 end-to-end 전달 경로다. 아래 항목은 더 풍부한 Story Album을 위한 다음 단계이며 완료로 표시하지 않는다.
+이번 단계는 GPS가 없다는 이유만으로 장소를 창작하지 않으면서도, 촬영 묶음 안에 확실한 GPS 사진이 있으면 그 근거를 안전하게 활용하는 범위다.
 
-- GPS 기반 현지 timezone의 오프라인 판정, 광역 행정구역까지 포함한 더 넓은 offline gazetteer
-- GPS 없는 사진의 시간상 인접 사진 전파, OCR/랜드마크 후보를 이용한 `문맥 추정`·`시각 추정` ladder와 명시적 confidence
-- 위치별 subchapter, same-origin 정적 지도와 근거가 표시된 위치 설명
-- Telegram에서 명시적으로 생성한 외부 공유 URL과 passcode를 서로 분리해 전달하는 선택 flow
-- zoom·pagination이 필요할 때 self-hosted Swiper 정식 패키지로 viewer 확장
+| 영역 | 반영 결과 |
+|---|---|
+| offline 위치·시간대 | 네트워크 reverse geocoder를 호출하지 않는 도시 사전을 국내 주요 도시와 자주 방문할 수 있는 해외 도시로 확장했다. 90km 이내에서만 도시 단위 label과 IANA timezone을 만든다. 좌표는 계속 private typed column에만 존재한다. |
+| 기존 DB 호환 | 앱 시작 시 기존 `recommendation_asset_locations_private`에 위치 timezone 열을 안전하게 추가한다. 신규 설치와 기존 운영 DB가 같은 코드 경로를 사용한다. |
+| 문맥 추론 | GPS가 없는 추천 사진은 같은 collection 안의 `confirmed_gps` 사진만 근거로 사용한다. 같은 `scene_cluster_id`의 모든 GPS 근거가 한 도시 label에 일치하면 confidence 0.90, 시각이 포함된 촬영값 기준 2시간 이내의 모든 근거가 일치하면 confidence 0.72로 저장한다. 서로 다른 도시가 섞이면 추정하지 않는다. |
+| 추론 원장 | 추정치는 exact GPS table과 분리한 `recommendation_asset_location_inferences`에 저장한다. label, 상태, provenance, confidence와 source fingerprint만 저장하며 좌표와 원본 source asset ID는 받지 않는다. 나중에 실제 GPS가 들어오면 추정 행은 자동 삭제되고 확인된 값이 우선한다. |
+| 표시 의미 | 확인된 사진은 `GPS 확인`, 전파된 사진은 도시 label 뒤에 `(추정)`과 `문맥 추정`, 근거가 없거나 충돌하면 `위치 미상`·`위치 정보 없음`으로 표시한다. 낮은 confidence의 장소를 사실처럼 쓰지 않는다. |
+| 날짜·위치 Story | Story Director가 만든 날짜 chapter는 유지하고, 서버가 각 날짜 안의 사진을 위치별 subchapter로 결정론적으로 다시 묶는다. 모델이 asset ID나 위치 그룹을 임의로 만들 수 없다. 상단에는 외부 지도·CDN 없이 도시별 장수를 보여주는 same-origin 위치 개요가 표시된다. |
+| 외부 공유 projection | 공유 package를 만들 때 owner 그룹을 그대로 복사하지 않고 `share_location`과 공유별 난수 asset ID로 위치 그룹·개요를 다시 만든다. 내부 ID, 정확 좌표, 원본 경로는 HTML과 package 공개 view에 없다. |
+| 링크·코드 분리 | 공유 생성 직후 `링크 복사`와 `코드 복사`를 별도 버튼으로 제공한다. 잠금 코드는 그 응답 화면에서 한 번만 보이고 DB에는 PBKDF2 hash만 남으므로, Telegram 등 서로 다른 메시지로 나눠 전달할 수 있다. |
+| 범위 제한 | OCR 텍스트나 landmark를 외부 검색해 위치를 추측하는 기능은 활성화하지 않았다. 사진 내용만으로 장소를 단정할 위험과 개인 사진·OCR의 외부 전송 위험이 더 크므로, 명시적 opt-in·검증 자료가 생길 때까지 `위치 미상`을 정상 결과로 둔다. |
+
+### 4차 검증 기준
+
+- 위치·Story·공유·추천 저장 관련 테스트 33개 통과
+- 전체 자동 테스트 `772 passed`
+- 서울·파리의 offline timezone 판정과 알려진 도시 반경 밖의 label 미생성을 검증
+- 같은 장면 GPS 전파의 멱등성, 서울/부산 근거 충돌 시 추정 거부, 추론 payload의 좌표 입력 거부를 검증
+- scene이 달라도 실제 시각이 2시간 이내이면 일치 근거만 전파되고 날짜만 있는 값은 시간 근거로 사용하지 않음을 검증
+- materialization 한 번 안에서 모든 추천 파일을 저장한 뒤 같은 장면 추론이 수행되고 `located_count`와 `inferred_location_count`가 분리됨을 검증
+- Story와 공유 package의 위치별 subchapter가 모든 사진을 정확히 한 번 포함하고 공개 ID만 사용함을 검증
+- 동일 evidence의 구형 Story schema가 HTTP GET에서 묵묵히 재사용되지 않고 새 schema revision으로 승격됨을 검증
+- 생성 화면의 링크/코드 개별 복사와 저장 DB의 평문 passcode 부재를 검증
+
+### 4차 운영 반영 결과
+
+- standalone 앱의 deep code-sign, health, runtime import와 vendor runtime smoke를 모두 통과한 빌드만 `/Volumes/ExtData/02_Services/PhotosMcp/PhotosMcp.app`에 설치했다.
+- `/Applications/PhotosMcp.app`은 최종 운영 앱을 가리키며, runtime directory는 `0700`, SQLite DB는 `0600`이다.
+- 기존 12장 Story는 구형 manifest를 안전 기본 문장으로 덮지 않도록 먼저 구조 승격 경계를 보완했고, 최종적으로 Qwen Story Director를 정식 재호출해 `recommendation-story-v2`, revision 13, `hermes-router / linux-long-context`로 저장했다.
+- 운영 화면은 추천 12장, 날짜 chapter 2개, 위치 subchapter 2개와 위치 개요를 표시한다. 현재 12장에는 확인된 GPS가 없으므로 모두 `위치 미상`으로 유지하며 장소를 만들어내지 않았다.
+- 실제 HTTP 확인 결과는 local `/photos` 200, Tailnet `/photos` 200, Open WebUI 200, Hermes Dashboard 302 로그인 이동이다. 공개 8443 gateway의 `/`와 `/health`는 모두 404로 유지했다.
+- 443과 9119는 Tailnet only이며 8443만 Funnel인 Tailscale Serve 구성을 다시 확인했다.
+- 테스트 공유와 Telegram 테스트 메시지는 만들지 않았고, 운영 알림 원장과 공개 공유 목록에 검증용 흔적을 남기지 않았다.
+- 안정판 검증 후 이전 앱 3개와 빌드 임시본 3개 약 11.3GB는 롤백본으로 보존하지 않고 제거했다.
+
+### 이후 선택형 확장
+
+다음 항목은 현재 목표의 필수 조건이 아니며, 실제 사용 중 필요성이 확인될 때 별도 승인 범위로 진행한다.
+
+- OCR/landmark 기반 `시각 추정`: 민감 OCR 외부 전송 금지, 공개 landmark 후보만 명시적 opt-in
+- self-hosted PMTiles/MapLibre 정적·상호작용 지도: 현재 위치 개요는 외부 요청 없는 텍스트형 요약
+- self-hosted Swiper 정식 패키지: pinch zoom·고급 pagination이 필요할 때만 vendored asset으로 확장
+- Telegram 자동 외부 공유 전송: 현재는 소유자가 생성한 링크와 코드를 화면에서 분리 복사하여 의도한 수신자에게 전달
 
 ## 결론
 

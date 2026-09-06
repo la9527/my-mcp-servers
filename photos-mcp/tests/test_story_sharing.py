@@ -103,6 +103,26 @@ def test_owner_render_lists_active_share_for_later_revoke(tmp_path: Path) -> Non
     assert "123456" not in rendered
 
 
+def test_owner_created_share_exposes_separate_copy_controls_once(tmp_path: Path) -> None:
+    repository, _root = _repository(tmp_path)
+    story = build_recommendation_story(repository, now=NOW)
+    service = StoryShareService(repository, session_secret=SECRET, now_fn=lambda: NOW)
+    created, passcode = service.create(story, passcode="654321")
+
+    rendered = render_owner(
+        story,
+        created=created,
+        passcode=passcode,
+        public_base="https://share.example",
+    )
+    stored = repository.get_shared_story_package(created["share_id"])
+
+    assert "링크 복사" in rendered
+    assert "코드 복사" in rendered
+    assert 'data-copy-value="654321"' in rendered
+    assert "654321" not in str(stored)
+
+
 def test_owner_login_allowlist_uses_private_runtime_file_fallback(
     tmp_path: Path,
     monkeypatch,

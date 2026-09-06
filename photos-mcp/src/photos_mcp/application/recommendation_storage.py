@@ -19,6 +19,7 @@ from photos_mcp.domain.models.automation import validate_private_action_base_url
 from photos_mcp.application.location_privacy import (
     build_location_snapshot,
     extract_file_location,
+    infer_contextual_locations,
 )
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 from photos_mcp.infrastructure.runtime.paths import photos_mcp_runtime_root
@@ -281,6 +282,8 @@ class RecommendationStorageService:
                 "new_file_count": 0,
                 "duplicate_count": 0,
                 "failed_count": 0,
+                "located_count": 0,
+                "inferred_location_count": 0,
                 "groups": [],
                 "local_root_ready": False,
             }
@@ -299,6 +302,8 @@ class RecommendationStorageService:
                 "new_file_count": 0,
                 "duplicate_count": 0,
                 "failed_count": len(exact),
+                "located_count": 0,
+                "inferred_location_count": 0,
                 "error_code": "recommendation_root_unavailable",
                 "groups": [],
                 "local_root_ready": False,
@@ -518,6 +523,12 @@ class RecommendationStorageService:
                 self.repository.upsert_recommendation_member(member)
                 failed_count += 1
 
+        inferred_location_count = infer_contextual_locations(
+            self.repository,
+            collection_id,
+            observed_at=observed.isoformat(),
+        )
+
         for capture_date in sorted(touched_dates):
             self._write_date_manifest(root, capture_date, observed)
 
@@ -535,6 +546,7 @@ class RecommendationStorageService:
             "duplicate_count": duplicates,
             "failed_count": failed_count,
             "located_count": located_count,
+            "inferred_location_count": inferred_location_count,
             "group_ids": sorted(group_ids),
             "completed_at": observed.isoformat(),
         }
@@ -549,6 +561,7 @@ class RecommendationStorageService:
             "duplicate_count": duplicates,
             "failed_count": failed_count,
             "located_count": located_count,
+            "inferred_location_count": inferred_location_count,
             "groups": sorted(group_ids),
             "local_root_ready": True,
         }

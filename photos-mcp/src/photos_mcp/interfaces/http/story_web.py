@@ -45,9 +45,9 @@ a{color:inherit}.shell{width:min(1120px,100%);margin:auto;padding:clamp(20px,4vw
 h1{font-family:ui-serif,Georgia,serif;font-size:clamp(2rem,6vw,4.6rem);line-height:1.02;letter-spacing:-.045em;margin:.35rem 0 .9rem;max-width:15ch}.lede{max-width:62ch;color:var(--muted);font-size:clamp(1rem,2vw,1.2rem);margin:0}.meta{display:flex;flex-wrap:wrap;gap:8px 18px;margin:24px 0;color:var(--muted);font-size:.9rem}
 .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:end;background:rgba(255,255,255,.7);border:1px solid var(--line);padding:14px;border-radius:18px;margin:26px 0}.toolbar label{font-size:.82rem;color:var(--muted);display:grid;gap:4px}.toolbar select{height:44px;border:1px solid var(--line);border-radius:10px;background:white;padding:0 12px}.check{display:flex!important;align-items:center;gap:8px!important;min-height:44px}.check input{width:20px;height:20px}
 button,.button{min-height:44px;border:0;border-radius:999px;padding:10px 18px;font:inherit;font-weight:700;cursor:pointer;background:var(--accent);color:white;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.secondary{background:var(--accent2);color:var(--accent)}button:focus-visible,.button:focus-visible,.tile:focus-visible{outline:3px solid #e19b38;outline-offset:3px}
-.notice{border:1px solid var(--line);background:var(--card);padding:16px;border-radius:16px;margin:18px 0}.secret{font:700 1.35rem ui-monospace,monospace;letter-spacing:.16em}.shares{margin:28px 0}.shares h2{font-family:ui-serif,Georgia,serif}.share-list{display:grid;gap:10px}.share-card{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;background:var(--card);border:1px solid var(--line);padding:14px 16px;border-radius:16px}.share-card p{margin:0;color:var(--muted);font-size:.84rem}.share-actions{display:flex;flex-wrap:wrap;gap:8px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:28px}.tile{border:0;background:#d9d5cd;padding:0;position:relative;aspect-ratio:1;overflow:hidden;border-radius:12px;cursor:zoom-in}.tile img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .22s ease}.tile:hover img{transform:scale(1.025)}.tile span{position:absolute;left:8px;bottom:8px;background:rgba(18,24,27,.72);color:#fff;border-radius:999px;padding:3px 8px;font-size:.7rem}
+.notice{border:1px solid var(--line);background:var(--card);padding:16px;border-radius:16px;margin:18px 0}.secret{font:700 1.35rem ui-monospace,monospace;letter-spacing:.16em}.copy-row{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}.shares{margin:28px 0}.shares h2{font-family:ui-serif,Georgia,serif}.share-list{display:grid;gap:10px}.share-card{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;background:var(--card);border:1px solid var(--line);padding:14px 16px;border-radius:16px}.share-card p{margin:0;color:var(--muted);font-size:.84rem}.share-actions{display:flex;flex-wrap:wrap;gap:8px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}.tile{border:0;background:#d9d5cd;padding:0;position:relative;aspect-ratio:1;overflow:hidden;border-radius:12px;cursor:zoom-in}.tile img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .22s ease}.tile:hover img{transform:scale(1.025)}.tile span{position:absolute;left:8px;bottom:8px;background:rgba(18,24,27,.72);color:#fff;border-radius:999px;padding:3px 8px;font-size:.7rem}
 .story-status{display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:var(--accent2);color:var(--accent);padding:4px 10px;font-size:.78rem;font-weight:700}.chapters{display:grid;gap:clamp(34px,6vw,68px);margin-top:34px}.chapter{border-top:1px solid var(--line);padding-top:22px}.chapter-head{display:grid;grid-template-columns:minmax(0,1fr);gap:5px;margin-bottom:16px}.chapter-date{color:var(--accent);font-size:.78rem;font-weight:750;letter-spacing:.08em}.chapter h2{font-family:ui-serif,Georgia,serif;font-size:clamp(1.6rem,4vw,2.5rem);line-height:1.1;margin:0}.chapter-copy{color:var(--muted);max-width:68ch;margin:5px 0 0}.chapter .grid{margin-top:14px}.closing{font-family:ui-serif,Georgia,serif;font-size:clamp(1.1rem,2.2vw,1.45rem);max-width:48ch;margin:50px 0 0;padding:24px 0;border-top:1px solid var(--line)}
-.place-list{display:flex;flex-wrap:wrap;gap:7px;margin:7px 0 0}.place{display:inline-flex;border-radius:999px;background:var(--accent2);color:var(--accent);padding:3px 9px;font-size:.78rem;font-weight:700}
+.place-list,.location-overview{display:flex;flex-wrap:wrap;gap:7px;margin:7px 0 0}.place,.location-chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:var(--accent2);color:var(--accent);padding:4px 10px;font-size:.78rem;font-weight:700}.location-overview{margin:20px 0 4px}.location-chip[data-status="contextual_estimate"]{background:#eee6d4;color:#72561e}.location-chip[data-status="unknown"]{background:#e7e7e4;color:#626866}.location-subchapter{margin-top:24px}.location-subchapter h3{display:flex;align-items:center;gap:8px;font-size:1rem;margin:0;color:var(--ink)}.location-subchapter h3 span{color:var(--muted);font-size:.72rem;font-weight:600}.location-subchapter .grid{margin-top:10px}
 .empty{padding:50px 20px;text-align:center;background:var(--card);border:1px solid var(--line);border-radius:20px;margin-top:30px}.lock{width:min(430px,calc(100% - 32px));margin:12vh auto;background:var(--card);border:1px solid var(--line);border-radius:24px;padding:30px;box-shadow:0 20px 60px rgba(40,35,25,.12)}.lock h1{font-size:2.2rem}.lock label{display:grid;gap:7px;color:var(--muted)}.lock input{height:50px;border:1px solid var(--line);border-radius:12px;padding:0 14px;font:1.15rem ui-monospace,monospace;letter-spacing:.12em;margin-bottom:14px;width:100%}.error{color:var(--danger)}
 .viewer{border:0;padding:0;background:rgba(8,11,13,.94);color:white;width:100vw;height:100dvh;max-width:none;max-height:none}.viewer::backdrop{background:rgba(8,11,13,.94)}.viewer-inner{height:100%;display:grid;grid-template-rows:56px minmax(0,1fr) auto}.viewer-top,.viewer-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px max(14px,env(safe-area-inset-left));background:rgba(8,11,13,.82)}.viewer button,.viewer .button{background:rgba(255,255,255,.15);backdrop-filter:blur(8px)}.stage{display:grid;grid-template-columns:54px minmax(0,1fr) 54px;align-items:center;min-height:0}.stage figure{margin:0;height:100%;display:grid;place-items:center;min-width:0}.stage img{max-width:100%;max-height:100%;object-fit:contain}.nav{border-radius:50%;padding:0;width:44px;margin:auto}.caption{min-width:0}.caption strong,.caption span{display:block}.caption span{color:#c7ced2;font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.download[hidden]{display:none}.expiry{font-size:.8rem;color:var(--muted);margin-top:32px}
 @media(min-width:680px){.grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.tile{border-radius:16px}}
@@ -57,7 +57,7 @@ button,.button{min-height:44px;border:0;border-radius:999px;padding:10px 18px;fo
 
 
 STORY_JS = r"""
-(()=>{const d=document,dialog=d.querySelector('[data-viewer]');if(!dialog)return;const tiles=[...d.querySelectorAll('[data-photo]')],image=d.querySelector('[data-full]'),count=d.querySelector('[data-count]'),title=d.querySelector('[data-title]'),detail=d.querySelector('[data-detail]'),download=d.querySelector('[data-save]');let index=0,startX=0;
+(()=>{const d=document;d.querySelectorAll('[data-copy-value]').forEach(button=>button.addEventListener('click',async()=>{const original=button.textContent;try{await navigator.clipboard.writeText(button.dataset.copyValue||'');button.textContent='복사됨'}catch(_error){button.textContent='복사 실패'}setTimeout(()=>{button.textContent=original},1400)}));const dialog=d.querySelector('[data-viewer]');if(!dialog)return;const tiles=[...d.querySelectorAll('[data-photo]')],image=d.querySelector('[data-full]'),count=d.querySelector('[data-count]'),title=d.querySelector('[data-title]'),detail=d.querySelector('[data-detail]'),download=d.querySelector('[data-save]');let index=0,startX=0;
 function show(next){index=(next+tiles.length)%tiles.length;const t=tiles[index];image.src=t.dataset.preview;image.alt=t.dataset.alt||'';count.textContent=`${index+1} / ${tiles.length}`;title.textContent=t.dataset.title||'사진';detail.textContent=[t.dataset.date,t.dataset.location].filter(Boolean).join(' · ');if(t.dataset.download){download.hidden=false;download.href=t.dataset.download;download.setAttribute('download','')}else{download.hidden=true;download.removeAttribute('href')}}
 tiles.forEach((t,i)=>t.addEventListener('click',()=>{show(i);dialog.showModal()}));d.querySelector('[data-close]').addEventListener('click',()=>dialog.close());d.querySelector('[data-prev]').addEventListener('click',()=>show(index-1));d.querySelector('[data-next]').addEventListener('click',()=>show(index+1));dialog.addEventListener('click',e=>{if(e.target===dialog)dialog.close()});dialog.addEventListener('keydown',e=>{if(e.key==='ArrowLeft')show(index-1);if(e.key==='ArrowRight')show(index+1)});image.addEventListener('touchstart',e=>{startX=e.changedTouches[0].clientX},{passive:true});image.addEventListener('touchend',e=>{const dx=e.changedTouches[0].clientX-startX;if(Math.abs(dx)>45)show(index+(dx<0?1:-1))},{passive:true});})();
 """
@@ -68,11 +68,11 @@ def _e(value: Any) -> str:
 
 
 def _page(title: str, body: str, *, script: bool = True) -> str:
-    js = '<script src="/story-assets/story.js?v=2" defer></script>' if script else ""
+    js = '<script src="/story-assets/story.js?v=3" defer></script>' if script else ""
     return (
         '<!doctype html><html lang="ko"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
-        f'<title>{_e(title)}</title><link rel="stylesheet" href="/story-assets/story.css?v=2">{js}'
+        f'<title>{_e(title)}</title><link rel="stylesheet" href="/story-assets/story.css?v=3">{js}'
         f'</head><body>{body}</body></html>'
     )
 
@@ -146,16 +146,69 @@ def render_story(
         ]
         if not chapter_photos:
             continue
-        rendered_ids.update(str(photo.get(id_key) or "") for photo in chapter_photos)
-        cards = "".join(
-            _photo_card(
-                photo,
-                public=public,
-                share_id=share_id,
-                download_enabled=download_enabled,
+        chapter_id_set = {str(photo.get(id_key) or "") for photo in chapter_photos}
+        grouped_ids: set[str] = set()
+        subchapters: list[str] = []
+        for location_group in chapter.get("location_groups") or []:
+            if not isinstance(location_group, dict):
+                continue
+            group_ids = [
+                str(value)
+                for value in location_group.get(
+                    "public_asset_ids" if public else "asset_ids"
+                )
+                or []
+            ]
+            group_photos = [
+                photos_by_id[asset_id]
+                for asset_id in group_ids
+                if asset_id in chapter_id_set
+                and asset_id in photos_by_id
+                and asset_id not in grouped_ids
+            ]
+            if not group_photos:
+                continue
+            grouped_ids.update(str(photo.get(id_key) or "") for photo in group_photos)
+            cards = "".join(
+                _photo_card(
+                    photo,
+                    public=public,
+                    share_id=share_id,
+                    download_enabled=download_enabled,
+                )
+                for photo in group_photos
             )
+            status_label = {
+                "confirmed_gps": "GPS 확인",
+                "contextual_estimate": "문맥 추정",
+                "unknown": "위치 정보 없음",
+            }.get(str(location_group.get("status") or ""), "")
+            subchapters.append(
+                '<section class="location-subchapter">'
+                f'<h3>{_e(location_group.get("label") or "위치 미상")}<span>{_e(status_label)}</span></h3>'
+                f'<div class="grid" aria-label="{_e(location_group.get("label") or "위치 미상")}">{cards}</div>'
+                '</section>'
+            )
+        ungrouped = [
+            photo
             for photo in chapter_photos
-        )
+            if str(photo.get(id_key) or "") not in grouped_ids
+        ]
+        if ungrouped:
+            cards = "".join(
+                _photo_card(
+                    photo,
+                    public=public,
+                    share_id=share_id,
+                    download_enabled=download_enabled,
+                )
+                for photo in ungrouped
+            )
+            subchapters.append(
+                '<section class="location-subchapter"><h3>위치 미상<span>위치 정보 없음</span></h3>'
+                f'<div class="grid" aria-label="위치 미상">{cards}</div></section>'
+            )
+        rendered_ids.update(chapter_id_set)
         places = "".join(
             f'<span class="place">{_e(value)}</span>'
             for value in chapter.get("locations") or []
@@ -170,7 +223,7 @@ def render_story(
             f'<p class="chapter-copy">{_e(chapter.get("summary"))}</p>'
             f'{place_list}'
             '</header>'
-            f'<section class="grid" aria-label="{_e(chapter.get("title") or "추천 사진")}">{cards}</section>'
+            f'{"".join(subchapters)}'
             '</article>'
         )
     remaining = [
@@ -224,10 +277,21 @@ def render_story(
         if story.get("closing")
         else ""
     )
+    overview = "".join(
+        f'<span class="location-chip" data-status="{_e(item.get("status"))}">'
+        f'{_e(item.get("label") or "위치 미상")} · {_e(item.get("count") or 0)}장</span>'
+        for item in story.get("location_overview") or []
+        if isinstance(item, dict)
+    )
+    overview_html = (
+        f'<nav class="location-overview" aria-label="위치별 사진 요약">{overview}</nav>'
+        if overview
+        else ""
+    )
     body = (
         '<main class="shell"><p class="eyebrow">Photo story</p>'
         f'<h1>{_e(story.get("title"))}</h1><p class="lede">{_e(story.get("subtitle"))}</p>'
-        f'<div class="meta"><span>{len(photos)}장</span><span>{_e(date_range)}</span>{status}</div>'
+        f'<div class="meta"><span>{len(photos)}장</span><span>{_e(date_range)}</span>{status}</div>{overview_html}'
         f'{content}{closing}{expiry}</main>{_viewer()}'
     )
     return _page(str(story.get("title") or "사진 이야기"), body)
@@ -247,6 +311,10 @@ def render_owner(
         notice = (
             '<section class="notice" role="status"><strong>공유가 준비되었습니다</strong>'
             f'<p><a href="{_e(url)}">{_e(url)}</a></p><p>잠금 코드</p><p class="secret">{_e(passcode)}</p>'
+            '<div class="copy-row">'
+            f'<button class="secondary" type="button" data-copy-value="{_e(url)}">링크 복사</button>'
+            f'<button class="secondary" type="button" data-copy-value="{_e(passcode)}">코드 복사</button>'
+            '</div>'
             '<p>코드는 이 화면에서만 표시됩니다. 링크와 코드를 따로 전달하세요.</p>'
             f'<form method="post" action="/photos/shares/{_e(created["share_id"])}/revoke"><button class="secondary" type="submit">공유 즉시 종료</button></form></section>'
         )

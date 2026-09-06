@@ -267,6 +267,8 @@ class RunRepository:
                     label_distance_km REAL,
                     capture_timezone TEXT NOT NULL DEFAULT '',
                     timezone_source TEXT NOT NULL DEFAULT '',
+                    location_timezone TEXT NOT NULL DEFAULT '',
+                    location_timezone_source TEXT NOT NULL DEFAULT '',
                     privacy_class TEXT NOT NULL DEFAULT 'exact_private',
                     observed_at TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
@@ -274,6 +276,22 @@ class RunRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_recommendation_asset_location_status
                     ON recommendation_asset_locations_private(location_status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS recommendation_asset_location_inferences (
+                    local_asset_id TEXT PRIMARY KEY,
+                    owner_label TEXT NOT NULL,
+                    share_label TEXT NOT NULL,
+                    location_status TEXT NOT NULL,
+                    provenance TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    source_asset_fingerprint TEXT NOT NULL DEFAULT '',
+                    source_collection_id TEXT NOT NULL DEFAULT '',
+                    observed_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_recommendation_location_inference_status
+                    ON recommendation_asset_location_inferences(location_status, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS recommendation_groups (
                     group_id TEXT PRIMARY KEY,
@@ -341,7 +359,31 @@ class RunRepository:
                     ON shared_story_packages(status, expires_at);
                 """
             )
+            self._ensure_column_locked(
+                "recommendation_asset_locations_private",
+                "location_timezone",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column_locked(
+                "recommendation_asset_locations_private",
+                "location_timezone_source",
+                "TEXT NOT NULL DEFAULT ''",
+            )
             self._conn.commit()
+
+    def _ensure_column_locked(
+        self,
+        table: str,
+        column: str,
+        declaration: str,
+    ) -> None:
+        """Add one trusted schema column while the repository lock is held."""
+        existing = {
+            str(row["name"])
+            for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in existing:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def close(self) -> None:
         with self._lock:
@@ -898,8 +940,9 @@ class RunRepository:
                     coarse_latitude, coarse_longitude, provenance,
                     location_status, owner_label, share_label, label_source,
                     label_distance_km, capture_timezone, timezone_source,
-                    privacy_class, observed_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    location_timezone, location_timezone_source, privacy_class,
+                    observed_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(local_asset_id) DO UPDATE SET
                      latitude_exact=excluded.latitude_exact,
                      longitude_exact=excluded.longitude_exact,
@@ -913,6 +956,8 @@ class RunRepository:
                      label_distance_km=excluded.label_distance_km,
                      capture_timezone=excluded.capture_timezone,
                      timezone_source=excluded.timezone_source,
+                     location_timezone=excluded.location_timezone,
+                     location_timezone_source=excluded.location_timezone_source,
                      privacy_class=excluded.privacy_class,
                      observed_at=excluded.observed_at,
                      updated_at=excluded.updated_at""",
@@ -930,8 +975,69 @@ class RunRepository:
                     snapshot.get("label_distance_km"),
                     str(snapshot.get("capture_timezone") or "")[:80],
                     str(snapshot.get("timezone_source") or "unknown")[:40],
+                    str(snapshot.get("location_timezone") or "")[:80],
+                    str(snapshot.get("location_timezone_source") or "unknown")[:40],
                     "exact_private",
                     str(snapshot.get("observed_at") or now),
+                    now,
+                    now,
+                ),
+            )
+            self._conn.execute(
+                "DELETE FROM recommendation_asset_location_inferences WHERE local_asset_id = ?",
+                (local_asset_id,),
+            )
+            self._conn.commit()
+
+    def upsert_recommendation_asset_location_inference(
+        self,
+        local_asset_id: str,
+        inference: dict[str, Any],
+    ) -> None:
+        """Persist a coordinate-free contextual estimate separately from GPS."""
+        if not local_asset_id:
+            raise ValueError("Location inference requires local_asset_id")
+        owner_label = str(inference.get("owner_label") or "")[:96]
+        share_label = str(inference.get("share_label") or "")[:96]
+        confidence = float(inference.get("confidence") or 0.0)
+        if not owner_label or not share_label or not 0.0 <= confidence <= 1.0:
+            raise ValueError("Invalid location inference")
+        if any(key in inference for key in ("latitude", "longitude", "latitude_exact", "longitude_exact")):
+            raise ValueError("Location inference must not contain coordinates")
+        now = _utcnow_iso()
+        with self._lock:
+            exact = self._conn.execute(
+                "SELECT 1 FROM recommendation_asset_locations_private WHERE local_asset_id = ?",
+                (local_asset_id,),
+            ).fetchone()
+            if exact is not None:
+                return
+            self._conn.execute(
+                """INSERT INTO recommendation_asset_location_inferences
+                   (local_asset_id, owner_label, share_label, location_status,
+                    provenance, confidence, source_asset_fingerprint,
+                    source_collection_id, observed_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(local_asset_id) DO UPDATE SET
+                     owner_label=excluded.owner_label,
+                     share_label=excluded.share_label,
+                     location_status=excluded.location_status,
+                     provenance=excluded.provenance,
+                     confidence=excluded.confidence,
+                     source_asset_fingerprint=excluded.source_asset_fingerprint,
+                     source_collection_id=excluded.source_collection_id,
+                     observed_at=excluded.observed_at,
+                     updated_at=excluded.updated_at""",
+                (
+                    local_asset_id,
+                    owner_label,
+                    share_label,
+                    "contextual_estimate",
+                    str(inference.get("provenance") or "contextual_anchor")[:60],
+                    confidence,
+                    str(inference.get("source_asset_fingerprint") or "")[:64],
+                    str(inference.get("source_collection_id") or "")[:80],
+                    str(inference.get("observed_at") or now),
                     now,
                     now,
                 ),
@@ -951,13 +1057,39 @@ class RunRepository:
             row = self._conn.execute(
                 """SELECT provenance, location_status, owner_label, share_label,
                           label_source, label_distance_km, capture_timezone,
-                          timezone_source
+                          timezone_source, location_timezone,
+                          location_timezone_source
                    FROM recommendation_asset_locations_private
                    WHERE local_asset_id = ?""",
                 (local_asset_id,),
             ).fetchone()
+            if row is None:
+                inferred = self._conn.execute(
+                    """SELECT provenance, location_status, owner_label, share_label,
+                              confidence, source_asset_fingerprint, observed_at
+                       FROM recommendation_asset_location_inferences
+                       WHERE local_asset_id = ?""",
+                    (local_asset_id,),
+                ).fetchone()
+            else:
+                inferred = None
         if row is None:
-            return None
+            if inferred is None:
+                return None
+            label_key = "owner_label" if audience == "owner" else "share_label"
+            return {
+                "status": str(inferred["location_status"] or "contextual_estimate"),
+                "label": str(inferred[label_key] or ""),
+                "provenance": str(inferred["provenance"] or "contextual_anchor"),
+                "confidence": float(inferred["confidence"] or 0.0),
+                "source_asset_fingerprint": str(inferred["source_asset_fingerprint"] or ""),
+                "label_source": "contextual_anchor",
+                "label_distance_km": None,
+                "capture_timezone": "",
+                "timezone_source": "unknown",
+                "location_timezone": "",
+                "location_timezone_source": "unknown",
+            }
         label_key = "owner_label" if audience == "owner" else "share_label"
         return {
             "status": str(row["location_status"] or "unknown"),
@@ -967,6 +1099,11 @@ class RunRepository:
             "label_distance_km": row["label_distance_km"],
             "capture_timezone": str(row["capture_timezone"] or ""),
             "timezone_source": str(row["timezone_source"] or "unknown"),
+            "location_timezone": str(row["location_timezone"] or ""),
+            "location_timezone_source": str(
+                row["location_timezone_source"] or "unknown"
+            ),
+            "confidence": 1.0,
         }
 
     def upsert_recommendation_group(self, payload: dict[str, Any]) -> dict[str, Any]:
