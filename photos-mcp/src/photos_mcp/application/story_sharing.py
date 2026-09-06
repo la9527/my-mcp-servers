@@ -106,7 +106,7 @@ class StoryShareService:
                     "title": str(photo.get("title") or "사진")[:100],
                     "summary": str(photo.get("summary") or "")[:300],
                     "alt": str(photo.get("alt") or "공유 사진")[:160],
-                    "location": str(photo.get("location") or "")[:80],
+                    "location": str(photo.get("share_location") or "")[:80],
                 }
             )
         public_chapters = []
@@ -133,6 +133,14 @@ class StoryShareService:
                     "title": str(chapter.get("title") or "사진 모음")[:100],
                     "summary": str(chapter.get("summary") or "")[:500],
                     "public_asset_ids": ids,
+                    "locations": sorted(
+                        {
+                            str(photo.get("location") or "")[:80]
+                            for photo in public_photos
+                            if photo.get("public_asset_id") in ids
+                            and str(photo.get("location") or "")
+                        }
+                    ),
                 }
             )
         package = {
@@ -306,6 +314,7 @@ class StoryShareService:
                         "date",
                         "title",
                         "summary",
+                        "locations",
                         "public_asset_ids",
                     )
                 }

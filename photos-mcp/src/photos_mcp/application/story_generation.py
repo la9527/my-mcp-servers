@@ -62,19 +62,6 @@ def _date_title(date_from: str, date_to: str) -> str:
     return f"{start.year}년 {start.month}월 {start.day}일 — {end.year}년 {end.month}월 {end.day}일"
 
 
-def _coarse_location(asset: dict[str, Any], member: dict[str, Any]) -> str:
-    for source in (member, asset):
-        value = _clean_text(
-            source.get("coarse_location")
-            or source.get("city")
-            or source.get("location_label"),
-            80,
-        )
-        if value:
-            return value
-    return ""
-
-
 def build_story_evidence(repository: RunRepository) -> dict[str, Any]:
     """Build an opaque, path-free evidence envelope from materialized picks."""
     photos: list[dict[str, Any]] = []
@@ -112,13 +99,23 @@ def build_story_evidence(repository: RunRepository) -> dict[str, Any]:
             if _clean_text(value, 48)
         ][:6]
         photo_ref = "p_" + hashlib.sha256(local_asset_id.encode("utf-8")).hexdigest()[:12]
-        location = _coarse_location(asset, member)
+        owner_location = repository.get_recommendation_asset_location(
+            local_asset_id,
+            audience="owner",
+        ) or {}
+        share_location = repository.get_recommendation_asset_location(
+            local_asset_id,
+            audience="share",
+        ) or {}
+        location = _clean_text(owner_location.get("label"), 80)
+        location_status = _clean_text(owner_location.get("status") or "unknown", 40)
         evidence_photo = {
             "photo_ref": photo_ref,
             "capture_date": capture_date,
             "scene_description": scene,
             "event_type": event_type,
             "coarse_location": location,
+            "location_status": location_status,
             "selection_reason_codes": reason_codes,
             "recommendation_slot": max(0, int(member.get("recommendation_slot") or 0)),
             "quality_score": round(float(member.get("quality_score") or analysis.get("quality_score") or 0.0), 2),
@@ -137,6 +134,11 @@ def build_story_evidence(repository: RunRepository) -> dict[str, Any]:
                     else "날짜 미상의 추천 사진"
                 ),
                 "location": location,
+                "share_location": _clean_text(share_location.get("label"), 80),
+                "location_status": location_status,
+                "location_provenance": _clean_text(
+                    owner_location.get("provenance"), 40
+                ),
                 "recommendation_slot": evidence_photo["recommendation_slot"],
             }
         )
@@ -189,6 +191,13 @@ def _deterministic_manifest(
                 "summary": f"{label}에 고른 추천 사진 {len(items)}장입니다.",
                 "photo_refs": [item["photo_ref"] for item in items],
                 "asset_ids": [item["asset_id"] for item in items],
+                "locations": sorted(
+                    {
+                        str(item.get("location") or "")
+                        for item in items
+                        if str(item.get("location") or "")
+                    }
+                ),
             }
         )
     theme = "day_in_life" if len(chapters) == 1 else "seasonal_digest"
@@ -265,6 +274,13 @@ def _model_manifest(
                 "summary": _safe_model_text(raw.get("summary"), 500),
                 "photo_refs": refs,
                 "asset_ids": [by_ref[ref]["asset_id"] for ref in refs],
+                "locations": sorted(
+                    {
+                        str(by_ref[ref].get("location") or "")
+                        for ref in refs
+                        if str(by_ref[ref].get("location") or "")
+                    }
+                ),
             }
         )
     if sorted(seen) != sorted(expected_refs) or len(seen) != len(set(seen)):

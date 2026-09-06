@@ -16,6 +16,10 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from photos_mcp.domain.models.automation import validate_private_action_base_url
+from photos_mcp.application.location_privacy import (
+    build_location_snapshot,
+    extract_file_location,
+)
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 from photos_mcp.infrastructure.runtime.paths import photos_mcp_runtime_root
 from photos_mcp.infrastructure.sources.google_photos.import_repository import (
@@ -29,6 +33,9 @@ DEFAULT_RECOMMENDATION_ROOT = Path(
     "/Volumes/ExtData/02_Services/PhotosMcp/recommendations"
 )
 DEFAULT_RECOMMENDATION_POLICY_VERSION = "scene-recommendations-v1"
+DEFAULT_OWNER_STORY_URL = (
+    "https://byoungyoung-macmini.tail53bcc7.ts.net/photos"
+)
 _SEOUL = ZoneInfo("Asia/Seoul")
 _SAFE_SUFFIX = re.compile(r"^\.[a-z0-9]{1,10}$")
 
@@ -302,6 +309,7 @@ class RecommendationStorageService:
         duplicates = 0
         failed_count = 0
         materialized_count = 0
+        located_count = 0
         touched_dates: set[str] = set()
         group_ids: set[str] = set()
         for item in exact:
@@ -400,6 +408,35 @@ class RecommendationStorageService:
                     }
                     self.repository.upsert_local_recommendation_asset(asset_payload)
 
+                private_location = self.repository.get_photo_analysis_location_private(
+                    job_id=analysis_run_id,
+                    photo_id=photo_id,
+                )
+                if private_location is None:
+                    embedded = extract_file_location(source)
+                    if embedded is not None:
+                        private_location = {
+                            "latitude": embedded.latitude,
+                            "longitude": embedded.longitude,
+                            "provenance": embedded.provenance,
+                        }
+                if private_location is not None:
+                    snapshot = build_location_snapshot(
+                        latitude=private_location.get("latitude"),
+                        longitude=private_location.get("longitude"),
+                        provenance=str(private_location.get("provenance") or "unknown"),
+                        capture_timezone=(
+                            str(captured_at.tzinfo) if captured_at is not None else ""
+                        ),
+                        observed_at=observed.isoformat(),
+                    )
+                    if snapshot is not None:
+                        self.repository.upsert_recommendation_asset_location_private(
+                            local_asset_id,
+                            snapshot,
+                        )
+                        located_count += 1
+
                 member.update(
                     {
                         "capture_date_local": capture_date,
@@ -497,6 +534,7 @@ class RecommendationStorageService:
             "new_file_count": new_files,
             "duplicate_count": duplicates,
             "failed_count": failed_count,
+            "located_count": located_count,
             "group_ids": sorted(group_ids),
             "completed_at": observed.isoformat(),
         }
@@ -510,6 +548,7 @@ class RecommendationStorageService:
             "new_file_count": new_files,
             "duplicate_count": duplicates,
             "failed_count": failed_count,
+            "located_count": located_count,
             "groups": sorted(group_ids),
             "local_root_ready": True,
         }
@@ -660,11 +699,9 @@ def queue_recommendation_storage_notification(
     storage_result: dict[str, Any],
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Queue one redacted KST Telegram summary for a non-empty recommendation run."""
+    """Queue one redacted KST Telegram summary, including valid zero-result runs."""
 
     recommended = max(0, int(storage_result.get("recommended_count") or 0))
-    if recommended == 0:
-        return None
     observed = now or _utcnow()
     if observed.tzinfo is None:
         observed = observed.replace(tzinfo=UTC)
@@ -687,8 +724,8 @@ def queue_recommendation_storage_notification(
         f"중복 통합 {max(0, int(storage_result.get('duplicate_count') or 0))}장, "
         f"실패 {max(0, int(storage_result.get('failed_count') or 0))}장입니다."
     )
-    base_url = validate_private_action_base_url(
-        os.getenv("PHOTOS_MCP_ACTION_BASE_URL", "http://127.0.0.1:18791/actions")
+    result_url = validate_private_action_base_url(
+        os.getenv("PHOTOS_MCP_OWNER_STORY_URL", DEFAULT_OWNER_STORY_URL)
     )
     collection_id = str(storage_result.get("collection_id") or "")
     request_id = f"recommendation-storage-{uuid.uuid4().hex}"
@@ -705,7 +742,7 @@ def queue_recommendation_storage_notification(
         "reason_code": f"recommendation_storage_{status}",
         "title": title,
         "message": message,
-        "action_url": base_url,
+        "action_url": result_url,
         "expires_at": (observed + timedelta(hours=24)).isoformat(),
         "automation_run_id": str(automation_run.get("automation_run_id") or ""),
         "collection_id": collection_id,

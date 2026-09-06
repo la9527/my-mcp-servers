@@ -47,6 +47,7 @@ h1{font-family:ui-serif,Georgia,serif;font-size:clamp(2rem,6vw,4.6rem);line-heig
 button,.button{min-height:44px;border:0;border-radius:999px;padding:10px 18px;font:inherit;font-weight:700;cursor:pointer;background:var(--accent);color:white;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.secondary{background:var(--accent2);color:var(--accent)}button:focus-visible,.button:focus-visible,.tile:focus-visible{outline:3px solid #e19b38;outline-offset:3px}
 .notice{border:1px solid var(--line);background:var(--card);padding:16px;border-radius:16px;margin:18px 0}.secret{font:700 1.35rem ui-monospace,monospace;letter-spacing:.16em}.shares{margin:28px 0}.shares h2{font-family:ui-serif,Georgia,serif}.share-list{display:grid;gap:10px}.share-card{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;background:var(--card);border:1px solid var(--line);padding:14px 16px;border-radius:16px}.share-card p{margin:0;color:var(--muted);font-size:.84rem}.share-actions{display:flex;flex-wrap:wrap;gap:8px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:28px}.tile{border:0;background:#d9d5cd;padding:0;position:relative;aspect-ratio:1;overflow:hidden;border-radius:12px;cursor:zoom-in}.tile img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .22s ease}.tile:hover img{transform:scale(1.025)}.tile span{position:absolute;left:8px;bottom:8px;background:rgba(18,24,27,.72);color:#fff;border-radius:999px;padding:3px 8px;font-size:.7rem}
 .story-status{display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:var(--accent2);color:var(--accent);padding:4px 10px;font-size:.78rem;font-weight:700}.chapters{display:grid;gap:clamp(34px,6vw,68px);margin-top:34px}.chapter{border-top:1px solid var(--line);padding-top:22px}.chapter-head{display:grid;grid-template-columns:minmax(0,1fr);gap:5px;margin-bottom:16px}.chapter-date{color:var(--accent);font-size:.78rem;font-weight:750;letter-spacing:.08em}.chapter h2{font-family:ui-serif,Georgia,serif;font-size:clamp(1.6rem,4vw,2.5rem);line-height:1.1;margin:0}.chapter-copy{color:var(--muted);max-width:68ch;margin:5px 0 0}.chapter .grid{margin-top:14px}.closing{font-family:ui-serif,Georgia,serif;font-size:clamp(1.1rem,2.2vw,1.45rem);max-width:48ch;margin:50px 0 0;padding:24px 0;border-top:1px solid var(--line)}
+.place-list{display:flex;flex-wrap:wrap;gap:7px;margin:7px 0 0}.place{display:inline-flex;border-radius:999px;background:var(--accent2);color:var(--accent);padding:3px 9px;font-size:.78rem;font-weight:700}
 .empty{padding:50px 20px;text-align:center;background:var(--card);border:1px solid var(--line);border-radius:20px;margin-top:30px}.lock{width:min(430px,calc(100% - 32px));margin:12vh auto;background:var(--card);border:1px solid var(--line);border-radius:24px;padding:30px;box-shadow:0 20px 60px rgba(40,35,25,.12)}.lock h1{font-size:2.2rem}.lock label{display:grid;gap:7px;color:var(--muted)}.lock input{height:50px;border:1px solid var(--line);border-radius:12px;padding:0 14px;font:1.15rem ui-monospace,monospace;letter-spacing:.12em;margin-bottom:14px;width:100%}.error{color:var(--danger)}
 .viewer{border:0;padding:0;background:rgba(8,11,13,.94);color:white;width:100vw;height:100dvh;max-width:none;max-height:none}.viewer::backdrop{background:rgba(8,11,13,.94)}.viewer-inner{height:100%;display:grid;grid-template-rows:56px minmax(0,1fr) auto}.viewer-top,.viewer-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px max(14px,env(safe-area-inset-left));background:rgba(8,11,13,.82)}.viewer button,.viewer .button{background:rgba(255,255,255,.15);backdrop-filter:blur(8px)}.stage{display:grid;grid-template-columns:54px minmax(0,1fr) 54px;align-items:center;min-height:0}.stage figure{margin:0;height:100%;display:grid;place-items:center;min-width:0}.stage img{max-width:100%;max-height:100%;object-fit:contain}.nav{border-radius:50%;padding:0;width:44px;margin:auto}.caption{min-width:0}.caption strong,.caption span{display:block}.caption span{color:#c7ced2;font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.download[hidden]{display:none}.expiry{font-size:.8rem;color:var(--muted);margin-top:32px}
 @media(min-width:680px){.grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.tile{border-radius:16px}}
@@ -155,12 +156,19 @@ def render_story(
             )
             for photo in chapter_photos
         )
+        places = "".join(
+            f'<span class="place">{_e(value)}</span>'
+            for value in chapter.get("locations") or []
+            if str(value or "")
+        )
+        place_list = f'<div class="place-list">{places}</div>' if places else ""
         chapter_html.append(
             '<article class="chapter">'
             '<header class="chapter-head">'
             f'<span class="chapter-date">{_e(chapter.get("date") or chapter.get("title"))}</span>'
             f'<h2>{_e(chapter.get("title") or "사진 모음")}</h2>'
             f'<p class="chapter-copy">{_e(chapter.get("summary"))}</p>'
+            f'{place_list}'
             '</header>'
             f'<section class="grid" aria-label="{_e(chapter.get("title") or "추천 사진")}">{cards}</section>'
             '</article>'

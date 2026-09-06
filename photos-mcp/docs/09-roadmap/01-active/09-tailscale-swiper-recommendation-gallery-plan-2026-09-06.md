@@ -3,12 +3,12 @@
 ## 문서 상태
 
 - 작성일: 2026-09-06
-- 상태: 30일 외부 공유·안전한 다운로드 및 근거 기반 날짜 Story Director 1차 운영 반영 완료
-- 구현 상태: 공유 Vertical Slice 배포 완료, 날짜 StoryManifest 구현·실데이터 백필 완료, GPS provenance는 후속 단계
+- 상태: 30일 외부 공유·안전한 다운로드, 근거 기반 Story Director와 private GPS provenance 1차 구현 완료
+- 구현 상태: 공유 Vertical Slice 배포 완료, 날짜 StoryManifest·private 위치 원장·Tailnet 결과 알림 구현 및 회귀 검증 완료
 - 대상 저장소: PhotosMcp, HermesAgent
 - 목표: Telegram에서 전달한 Tailscale 링크를 열면 LLM이 추천 사진의 날짜·위치·시각 분석 증거를 바탕으로 편집한 Storyboard를 읽고, 여러 장의 contact grid와 선택형 Swiper viewer에서 사진별 정보를 확인한다. 소유자가 명시적으로 선택하면 같은 Story revision에서 공개 가능한 내용만 묶은 만료형 HTML Share Package를 만들어 Tailscale이 없는 다른 사람도 안전하게 볼 수 있게 한다.
 
-이 문서는 설계 결정과 실제 구현 결과를 함께 추적한다. 2026-09-06에는 추천 사진을 외부 수신자에게 30일 동안 공유하고 안전한 웹용 사본을 내려받게 하는 Vertical Slice를 운영 반영했다. 같은 날 2차 작업으로 Qwen 기반 Story Director, 근거 해시와 날짜 chapter를 구현하고 실데이터에 백필했다. GPS 원장과 위치 추정 ladder는 아래 설계를 유지하되 아직 완료로 간주하지 않는다.
+이 문서는 설계 결정과 실제 구현 결과를 함께 추적한다. 2026-09-06에는 추천 사진을 외부 수신자에게 30일 동안 공유하고 안전한 웹용 사본을 내려받게 하는 Vertical Slice를 운영 반영했다. 같은 날 2차 작업으로 Qwen 기반 Story Director, 근거 해시와 날짜 chapter를 구현하고 실데이터에 백필했다. 이어 3차 작업에서 provider/EXIF GPS를 일반 결과 JSON과 분리한 private 원장, 좌표 없는 도시 단위 projection, 공유 전용 위치 projection과 Telegram Tailnet 결과 링크를 구현했다.
 
 ## 2026-09-06 구현 결과
 
@@ -37,7 +37,7 @@ Public Funnel https://byoungyoung-macmini.tail53bcc7.ts.net:8443/   -> Share Gat
 
 ### 검증 결과
 
-- 전체 자동 테스트: `762 passed`
+- 전체 자동 테스트: `764 passed`
 - Markdown 문서 검증: 73개 통과
 - standalone 앱: build, deep code-sign verification, health, runtime import smoke, vendored runtime smoke 통과
 - 실제 운영 URL: Open WebUI 200, Hermes Dashboard 302, 소유자 갤러리 200, 공개 gateway의 허용되지 않은 `/`와 `/health`는 404
@@ -99,13 +99,58 @@ Public Funnel https://byoungyoung-macmini.tail53bcc7.ts.net:8443/   -> Share Gat
   -> Linux 워크스테이션 호출 없음
 ```
 
-### 후속 고도화 범위
+## 2026-09-06 위치 provenance·Tailnet 결과 알림 3차 구현 결과
+
+이번 단계는 정확 좌표를 더 널리 노출하는 기능이 아니라, 이미 Apple Photos와 EXIF에서 읽던 위치가 랭킹 체크포인트 이후 유실되는 경로를 고치고 위치의 보안 수명주기를 명확히 한 작업이다.
+
+| 영역 | 반영 결과 |
+|---|---|
+| 분석 수집 | Apple Photos provider metadata 또는 embedded EXIF에서 얻은 GPS를 stage-1 checkpoint 복원 이후에도 유지한다. 향후 분석부터 `photo_locations_private`에 job/photo별 좌표와 provenance를 저장한다. |
+| 일반 결과와 분리 | 정확 좌표는 `photo_results`, recommendation member/asset의 `payload_json`, 날짜 manifest, StoryManifest와 로그에 넣지 않는다. 랭커의 전용 private table과 materialized asset별 `recommendation_asset_locations_private`의 typed column에만 저장한다. |
+| 추천 자산 연결 | 추천 파일 hash·local asset ID가 확정된 뒤 분석 private 위치를 연결한다. 이전 분석에 위치 snapshot이 없으면 추천 사본의 embedded EXIF를 로컬에서 한 번 읽어 보완한다. 파일이나 좌표를 외부 서비스로 보내지 않는다. |
+| 안전 projection | 정확 좌표는 약 0.01도 격자로 양자화해 private column에만 유지한다. 화면과 LLM에는 좌표 숫자가 아닌 offline gazetteer의 도시 단위 `서울 일대` 같은 label만 전달한다. 알려진 도시 중심에서 90km 밖이면 label을 만들지 않는다. |
+| 증거 수준 | 위치가 있으면 `confirmed_gps`, 출처는 `provider_metadata` 또는 `embedded_exif`로 기록한다. GPS가 없거나 검증 범위를 벗어나면 위치를 단정하지 않는다. 이미지 내용만으로 실제 장소를 추측하는 기능은 아직 활성화하지 않았다. |
+| 시간대 | 촬영값에 timezone이 있으면 그 값을 snapshot하고, naive EXIF 시간은 기존 정책대로 Asia/Seoul 가정과 confidence를 유지한다. GPS 기반 현지 timezone 추정은 아직 하지 않는다. |
+| Story | 날짜 chapter에 해당 사진들의 안전한 위치 label을 배지로 표시하고 viewer의 날짜·위치 정보에도 재사용한다. Qwen evidence에는 `photo_ref`, 날짜, 장면 분석과 도시 단위 label/status만 전달하며 정확 좌표는 전달하지 않는다. |
+| 외부 공유 | `SharedStoryPackage` 생성 시 owner label을 그대로 참조하지 않고 별도의 `share_label`만 복제한다. 기존 package는 immutable이므로 자동으로 위치가 추가되지 않으며 새 공유부터 적용한다. HTML·다운로드 JPEG에는 좌표가 없다. |
+| Telegram | 추천이 0장으로 정상 종료되어도 결과 알림을 만든다. 완료·부분 실패 알림의 버튼 URL은 localhost/요청 ID 없는 action base가 아니라 `PHOTOS_MCP_OWNER_STORY_URL`의 Tailnet 소유자 Story URL을 사용한다. standalone `Info.plist`에도 현재 Tailnet URL을 명시했다. |
+
+### 개인정보 경계
+
+```text
+Apple provider metadata / local EXIF
+  -> photo_locations_private                 exact · private
+  -> 추천 파일 hash와 local_asset_id 확정
+  -> recommendation_asset_locations_private exact/coarse · private typed columns
+       ├─ owner projection: 도시 단위 label 또는 blank
+       ├─ LLM evidence: 도시 단위 label + evidence status만
+       └─ share projection: 허용된 도시 단위 label 또는 blank
+
+금지 경로
+  exact GPS -X-> photo_results/result JSON
+            -X-> recommendation payload JSON/manifest
+            -X-> Hermes Router/LLM prompt
+            -X-> owner/public HTML
+            -X-> shared JPEG EXIF
+            -X-> external reverse-geocoding API
+```
+
+### 검증 기준
+
+- 관련 location/storage/story/share 테스트 30개 통과
+- 전체 자동 테스트 `764 passed`
+- 테스트 JPEG의 서울 GPS가 private 원장에는 정확히 저장되지만 public getter, local asset payload와 LLM evidence에는 숫자 좌표가 없음을 검증
+- 0장 정상 완료 알림도 생성되고 버튼이 HTTPS `*.ts.net/photos`를 가리킴을 검증
+- 외부 공유는 공유용 위치 label만 포함하며 내부 asset/provider ID와 정확 GPS는 포함하지 않음을 검증
+
+### 남은 위치 고도화 범위
 
 이번에 끝낸 범위는 30일 공유·다운로드의 보안 경계와 end-to-end 전달 경로다. 아래 항목은 더 풍부한 Story Album을 위한 다음 단계이며 완료로 표시하지 않는다.
 
-- GPS provenance·현지 시간대 snapshot, coarse 위치 projection과 위치 추정 ladder
+- GPS 기반 현지 timezone의 오프라인 판정, 광역 행정구역까지 포함한 더 넓은 offline gazetteer
+- GPS 없는 사진의 시간상 인접 사진 전파, OCR/랜드마크 후보를 이용한 `문맥 추정`·`시각 추정` ladder와 명시적 confidence
 - 위치별 subchapter, same-origin 정적 지도와 근거가 표시된 위치 설명
-- Telegram 완료 알림에 소유자 결과 URL 및 명시적으로 생성한 외부 공유 URL을 선택적으로 연결
+- Telegram에서 명시적으로 생성한 외부 공유 URL과 passcode를 서로 분리해 전달하는 선택 flow
 - zoom·pagination이 필요할 때 self-hosted Swiper 정식 패키지로 viewer 확장
 
 ## 결론

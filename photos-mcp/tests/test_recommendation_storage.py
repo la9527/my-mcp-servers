@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 
 import pytest
+import piexif
+from PIL import Image
 
 from photos_mcp.application.recommendation_storage import (
     RecommendationStorageService,
@@ -40,6 +42,8 @@ def _item(
 
 def test_materializes_only_exact_recommendations_by_capture_date(tmp_path) -> None:
     repo = RunRepository(tmp_path / "jobs.db")
+    assert tmp_path.stat().st_mode & 0o777 == 0o700
+    assert (tmp_path / "jobs.db").stat().st_mode & 0o777 == 0o600
     source = tmp_path / "source.jpg"
     source.write_bytes(b"private-photo")
     ignored = tmp_path / "ignored.jpg"
@@ -330,13 +334,57 @@ async def test_reconcile_does_not_duplicate_terminal_analysis_failure_notificati
     assert repo.list_user_action_requests(statuses={"pending"}) == []
 
 
-def test_notification_is_not_queued_for_zero_recommendations(tmp_path) -> None:
+def test_notification_is_queued_for_zero_recommendations_with_tailnet_result_link(
+    tmp_path,
+    monkeypatch,
+) -> None:
     repo = RunRepository(tmp_path / "jobs.db")
+    monkeypatch.setenv(
+        "PHOTOS_MCP_OWNER_STORY_URL",
+        "https://photos-mac.tail123.ts.net/photos",
+    )
     queued = queue_recommendation_storage_notification(
         repository=repo,
         automation_run={"automation_run_id": "daily-zero", "provider": "apple"},
         storage_result={"collection_id": "zero", "recommended_count": 0},
     )
 
-    assert queued is None
-    assert repo.list_user_action_requests(statuses={"pending"}) == []
+    assert queued is not None
+    assert queued["action_url"] == "https://photos-mac.tail123.ts.net/photos"
+    assert "추천 0장" in queued["message"]
+    assert len(repo.list_user_action_requests(statuses={"pending"})) == 1
+
+
+def test_materialization_extracts_gps_to_private_ledger_and_returns_safe_projection(
+    tmp_path,
+) -> None:
+    repo = RunRepository(tmp_path / "jobs.db")
+    source = tmp_path / "seoul.jpg"
+    image = Image.new("RGB", (64, 64), "#d4a574")
+    gps = {
+        piexif.GPSIFD.GPSLatitudeRef: b"N",
+        piexif.GPSIFD.GPSLatitude: ((37, 1), (33, 1), (594, 100)),
+        piexif.GPSIFD.GPSLongitudeRef: b"E",
+        piexif.GPSIFD.GPSLongitude: ((126, 1), (58, 1), (408, 100)),
+    }
+    image.save(source, exif=piexif.dump({"GPS": gps}))
+
+    result = RecommendationStorageService(
+        repository=repo,
+        root=tmp_path / "store",
+    ).materialize(
+        analysis_run_id="gps-analysis",
+        automation_run_id="gps-daily",
+        provider="apple_photos",
+        source_id="system-library",
+        items=[_item(source, photo_id="gps-photo")],
+    )
+
+    member = repo.list_recommendation_members(result["collection_id"])[0]
+    safe = repo.get_recommendation_asset_location(member["local_asset_id"])
+    assert result["located_count"] == 1
+    assert safe is not None
+    assert safe["label"] == "서울 일대"
+    assert safe["status"] == "confirmed_gps"
+    assert "latitude" not in safe and "longitude" not in safe
+    assert "37.56" not in json.dumps(repo.list_local_recommendation_assets())

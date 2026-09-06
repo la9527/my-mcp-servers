@@ -58,6 +58,23 @@ def _repo(tmp_path: Path) -> RunRepository:
                 "materialization_status": "completed",
             }
         )
+        if index == 1:
+            repo.upsert_recommendation_asset_location_private(
+                asset_id,
+                {
+                    "latitude_exact": 37.5665,
+                    "longitude_exact": 126.9780,
+                    "coarse_latitude": 37.57,
+                    "coarse_longitude": 126.98,
+                    "provenance": "embedded_exif",
+                    "location_status": "confirmed_gps",
+                    "owner_label": "서울 일대",
+                    "share_label": "서울 일대",
+                    "label_source": "offline_city_gazetteer",
+                    "capture_timezone": "Asia/Seoul",
+                    "timezone_source": "capture_metadata",
+                },
+            )
     return repo
 
 
@@ -115,6 +132,8 @@ def test_evidence_is_opaque_and_excludes_paths_and_provider_identifiers(tmp_path
     assert "photo-secret" not in encoded
     assert "private-1.jpg" not in encoded
     assert all(photo["photo_ref"].startswith("p_") for photo in bundle["evidence"]["photos"])
+    assert bundle["evidence"]["photos"][0]["coarse_location"] == "서울 일대"
+    assert "37.5665" not in encoded
 
 
 def test_deterministic_story_is_idempotent_for_unchanged_evidence(tmp_path: Path) -> None:
@@ -145,6 +164,7 @@ async def test_linux_story_direction_is_validated_and_persisted(tmp_path: Path) 
         "2026-09-04",
         "2026-09-05",
     }
+    assert story["chapters"][0]["locations"] == ["서울 일대"]
 
 
 @pytest.mark.asyncio
@@ -181,6 +201,8 @@ async def test_public_share_copies_safe_chapters_without_local_ids(tmp_path: Pat
     assert "초가을의 두 장면" in encoded
     assert "local-private-asset" not in encoded
     assert "provider-secret" not in encoded
+    assert public["photos"][0]["location"] == "서울 일대"
+    assert "37.5665" not in encoded
 
     rendered = render_story(
         public,

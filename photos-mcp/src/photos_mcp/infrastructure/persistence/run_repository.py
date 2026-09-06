@@ -54,11 +54,20 @@ class RunRepository:
         self.path = Path(path) if path is not None else None
         if self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                self.path.parent.chmod(0o700)
+            except OSError:
+                pass
         self._lock = RLock()
         self._conn = sqlite3.connect(
             str(self.path) if self.path is not None else ":memory:",
             check_same_thread=False,
         )
+        if self.path is not None:
+            try:
+                self.path.chmod(0o600)
+            except OSError:
+                pass
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
@@ -243,6 +252,28 @@ class RunRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_local_recommendation_assets_date
                     ON local_recommendation_assets(capture_date_local, relative_path);
+
+                CREATE TABLE IF NOT EXISTS recommendation_asset_locations_private (
+                    local_asset_id TEXT PRIMARY KEY,
+                    latitude_exact REAL NOT NULL,
+                    longitude_exact REAL NOT NULL,
+                    coarse_latitude REAL NOT NULL,
+                    coarse_longitude REAL NOT NULL,
+                    provenance TEXT NOT NULL,
+                    location_status TEXT NOT NULL,
+                    owner_label TEXT NOT NULL DEFAULT '',
+                    share_label TEXT NOT NULL DEFAULT '',
+                    label_source TEXT NOT NULL DEFAULT '',
+                    label_distance_km REAL,
+                    capture_timezone TEXT NOT NULL DEFAULT '',
+                    timezone_source TEXT NOT NULL DEFAULT '',
+                    privacy_class TEXT NOT NULL DEFAULT 'exact_private',
+                    observed_at TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_recommendation_asset_location_status
+                    ON recommendation_asset_locations_private(location_status, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS recommendation_groups (
                     group_id TEXT PRIMARY KEY,
@@ -813,6 +844,130 @@ class RunRepository:
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [_decode(row["payload_json"], {}) for row in rows]
+
+    def get_photo_analysis_location_private(
+        self,
+        *,
+        job_id: str,
+        photo_id: str,
+    ) -> dict[str, Any] | None:
+        """Read ranker GPS for internal materialization only."""
+        if not job_id or not photo_id:
+            return None
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    """SELECT has_gps, latitude_exact, longitude_exact,
+                              provenance, capture_date
+                       FROM photo_locations_private
+                       WHERE job_id = ? AND photo_id = ?""",
+                    (job_id, photo_id),
+                ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if row is None or not bool(row["has_gps"]):
+            return None
+        return {
+            "latitude": float(row["latitude_exact"]),
+            "longitude": float(row["longitude_exact"]),
+            "provenance": str(row["provenance"] or "provider_metadata"),
+            "capture_date": str(row["capture_date"] or ""),
+        }
+
+    def upsert_recommendation_asset_location_private(
+        self,
+        local_asset_id: str,
+        snapshot: dict[str, Any],
+    ) -> None:
+        """Persist exact GPS in typed private columns, never generic JSON."""
+        if not local_asset_id:
+            raise ValueError("Location snapshot requires local_asset_id")
+        latitude = float(snapshot["latitude_exact"])
+        longitude = float(snapshot["longitude_exact"])
+        coarse_latitude = float(snapshot["coarse_latitude"])
+        coarse_longitude = float(snapshot["coarse_longitude"])
+        if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+            raise ValueError("Invalid exact location coordinates")
+        if not -90 <= coarse_latitude <= 90 or not -180 <= coarse_longitude <= 180:
+            raise ValueError("Invalid coarse location coordinates")
+        now = _utcnow_iso()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO recommendation_asset_locations_private
+                   (local_asset_id, latitude_exact, longitude_exact,
+                    coarse_latitude, coarse_longitude, provenance,
+                    location_status, owner_label, share_label, label_source,
+                    label_distance_km, capture_timezone, timezone_source,
+                    privacy_class, observed_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(local_asset_id) DO UPDATE SET
+                     latitude_exact=excluded.latitude_exact,
+                     longitude_exact=excluded.longitude_exact,
+                     coarse_latitude=excluded.coarse_latitude,
+                     coarse_longitude=excluded.coarse_longitude,
+                     provenance=excluded.provenance,
+                     location_status=excluded.location_status,
+                     owner_label=excluded.owner_label,
+                     share_label=excluded.share_label,
+                     label_source=excluded.label_source,
+                     label_distance_km=excluded.label_distance_km,
+                     capture_timezone=excluded.capture_timezone,
+                     timezone_source=excluded.timezone_source,
+                     privacy_class=excluded.privacy_class,
+                     observed_at=excluded.observed_at,
+                     updated_at=excluded.updated_at""",
+                (
+                    local_asset_id,
+                    latitude,
+                    longitude,
+                    coarse_latitude,
+                    coarse_longitude,
+                    str(snapshot.get("provenance") or "unknown")[:40],
+                    str(snapshot.get("location_status") or "confirmed_gps")[:40],
+                    str(snapshot.get("owner_label") or "")[:80],
+                    str(snapshot.get("share_label") or "")[:80],
+                    str(snapshot.get("label_source") or "")[:60],
+                    snapshot.get("label_distance_km"),
+                    str(snapshot.get("capture_timezone") or "")[:80],
+                    str(snapshot.get("timezone_source") or "unknown")[:40],
+                    "exact_private",
+                    str(snapshot.get("observed_at") or now),
+                    now,
+                    now,
+                ),
+            )
+            self._conn.commit()
+
+    def get_recommendation_asset_location(
+        self,
+        local_asset_id: str,
+        *,
+        audience: str = "owner",
+    ) -> dict[str, Any] | None:
+        """Return a coordinate-free projection; exact columns stay private."""
+        if audience not in {"owner", "share"}:
+            raise ValueError("Unsupported location audience")
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT provenance, location_status, owner_label, share_label,
+                          label_source, label_distance_km, capture_timezone,
+                          timezone_source
+                   FROM recommendation_asset_locations_private
+                   WHERE local_asset_id = ?""",
+                (local_asset_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        label_key = "owner_label" if audience == "owner" else "share_label"
+        return {
+            "status": str(row["location_status"] or "unknown"),
+            "label": str(row[label_key] or ""),
+            "provenance": str(row["provenance"] or "unknown"),
+            "label_source": str(row["label_source"] or ""),
+            "label_distance_km": row["label_distance_km"],
+            "capture_timezone": str(row["capture_timezone"] or ""),
+            "timezone_source": str(row["timezone_source"] or "unknown"),
+        }
 
     def upsert_recommendation_group(self, payload: dict[str, Any]) -> dict[str, Any]:
         group_id = str(payload.get("group_id") or "")

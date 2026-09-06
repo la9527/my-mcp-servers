@@ -132,3 +132,34 @@ def test_job_db_persists_scene_selection_fields(tmp_path) -> None:
     assert result["recommendation_slot"] == 2
     assert result["selection_reason_codes"] == ["scene_alternative", "diverse_second"]
     db.close()
+
+
+def test_job_db_keeps_exact_location_outside_generic_results(tmp_path) -> None:
+    JobDB = _load_job_db_class()
+    db_path = tmp_path / "jobs.db"
+    db = JobDB(db_path)
+
+    db.save_photo_location(
+        "location-job",
+        "photo-1",
+        has_gps=True,
+        latitude=37.5665,
+        longitude=126.9780,
+        provenance="provider_metadata",
+        capture_date="2026-09-06T09:00:00+09:00",
+    )
+
+    conn = sqlite3.connect(db_path)
+    private = conn.execute(
+        "SELECT latitude_exact, longitude_exact, provenance FROM photo_locations_private"
+    ).fetchone()
+    generic = conn.execute(
+        "SELECT COUNT(*) FROM photo_results WHERE job_id = 'location-job'"
+    ).fetchone()
+    conn.close()
+
+    assert private == (37.5665, 126.978, "provider_metadata")
+    assert generic == (0,)
+    assert db_path.parent.stat().st_mode & 0o777 == 0o700
+    assert db_path.stat().st_mode & 0o777 == 0o600
+    db.close()

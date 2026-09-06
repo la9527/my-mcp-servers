@@ -14,6 +14,8 @@
 	<string>PhotosMcp needs Apple Events access to read and organize photos in Apple Photos.</string>
 	<key>LSEnvironment</key>
 	<dict>
+		<key>PHOTOS_MCP_OWNER_STORY_URL</key>
+		<string>https://byoungyoung-macmini.tail53bcc7.ts.net/photos</string>
 		<key>PHOTOS_MCP_STORY_DIRECTOR_ENABLED</key>
 		<string>1</string>
 	</dict>

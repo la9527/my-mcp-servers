@@ -70,6 +70,7 @@ class PhotoCandidate:
     has_gps: bool = False
     latitude: float | None = None
     longitude: float | None = None
+    location_provenance: str = ""
     faces: list = field(default_factory=list)  # FaceResult list from stage1
     meaningful_score: int = 5  # VLM 1-10, default midpoint
     capture_date: str = ""  # ISO date from EXIF
@@ -264,6 +265,16 @@ class Pipeline:
                         job.id, "filter", pid, self._snapshot_candidate(cand),
                     )
             candidates.append(cand)
+            if self._db and job:
+                self._db.save_photo_location(
+                    job.id,
+                    pid,
+                    has_gps=cand.has_gps,
+                    latitude=cand.latitude,
+                    longitude=cand.longitude,
+                    provenance=cand.location_provenance,
+                    capture_date=cand.capture_date,
+                )
             if job:
                 job.progress.completed = i + 1
                 job.progress.current_file = pid
@@ -555,6 +566,8 @@ class Pipeline:
         gps = metadata.get("gps") if isinstance(metadata.get("gps"), dict) else {}
         cand.latitude = metadata.get("latitude", gps.get("lat"))
         cand.longitude = metadata.get("longitude", gps.get("lon"))
+        if cand.latitude is not None and cand.longitude is not None:
+            cand.location_provenance = "provider_metadata"
         cand.known_persons = [
             str(name)
             for name in list(metadata.get("known_persons") or metadata.get("persons") or [])
@@ -568,6 +581,7 @@ class Pipeline:
             cand.has_gps = True
             cand.latitude = exif_data.latitude
             cand.longitude = exif_data.longitude
+            cand.location_provenance = "embedded_exif"
         if exif_data.capture_date and not cand.capture_date:
             cand.capture_date = exif_data.capture_date.isoformat()
         if exif_data.orientation != 1:
@@ -750,6 +764,9 @@ class Pipeline:
             "known_persons": cand.known_persons,
             "passed_stage1": cand.passed_stage1,
             "has_gps": cand.has_gps,
+            "latitude": cand.latitude,
+            "longitude": cand.longitude,
+            "location_provenance": cand.location_provenance,
             "meaningful_score": cand.meaningful_score,
             "capture_date": cand.capture_date,
             "burst_group_id": cand.burst_group_id,
@@ -779,6 +796,14 @@ class Pipeline:
         )
         cand.passed_stage1 = snap.get("passed_stage1", True)
         cand.has_gps = snap.get("has_gps", False)
+        gps = metadata.get("gps") if isinstance(metadata.get("gps"), dict) else {}
+        cand.latitude = snap.get("latitude", metadata.get("latitude", gps.get("lat")))
+        cand.longitude = snap.get("longitude", metadata.get("longitude", gps.get("lon")))
+        cand.location_provenance = snap.get("location_provenance", "") or (
+            "provider_metadata"
+            if cand.latitude is not None and cand.longitude is not None
+            else ""
+        )
         cand.meaningful_score = snap.get("meaningful_score", 5)
         cand.capture_date = snap.get("capture_date", "") or str(
             metadata.get("capture_date") or ""

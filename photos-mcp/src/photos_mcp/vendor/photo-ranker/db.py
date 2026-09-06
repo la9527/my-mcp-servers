@@ -43,6 +43,10 @@ class JobDB:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self._path = Path(db_path) if db_path else default_db_path()
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._path.parent.chmod(0o700)
+        except OSError:
+            pass
         self._lock = RLock()
         self._conn: sqlite3.Connection | None = None
         self._init_db()
@@ -50,6 +54,10 @@ class JobDB:
     @_synchronized
     def _init_db(self) -> None:
         self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
+        try:
+            self._path.chmod(0o600)
+        except OSError:
+            pass
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -97,6 +105,20 @@ class JobDB:
 
             CREATE INDEX IF NOT EXISTS idx_photo_results_job
                 ON photo_results(job_id);
+            CREATE TABLE IF NOT EXISTS photo_locations_private (
+                job_id TEXT NOT NULL,
+                photo_id TEXT NOT NULL,
+                has_gps INTEGER NOT NULL DEFAULT 0,
+                latitude_exact REAL,
+                longitude_exact REAL,
+                provenance TEXT NOT NULL DEFAULT '',
+                capture_date TEXT NOT NULL DEFAULT '',
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (job_id, photo_id),
+                FOREIGN KEY (job_id) REFERENCES jobs(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_photo_locations_private_job
+                ON photo_locations_private(job_id);
             CREATE INDEX IF NOT EXISTS idx_jobs_status
                 ON jobs(status);
 
@@ -182,6 +204,58 @@ class JobDB:
             "INTEGER NOT NULL DEFAULT 1",
         )
         self._repair_stale_jobs()
+        self._conn.commit()
+
+    @_synchronized
+    def save_photo_location(
+        self,
+        job_id: str,
+        photo_id: str,
+        *,
+        has_gps: bool,
+        latitude: float | None,
+        longitude: float | None,
+        provenance: str = "",
+        capture_date: str = "",
+    ) -> None:
+        """Persist sensitive coordinates outside generic result payloads."""
+        try:
+            lat = float(latitude) if latitude is not None else None
+            lon = float(longitude) if longitude is not None else None
+        except (TypeError, ValueError):
+            lat = None
+            lon = None
+        valid = bool(
+            has_gps
+            and lat is not None
+            and lon is not None
+            and -90.0 <= lat <= 90.0
+            and -180.0 <= lon <= 180.0
+            and not (abs(lat) < 1e-9 and abs(lon) < 1e-9)
+        )
+        self._conn.execute(
+            """INSERT INTO photo_locations_private
+               (job_id, photo_id, has_gps, latitude_exact, longitude_exact,
+                provenance, capture_date, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(job_id, photo_id) DO UPDATE SET
+                 has_gps=excluded.has_gps,
+                 latitude_exact=excluded.latitude_exact,
+                 longitude_exact=excluded.longitude_exact,
+                 provenance=excluded.provenance,
+                 capture_date=excluded.capture_date,
+                 updated_at=excluded.updated_at""",
+            (
+                job_id,
+                photo_id,
+                1 if valid else 0,
+                lat if valid else None,
+                lon if valid else None,
+                str(provenance or "")[:40] if valid else "",
+                str(capture_date or "")[:64],
+                time.time(),
+            ),
+        )
         self._conn.commit()
 
     @_synchronized
