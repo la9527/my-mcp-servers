@@ -7,12 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 from photos_mcp.infrastructure.browser_assist.qwen_browser_mission import (
+    BrowserMissionCancelled,
     BrowserMissionChromeUnavailable,
     BrowserMissionError,
     BrowserMissionModelUnavailable,
     BrowserMissionTimeout,
     BrowserMissionUserActionRequired,
 )
+from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_google_picker_assisted.py"
@@ -33,6 +35,7 @@ SPEC.loader.exec_module(MODULE)
         (BrowserMissionError("unsafe"), 25),
         (BrowserMissionTimeout("timeout"), 26),
         (BrowserMissionUserActionRequired("browser_user_action_required"), 27),
+        (BrowserMissionCancelled("cancelled"), 28),
     ],
 )
 def test_browser_mission_error_has_stable_worker_exit_code(error, exit_code) -> None:
@@ -42,6 +45,26 @@ def test_browser_mission_error_has_stable_worker_exit_code(error, exit_code) -> 
 def test_unknown_browser_mission_reason_fails_closed() -> None:
     error = BrowserMissionUserActionRequired("unexpected_reason")
     assert MODULE.mission_exit_code(error) == 25
+
+
+def test_browser_diagnostics_allow_only_privacy_safe_aggregate_fields() -> None:
+    class Assistant:
+        def diagnostics(self):
+            return {
+                "selection_clicks": 2,
+                "scroll_count": 1,
+                "last_guard_code": "premature_confirmation",
+                "snapshot": "private page text",
+                "uids": ["1_2"],
+            }
+
+    result = MODULE._safe_browser_diagnostics(Assistant())
+
+    assert result == {
+        "selection_clicks": 2,
+        "scroll_count": 1,
+        "last_guard_code": "premature_confirmation",
+    }
 
 
 def test_ensure_dedicated_chrome_opens_page_when_endpoint_has_no_target(
@@ -175,6 +198,9 @@ async def test_run_persists_aggregate_model_metrics_without_page_content(monkeyp
         recent_days=10,
         auto_confirm=True,
         timeout_seconds=1200,
+        action_request_id="",
+        automation_run_id="",
+        parent_run_id="",
     )
 
     result = await MODULE.run(args)
@@ -188,3 +214,66 @@ async def test_run_persists_aggregate_model_metrics_without_page_content(monkeyp
     assert result["model_metrics"]["request_count"] == 3
     assert repository.closed is True
     assert assistant.closed is True
+
+
+def test_bound_mission_failure_finalizes_combined_parent_once(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "automation.db")
+    repository.save_user_action_request(
+        {
+            "request_id": "action-bound",
+            "dedupe_key": "picker:bound",
+            "request_type": "google_picker_selection",
+            "provider": "google_photos",
+            "status": "pending",
+        }
+    )
+    repository.upsert_automation_run(
+        {
+            "automation_run_id": "apple-child",
+            "provider": "apple",
+            "status": "completed",
+            "terminal": True,
+            "submitted_count": 2,
+        }
+    )
+    repository.upsert_automation_run(
+        {
+            "automation_run_id": "google-child",
+            "provider": "google_photos",
+            "parent_run_id": "combined-parent",
+            "status": "awaiting_user_action",
+            "terminal": False,
+        }
+    )
+    repository.upsert_automation_run(
+        {
+            "automation_run_id": "combined-parent",
+            "provider": "combined",
+            "source": "all",
+            "sources": ["apple", "google"],
+            "status": "running",
+            "terminal": False,
+            "notification_state": "pending",
+            "child_run_ids": {"apple": "apple-child", "google": "google-child"},
+        }
+    )
+
+    MODULE.record_bound_mission_failure(
+        repository,
+        action_request_id="action-bound",
+        automation_run_id="google-child",
+        parent_run_id="combined-parent",
+        mission_run_id="browser-mission-bound",
+        reason_code="browser_mission_timeout",
+        cancelled=False,
+        completed_at="2026-09-07T00:00:00+00:00",
+    )
+
+    action = repository.get_user_action_request("action-bound")
+    child = repository.get_automation_run("google-child")
+    parent = repository.get_automation_run("combined-parent")
+    events = repository.list_user_action_requests(statuses={"pending"})
+    assert action is not None and action["status"] == "failed"
+    assert child is not None and child["status"] == "failed" and child["terminal"] is True
+    assert parent is not None and parent["status"] == "failed" and parent["terminal"] is True
+    assert len([event for event in events if event["request_type"] == "photos_automation_failure"]) == 1

@@ -299,9 +299,29 @@ def test_build_http_app_daily_curate_trigger_is_read_only_and_bounded(monkeypatc
             "/automation/daily-curate",
             json={
                 "source": "apple",
-                "limit": 9999,
+                "limit": 1000,
+                "lookback_days": 10,
+                "timeout_seconds": 21600,
+                "trigger": "telegram",
+                "parent_run_id": "manual-combined-test",
                 "action_base_url": "https://photos-mac.tail123.ts.net/photos-actions",
             },
+        )
+        legacy_hours = client.post(
+            "/automation/daily-curate",
+            json={"source": "apple", "lookback_hours": 72, "limit": 10},
+        )
+        too_many = client.post(
+            "/automation/daily-curate",
+            json={"source": "apple", "limit": 1001},
+        )
+        too_long = client.post(
+            "/automation/daily-curate",
+            json={"source": "apple", "timeout_seconds": 21601},
+        )
+        unknown = client.post(
+            "/automation/daily-curate",
+            json={"source": "apple", "unexpected": True},
         )
         invalid = client.post("/automation/daily-curate", json={"source": "gcs"})
         unsafe = client.post(
@@ -310,14 +330,81 @@ def test_build_http_app_daily_curate_trigger_is_read_only_and_bounded(monkeypatc
         )
 
     assert response.status_code == 200
+    assert legacy_hours.status_code == 200
     assert response.json()["status"] == "pending"
     assert calls[0]["action"] == "daily_curate"
-    assert calls[0]["options"]["limit"] == 500
+    assert calls[0]["options"]["limit"] == 1000
+    assert calls[0]["options"]["lookback_days"] == 10
+    assert calls[0]["options"]["lookback_hours"] == 240.0
+    assert calls[0]["options"]["timeout_seconds"] == 21600.0
+    assert calls[0]["options"]["trigger"] == "telegram"
+    assert calls[0]["options"]["parent_run_id"] == "manual-combined-test"
     assert calls[0]["options"]["mode"] == "review_only"
     assert calls[0]["options"]["action_base_url"] == "https://photos-mac.tail123.ts.net/photos-actions"
     assert "target_album_name" not in calls[0]["options"]
+    assert calls[1]["options"]["lookback_days"] == 3
+    assert calls[1]["options"]["lookback_hours"] == 72.0
     assert invalid.status_code == 400
+    assert too_many.status_code == 400
+    assert too_long.status_code == 400
+    assert unknown.status_code == 400
     assert unsafe.status_code == 400
+
+
+def test_build_http_app_combined_curate_starts_one_parent_and_selected_children(monkeypatch) -> None:
+    from starlette.testclient import TestClient
+    import photos_mcp.interfaces.mcp.server as server_module
+
+    calls = []
+
+    async def fake_workflow(**kwargs):
+        calls.append(kwargs)
+        source = kwargs["options"]["source"]
+        return {
+            "automation_run_id": f"daily-{source}",
+            "run_id": f"daily-{source}",
+            "status": "completed" if source == "apple" else "awaiting_user_action",
+            "terminal": source == "apple",
+            "picker_worker_required": source == "google",
+            "picker_worker_reason": "new_action" if source == "google" else "",
+        }
+
+    monkeypatch.setattr(server_module, "facade_photos_workflow", fake_workflow)
+    config = load_config()
+    state_store = PhotosMcpStateStore(endpoint=config.endpoint, health_endpoint=config.health_endpoint)
+    app = build_http_app(config=config, state_store=state_store)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/automation/daily-curate-all",
+            json={
+                "source": "all",
+                "limit": 1000,
+                "apple_limit": 400,
+                "google_limit": 600,
+                "lookback_days": 14,
+                "timeout_seconds": 21600,
+                "trigger": "telegram",
+                "action_base_url": "https://photos-mac.tail123.ts.net/photos-actions",
+            },
+        )
+        invalid_sum = client.post(
+            "/automation/daily-curate-all",
+            json={"source": "all", "limit": 500, "apple_limit": 300, "google_limit": 300},
+        )
+        invalid_opposite = client.post(
+            "/automation/daily-curate-all",
+            json={"source": "apple", "limit": 20, "google_limit": 10},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "combined"
+    assert payload["child_run_ids"] == {"apple": "daily-apple", "google": "daily-google"}
+    assert [call["options"]["limit"] for call in calls] == [400, 600]
+    assert all(call["options"]["parent_run_id"] == payload["automation_run_id"] for call in calls)
+    assert invalid_sum.status_code == 400
+    assert invalid_opposite.status_code == 400
 
 
 def test_build_http_app_reconciles_recommendations_on_loopback(monkeypatch) -> None:
@@ -348,6 +435,69 @@ def test_build_http_app_reconciles_recommendations_on_loopback(monkeypatch) -> N
     assert response.status_code == 200
     assert response.json()["new_file_count"] == 2
     assert calls == [{"repository": state_store.run_repository}]
+
+
+def test_build_http_app_combined_control_status_latest_and_confirmed_stop() -> None:
+    from starlette.testclient import TestClient
+
+    config = load_config()
+    state_store = PhotosMcpStateStore(
+        endpoint=config.endpoint,
+        health_endpoint=config.health_endpoint,
+    )
+    state_store.run_repository.upsert_automation_run({
+        "automation_run_id": "combined-active",
+        "provider": "combined",
+        "status": "running",
+        "terminal": False,
+        "requested_limit": 10,
+        "child_run_ids": {"apple": "daily-active"},
+        "deadline_at": "2099-01-01T00:00:00+00:00",
+    })
+    state_store.run_repository.upsert_automation_run({
+        "automation_run_id": "daily-active",
+        "provider": "apple_photos",
+        "status": "running",
+        "terminal": False,
+    })
+    state_store.run_repository.upsert_automation_run({
+        "automation_run_id": "combined-latest",
+        "provider": "combined",
+        "status": "completed",
+        "terminal": True,
+        "processed_count": 4,
+        "recommended_count": 2,
+    })
+    app = build_http_app(config=config, state_store=state_store)
+
+    with TestClient(app) as client:
+        status = client.post("/automation/combined-control", json={"action": "status"})
+        latest = client.post("/automation/combined-control", json={"action": "latest"})
+        preview = client.post("/automation/combined-control", json={"action": "stop"})
+        stopped = client.post(
+            "/automation/combined-control",
+            json={"action": "stop", "confirm_run_id": "combined-active"},
+        )
+        invalid = client.post(
+            "/automation/combined-control",
+            json={"action": "stop", "confirm_run_id": "../../unsafe"},
+        )
+        unknown = client.post(
+            "/automation/combined-control",
+            json={"action": "erase"},
+        )
+
+    assert status.status_code == 200
+    assert status.json()["run_id"] == "combined-active"
+    assert status.json()["stop_available"] is True
+    assert latest.json()["run_id"] == "combined-latest"
+    assert latest.json()["processed_count"] == 4
+    assert preview.json()["status"] == "confirmation_required"
+    assert preview.json()["run_id"] == "combined-active"
+    assert stopped.json()["status"] == "cancelled"
+    assert stopped.json()["stopped"] is True
+    assert invalid.status_code == 400
+    assert unknown.status_code == 400
 
 
 def test_owner_can_refresh_story_and_cross_site_request_is_blocked(monkeypatch) -> None:
@@ -432,15 +582,26 @@ def test_owner_story_creates_30_day_share_derivatives_and_blocks_cross_site_post
             "/photos/share",
             data={"duration_days": "30", "download_enabled": "1"},
         )
+        command_share = client.post(
+            "/automation/combined-control",
+            json={"action": "share"},
+        )
 
     assert owner.status_code == 200
     assert "공유 만들기" in owner.text
     assert blocked.status_code == 403
     assert created.status_code == 201
     assert "잠금 코드" in created.text
+    assert command_share.status_code == 201
+    assert command_share.json()["share_url"].startswith(
+        "https://byoungyoung-macmini.tail53bcc7.ts.net:8443/s/"
+    )
+    assert len(command_share.json()["passcode"]) == 6
+    assert command_share.json()["photo_count"] == 1
+    assert command_share.json()["download_enabled"] is True
     packages = state_store.run_repository.list_shared_story_packages()
-    assert len(packages) == 1
-    assert packages[0]["download_enabled"] is True
+    assert len(packages) == 2
+    assert all(package["download_enabled"] is True for package in packages)
     created_at = datetime.fromisoformat(packages[0]["created_at"])
     expires_at = datetime.fromisoformat(packages[0]["expires_at"])
     assert (expires_at - created_at).days == 30

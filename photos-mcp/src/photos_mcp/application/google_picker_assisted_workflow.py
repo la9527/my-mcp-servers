@@ -30,9 +30,12 @@ async def run_google_picker_assisted_workflow(
     max_pixels: int = 4096,
     preselect_count: int = 0,
     recent_days: int = 10,
+    action_request_id: str = "",
+    automation_run_id: str = "",
     auto_confirm: bool = False,
     timeout_seconds: float = 24 * 60 * 60,
     progress_callback: ProgressCallback | None = None,
+    cancellation_check: Callable[[], bool] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Any] = asyncio.sleep,
 ) -> dict[str, Any]:
@@ -43,10 +46,16 @@ async def run_google_picker_assisted_workflow(
     item-count checks pass; authentication challenges still require the user.
     """
 
+    def check_cancelled() -> None:
+        if cancellation_check is not None and bool(cancellation_check()):
+            raise asyncio.CancelledError("The bound photo curation run was cancelled")
+
     def report(stage: str, **payload: Any) -> None:
+        check_cancelled()
         if progress_callback is not None:
             progress_callback(stage, payload)
 
+    check_cancelled()
     session = await runtime.importer.start_selection(
         runtime.source,
         max_item_count=max(1, int(limit)),
@@ -80,6 +89,8 @@ async def run_google_picker_assisted_workflow(
                 completed_action = complete_google_picker_action(
                     repository=repository,
                     analysis_run_id="",
+                    action_request_id=action_request_id,
+                    automation_run_id=automation_run_id,
                     picker_session_id=session.session_id,
                     selected_photo_count=0,
                     excluded_video_count=0,
@@ -116,6 +127,7 @@ async def run_google_picker_assisted_workflow(
 
         deadline = monotonic() + max(1.0, float(timeout_seconds))
         while current.state is not PickingSessionState.READY:
+            check_cancelled()
             if current.state in _TERMINAL_FAILURE_STATES:
                 raise RuntimeError(
                     f"Google Photos Picker ended before confirmation: {current.state.value}"
@@ -124,6 +136,7 @@ async def run_google_picker_assisted_workflow(
                 raise TimeoutError("Google Photos Picker confirmation timed out")
             interval = max(1.0, min(float(current.poll_interval_seconds or 3.0), 30.0))
             await sleep(interval)
+            check_cancelled()
             current = await runtime.importer.poll_selection(session.session_id)
     except BaseException:
         if current.state not in {PickingSessionState.READY, PickingSessionState.CONSUMED}:
@@ -146,6 +159,7 @@ async def run_google_picker_assisted_workflow(
         for item in processed_assets
         if str(item.get("provider_asset_id") or "")
     }
+    check_cancelled()
     prepared = await runtime.importer.prepare_ready_selection(
         runtime.source,
         session.session_id,
@@ -169,6 +183,8 @@ async def run_google_picker_assisted_workflow(
         completed_action = complete_google_picker_action(
             repository=repository,
             analysis_run_id="",
+            action_request_id=action_request_id,
+            automation_run_id=automation_run_id,
             picker_session_id=session.session_id,
             selected_photo_count=0,
             excluded_video_count=int(prepared.get("excluded_video_count") or 0),
@@ -190,6 +206,7 @@ async def run_google_picker_assisted_workflow(
             "previously_processed_count": previously_processed_count,
             "action_request_id": str((completed_action or {}).get("request_id") or ""),
         }
+    check_cancelled()
     analysis = await runtime.importer.classify_prepared_selection(
         session.session_id,
         selection_profile=selection_profile,
@@ -199,6 +216,16 @@ async def run_google_picker_assisted_workflow(
     analysis_run_id = str(analysis.get("job_id") or analysis.get("run_id") or "")
     analysis_status = str(analysis.get("status") or "submitted")
     workflow_status = "completed" if analysis_status == "completed" else "analysis_submitted"
+    completed_action = complete_google_picker_action(
+        repository=repository,
+        analysis_run_id=analysis_run_id,
+        action_request_id=action_request_id,
+        automation_run_id=automation_run_id,
+        picker_session_id=session.session_id,
+        selected_photo_count=int(prepared.get("materialized_photo_count") or 0),
+        excluded_video_count=int(prepared.get("excluded_video_count") or 0),
+    )
+    automation_run_id = str((completed_action or {}).get("automation_run_id") or "")
     for asset in tuple(prepared.get("asset_refs") or ()):
         asset_id = str(asset.get("provider_asset_id") or "")
         asset_source_id = str(asset.get("source_id") or source_id)
@@ -211,16 +238,10 @@ async def run_google_picker_assisted_workflow(
                 "provider_asset_id": asset_id,
                 "status": "completed" if workflow_status == "completed" else "submitted",
                 "analysis_run_id": analysis_run_id,
+                "automation_run_id": automation_run_id,
                 "picker_session_id": session.session_id,
             }
         )
-    completed_action = complete_google_picker_action(
-        repository=repository,
-        analysis_run_id=analysis_run_id,
-        picker_session_id=session.session_id,
-        selected_photo_count=int(prepared.get("materialized_photo_count") or 0),
-        excluded_video_count=int(prepared.get("excluded_video_count") or 0),
-    )
     report(
         "analysis_completed" if workflow_status == "completed" else "analysis_submitted",
         session_id=session.session_id,

@@ -10,6 +10,7 @@ from PIL import Image
 
 from photos_mcp.application.recommendation_storage import (
     RecommendationStorageService,
+    auto_publish_approved_groups,
     materialize_recommendations_for_run,
     queue_recommendation_storage_notification,
     reconcile_pending_recommendations,
@@ -164,6 +165,99 @@ def test_new_monthly_members_preserve_existing_published_destination(tmp_path) -
     assert preserved["destination_album_id"] == "apple-album-existing"
     assert preserved["policy_state"] == "approved_once"
     assert len(repo.list_recommendation_group_members("monthly:2026-09")) == 2
+
+
+@pytest.mark.asyncio
+async def test_auto_publish_only_appends_to_previously_approved_fixed_album(tmp_path) -> None:
+    repo = RunRepository(tmp_path / "jobs.db")
+    source = tmp_path / "photo.jpg"
+    source.write_bytes(b"photo")
+    result = RecommendationStorageService(
+        repository=repo,
+        root=tmp_path / "store",
+    ).materialize(
+        analysis_run_id="analysis-auto-publish",
+        automation_run_id="daily-auto-publish",
+        provider="apple_photos",
+        source_id="system-library",
+        items=[_item(source, photo_id="apple-new")],
+    )
+    group_id = result["groups"][0]
+    group = repo.get_recommendation_group(group_id)
+    assert group is not None
+    repo.upsert_recommendation_group(
+        {
+            **group,
+            "destination_album_id": "approved-album-id",
+            "policy_state": "approved_once",
+        }
+    )
+    calls = []
+
+    class Publisher:
+        def __init__(self, **kwargs):
+            calls.append(("init", kwargs))
+
+        def prepare_plan(self, requested_group_id):
+            calls.append(("prepare", requested_group_id))
+            return {
+                "status": "ready",
+                "group_id": requested_group_id,
+                "local_asset_ids": ["asset"],
+                "photo_ids": ["asset"],
+                "content_fingerprint": "fixed",
+            }
+
+        async def execute(self, requested_group_id, plan):
+            calls.append(("execute", requested_group_id, plan))
+            return {"status": "completed", "published_count": 1, "failed_count": 0}
+
+    summary = await auto_publish_approved_groups(
+        repository=repo,
+        group_ids=[group_id],
+        root=tmp_path / "store",
+        publish_service_factory=Publisher,
+        photos_run_fn=lambda **_kwargs: None,
+    )
+
+    assert summary["eligible_group_count"] == 1
+    assert summary["published_count"] == 1
+    assert summary["failed_count"] == 0
+    assert [entry[0] for entry in calls] == ["init", "prepare", "execute"]
+
+
+@pytest.mark.asyncio
+async def test_auto_publish_never_writes_draft_or_unbound_album(tmp_path) -> None:
+    repo = RunRepository(tmp_path / "jobs.db")
+    repo.upsert_recommendation_group(
+        {
+            "group_id": "monthly:2026-09",
+            "group_type": "monthly",
+            "display_name": "2026-09 추천",
+            "destination_provider": "apple_photos",
+            "destination_album_id": "",
+            "destination_album_name": "2026-09 추천",
+            "policy_state": "draft",
+        }
+    )
+
+    class MustNotConstruct:
+        def __init__(self, **_kwargs):
+            raise AssertionError("draft group must not initialize a publisher")
+
+    summary = await auto_publish_approved_groups(
+        repository=repo,
+        group_ids=["monthly:2026-09"],
+        publish_service_factory=MustNotConstruct,
+        photos_run_fn=lambda **_kwargs: None,
+    )
+
+    assert summary == {
+        "eligible_group_count": 0,
+        "published_count": 0,
+        "failed_count": 0,
+        "groups": [],
+    }
 
 
 def test_missing_source_is_partial_and_never_creates_cloud_receipt(tmp_path) -> None:
@@ -353,6 +447,23 @@ def test_notification_is_queued_for_zero_recommendations_with_tailnet_result_lin
     assert queued["action_url"] == "https://photos-mac.tail123.ts.net/photos"
     assert "추천 0장" in queued["message"]
     assert len(repo.list_user_action_requests(statuses={"pending"})) == 1
+
+
+def test_combined_child_does_not_queue_a_provider_specific_storage_notification(tmp_path) -> None:
+    repo = RunRepository(tmp_path / "jobs.db")
+
+    queued = queue_recommendation_storage_notification(
+        repository=repo,
+        automation_run={
+            "automation_run_id": "daily-apple",
+            "provider": "apple",
+            "parent_run_id": "combined-1",
+        },
+        storage_result={"collection_id": "child", "recommended_count": 2},
+    )
+
+    assert queued is None
+    assert repo.list_user_action_requests(statuses={"pending"}) == []
 
 
 def test_materialization_extracts_gps_to_private_ledger_and_returns_safe_projection(

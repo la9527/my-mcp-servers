@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 
 import pytest
@@ -146,6 +147,29 @@ async def test_assisted_workflow_cancels_picker_if_browser_connection_fails() ->
 
 
 @pytest.mark.asyncio
+async def test_assisted_workflow_cancels_picker_when_bound_parent_is_stopped() -> None:
+    runtime = FakeRuntime()
+    checks = 0
+
+    def cancelled() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks >= 4
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_google_picker_assisted_workflow(
+            runtime=runtime,
+            browser_assistant=FakeBrowser(),
+            repository=FakeRepository(),
+            limit=20,
+            cancellation_check=cancelled,
+            sleep=lambda _seconds: _completed_sleep(),
+        )
+
+    assert runtime.importer.cancelled_session_id == "picker-session-1"
+
+
+@pytest.mark.asyncio
 async def test_assisted_workflow_can_preselect_and_confirm_before_polling() -> None:
     browser = FakeBrowser()
     progress = []
@@ -195,6 +219,43 @@ async def test_assisted_workflow_reports_completed_terminal_analysis() -> None:
     assert result["analysis_run_id"] == "job-completed"
     assert progress[-1][0] == "analysis_completed"
     assert progress[-1][1]["analysis_status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_assisted_workflow_links_google_assets_to_the_automation_child(monkeypatch) -> None:
+    import photos_mcp.application.google_picker_assisted_workflow as workflow_module
+
+    runtime = FakeRuntime()
+    repository = FakeRepository()
+
+    async def prepare_with_asset(_source, session_id, **_kwargs):
+        assert session_id == runtime.importer.session.session_id
+        return {
+            "materialized_photo_count": 1,
+            "excluded_video_count": 0,
+            "asset_refs": [{
+                "provider_asset_id": "google-asset-1",
+                "source_id": runtime.source.source_id,
+            }],
+        }
+
+    runtime.importer.prepare_ready_selection = prepare_with_asset
+    monkeypatch.setattr(
+        workflow_module,
+        "complete_google_picker_action",
+        lambda **_kwargs: {"automation_run_id": "daily-google-child"},
+    )
+
+    await run_google_picker_assisted_workflow(
+        runtime=runtime,
+        browser_assistant=FakeBrowser(),
+        repository=repository,
+        limit=20,
+        sleep=lambda _seconds: _completed_sleep(),
+    )
+
+    assert repository.processed[0]["provider_asset_id"] == "google-asset-1"
+    assert repository.processed[0]["automation_run_id"] == "daily-google-child"
 
 
 @pytest.mark.asyncio

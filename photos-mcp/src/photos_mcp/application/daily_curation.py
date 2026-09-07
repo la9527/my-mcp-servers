@@ -31,6 +31,8 @@ def complete_google_picker_action(
     *,
     repository: RunRepository,
     analysis_run_id: str,
+    action_request_id: str = "",
+    automation_run_id: str = "",
     picker_session_id: str = "",
     selected_photo_count: int = 0,
     excluded_video_count: int = 0,
@@ -45,18 +47,33 @@ def complete_google_picker_action(
     therefore satisfied when the native flow successfully submits a concrete
     analysis job. Older completed/cancelled/expired requests are never reused.
     """
-    outstanding = [
-        item
-        for item in repository.list_user_action_requests(
-            statuses={"pending", "notified"},
-            limit=200,
-        )
-        if str(item.get("provider") or "") == "google_photos"
-        and str(item.get("request_type") or "") == "google_picker_selection"
-    ]
-    if not outstanding:
-        return None
-    event = max(outstanding, key=lambda item: str(item.get("created_at") or ""))
+    if action_request_id:
+        candidate = repository.get_user_action_request(action_request_id)
+        if (
+            candidate is None
+            or str(candidate.get("provider") or "") != "google_photos"
+            or str(candidate.get("request_type") or "") != "google_picker_selection"
+            or str(candidate.get("status") or "") not in {"pending", "notified"}
+            or (
+                automation_run_id
+                and str(candidate.get("automation_run_id") or "") != automation_run_id
+            )
+        ):
+            return None
+        event = candidate
+    else:
+        outstanding = [
+            item
+            for item in repository.list_user_action_requests(
+                statuses={"pending", "notified"},
+                limit=200,
+            )
+            if str(item.get("provider") or "") == "google_photos"
+            and str(item.get("request_type") or "") == "google_picker_selection"
+        ]
+        if not outstanding:
+            return None
+        event = max(outstanding, key=lambda item: str(item.get("created_at") or ""))
     request_id = str(event.get("request_id") or "")
     if not request_id:
         return None
@@ -150,6 +167,11 @@ async def start_daily_curation(
             "error_code": "daily_curate_review_only",
             "hint": "The first automation release supports mode=review_only only.",
         }
+    requested_limit = max(1, min(int(options.get("limit") or 50), 1000))
+    lookback_days = max(1, min(int(options.get("lookback_days") or 2), 31))
+    timeout_seconds = max(600.0, min(float(options.get("timeout_seconds") or 21600.0), 21600.0))
+    trigger = str(options.get("trigger") or "scheduled")
+    parent_run_id = str(options.get("parent_run_id") or "")
     if provider in {"google", "google_photos"}:
         observed_now = now or _utcnow()
         if observed_now.tzinfo is None:
@@ -164,19 +186,36 @@ async def start_daily_curation(
                 or os.getenv("PHOTOS_MCP_ACTION_BASE_URL", "http://127.0.0.1:18791/actions")
             )
         )
+        scope_fingerprint = hashlib.sha256(
+            f"{lookback_days}:{requested_limit}".encode("utf-8")
+        ).hexdigest()[:12]
         event = UserActionRequiredEvent.create(
             request_id=request_id,
             request_type="google_picker_selection",
             reason_code="picker_selection_required",
             title="Google Photos 선택이 필요합니다",
-            message="최근 추가된 사진 범위를 확인하고 Picker 선택을 완료해 주세요.",
+            message=(
+                f"최근 {lookback_days}일 범위에서 최대 {requested_limit}장을 확인하고 "
+                "Picker 선택을 완료해 주세요."
+            ),
             action_url=f"{base_url}/{request_id}",
             expires_at=(observed_now + timedelta(hours=24)).isoformat(),
             provider="google_photos",
             automation_run_id=automation_run_id,
-            dedupe_key=f"google-picker:{source_id}:{local_run_date}",
+            dedupe_key=(
+                f"google-picker:{source_id}:{local_run_date}:{scope_fingerprint}:combined:{parent_run_id}"
+                if parent_run_id
+                else f"google-picker:{source_id}:{local_run_date}:{scope_fingerprint}"
+            ),
         )
-        saved = repository.save_user_action_request(event.as_payload())
+        event_payload = event.as_payload()
+        if parent_run_id:
+            # The attached Chrome/Qwen worker handles the normal Picker path.
+            # Human-facing events are emitted separately only when that worker
+            # reports login, consent, CAPTCHA, or another exceptional failure.
+            event_payload["delivery_policy"] = "internal"
+            event_payload["parent_run_id"] = parent_run_id
+        saved = repository.save_user_action_request(event_payload)
         saved_event = UserActionRequiredEvent.from_payload(saved)
         effective_run_id = saved_event.automation_run_id
         is_new_action = saved_event.request_id == request_id
@@ -204,10 +243,18 @@ async def start_daily_curation(
             "source": "google",
             "source_id": source_id,
             "mode": "review_only",
+            "trigger": trigger,
+            "parent_run_id": parent_run_id,
+            "lookback_days": lookback_days,
+            "lookback_hours": float(lookback_days * 24),
+            "requested_limit": requested_limit,
+            "timeout_seconds": timeout_seconds,
             "status": "completed" if action_is_terminal else "awaiting_user_action",
             "terminal": action_is_terminal,
             "user_action": saved,
-            "notification_required": is_new_action and saved_status == "pending",
+            "notification_required": (
+                not parent_run_id and is_new_action and saved_status == "pending"
+            ),
             "picker_worker_required": is_new_action and saved_status == "pending",
             "picker_worker_reason": worker_reason,
             "local_run_date": local_run_date,
@@ -237,7 +284,7 @@ async def start_daily_curation(
         checkpoint,
         date_added_from=str(options.get("date_added_from") or ""),
         date_added_to=str(options.get("date_added_to") or ""),
-        lookback_hours=float(options.get("lookback_hours") or 48.0),
+        lookback_hours=float(options.get("lookback_hours") or lookback_days * 24.0),
         overlap_hours=float(options.get("overlap_hours") or 6.0),
         now=observed_now,
     )
@@ -247,7 +294,7 @@ async def start_daily_curation(
         date_added_from=window_start,
         date_added_to=window_end,
         cursor=cursor,
-        limit=int(options.get("limit") or 50),
+        limit=requested_limit,
     )
     discovered = list(page.get("items") or [])
     next_cursor = str(page.get("next_cursor") or "")
@@ -270,7 +317,7 @@ async def start_daily_curation(
     failed_assets = repository.list_processed_photo_assets(
         provider=provider,
         source_id=source_id,
-        statuses={"failed"},
+        statuses={"failed", "carry_over"},
     )
     for failed in failed_assets:
         asset_id = _asset_id(failed)
@@ -289,6 +336,11 @@ async def start_daily_curation(
         "source": provider,
         "source_id": source_id,
         "mode": mode,
+        "trigger": trigger,
+        "parent_run_id": parent_run_id,
+        "lookback_days": lookback_days,
+        "requested_limit": requested_limit,
+        "timeout_seconds": timeout_seconds,
         "window_started_at": window_start,
         "window_ended_at": window_end,
         "discovered_count": len(discovered),

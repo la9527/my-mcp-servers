@@ -284,15 +284,16 @@ _register(ActionSpec(
     tool="photos_workflow",
     action="daily_curate",
     allowed=_set(
-        "source", "source_id", "date_added_from", "date_added_to", "lookback_hours",
+        "source", "source_id", "date_added_from", "date_added_to", "lookback_days", "lookback_hours",
         "overlap_hours", "limit", "selection_profile", "exclude_screenshots", "mode",
-        "action_base_url",
+        "action_base_url", "timeout_seconds", "trigger", "parent_run_id",
     ),
     defaults={
         "source": "apple", "source_id": "system-library", "date_added_from": "",
-        "date_added_to": "", "lookback_hours": 48.0, "overlap_hours": 6.0,
+        "date_added_to": "", "lookback_days": 2, "lookback_hours": 48.0, "overlap_hours": 6.0,
         "limit": 50, "selection_profile": "general", "exclude_screenshots": True,
-        "mode": "review_only", "action_base_url": "",
+        "mode": "review_only", "action_base_url": "", "timeout_seconds": 21600.0,
+        "trigger": "scheduled", "parent_run_id": "",
     },
     usage_hint="Discover newly added Apple Photos assets and submit read-only ranking; album writes remain separate and approval-gated.",
 ))

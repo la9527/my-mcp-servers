@@ -16,7 +16,7 @@ from pathlib import Path
 import re
 import subprocess
 import time
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -85,6 +85,12 @@ class BrowserMissionTimeout(BrowserMissionError):
     """Raised when the bounded model mission exceeds its step budget."""
 
     reason_code = "browser_mission_timeout"
+
+
+class BrowserMissionCancelled(BrowserMissionError):
+    """Raised when the bound combined run was explicitly stopped."""
+
+    reason_code = "browser_mission_cancelled"
 
 
 class MissionModelClient(Protocol):
@@ -355,7 +361,7 @@ def _mission_tools(phase: str) -> list[dict[str, Any]]:
                     "type": "object",
                     "properties": {
                         "status": {"type": "string", "enum": statuses},
-                        "selected_count": {"type": "integer", "minimum": 0, "maximum": 100},
+                        "selected_count": {"type": "integer", "minimum": 0, "maximum": 1000},
                         "reason": {"type": "string", "maxLength": 240},
                     },
                     "required": ["status", "selected_count", "reason"],
@@ -417,9 +423,25 @@ def _mission_tools(phase: str) -> list[dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "selected_count": {"type": "integer", "minimum": 1, "maximum": 100}
+                        "selected_count": {"type": "integer", "minimum": 1, "maximum": 1000}
                     },
                     "required": ["selected_count"],
+                    "additionalProperties": False,
+                },
+            },
+        })
+        tools.insert(2, {
+            "type": "function",
+            "function": {
+                "name": "scroll_picker",
+                "description": (
+                    "Press PageDown once to load the next bounded Picker viewport. Use only after a fresh "
+                    "snapshot has no eligible unchecked visible photos, the selection limit is not reached, "
+                    "and the cutoff date has not been reached. Re-observe immediately after scrolling."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
                     "additionalProperties": False,
                 },
             },
@@ -444,12 +466,14 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
         model_client: MissionModelClient | None = None,
         max_model_steps: int = 24,
         max_snapshot_chars: int = 120_000,
+        cancellation_check: Callable[[], bool] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.model_client = model_client or QwenRouterMissionClient()
         self.max_model_steps = max(4, int(max_model_steps))
         self.max_snapshot_chars = max(4_000, int(max_snapshot_chars))
+        self._cancellation_check = cancellation_check
         self._messages: list[dict[str, Any]] = []
         self._last_snapshot = ""
         self._selection_clicks = 0
@@ -463,8 +487,102 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
         self._mission_instruction = ""
         self._snapshot_signature = ""
         self._stable_ready_observations = 0
+        self._scroll_count = 0
+        self._scroll_pending_signature = ""
+        self._stable_end_observations = 0
+        self._reached_cutoff = False
+        self._last_guard_code = ""
+        self._unverified_terminal_reports = 0
+
+    def diagnostics(self) -> dict[str, int | bool | str]:
+        """Return privacy-safe mission counters without page text or UIDs."""
+
+        return {
+            "selection_clicks": max(0, self._selection_clicks),
+            "selected_count": max(0, self._selected_count),
+            "scroll_count": max(0, self._scroll_count),
+            "denied_action_count": max(0, self._denied_clicks),
+            "unverified_terminal_reports": max(
+                0, self._unverified_terminal_reports
+            ),
+            "stable_ready_observations": max(
+                0, self._stable_ready_observations
+            ),
+            "stable_end_observations": max(0, self._stable_end_observations),
+            "reached_cutoff": bool(self._reached_cutoff),
+            "confirmation_clicked": bool(self._confirmation_clicked),
+            "last_guard_code": self._last_guard_code[:48],
+        }
+
+    def _record_guard_denial(self, code: str) -> None:
+        self._last_guard_code = code[:48]
+        self._denied_clicks += 1
+
+    def _tools_for_phase(self, phase: str) -> list[dict[str, Any]]:
+        tools = _mission_tools(phase)
+        if phase != "selection":
+            return tools
+        remaining = max(0, self._selection_limit - self._selection_clicks)
+        if remaining == 0:
+            allowed = {
+                "take_snapshot",
+                "confirm_picker_selection",
+                _TERMINAL_TOOL,
+            }
+            return [
+                tool
+                for tool in tools
+                if str(tool.get("function", {}).get("name") or "") in allowed
+            ]
+        for tool in tools:
+            function = tool.get("function")
+            if not isinstance(function, dict) or function.get("name") != "select_recent_photos":
+                continue
+            parameters = function.get("parameters")
+            if not isinstance(parameters, dict):
+                continue
+            properties = parameters.get("properties")
+            if isinstance(properties, dict) and isinstance(properties.get("uids"), dict):
+                properties["uids"]["maxItems"] = min(100, remaining)
+            function["description"] = (
+                f"Select at most {remaining} remaining unchecked individual recent-photo checkbox UIDs "
+                "from the latest snapshot, excluding previews, videos, old photos, and bulk selectors."
+            )
+        return tools
+
+    async def _confirm_reached_selection_limit(self) -> dict[str, Any]:
+        """Finish deterministically after Qwen has filled the bounded quota."""
+
+        for _attempt in range(6):
+            await self._tool_result("take_snapshot", {}, phase="selection")
+            if self._stable_ready_observations >= 2:
+                result = await self._tool_result(
+                    "confirm_picker_selection",
+                    {"selected_count": self._selection_clicks},
+                    phase="selection",
+                )
+                parsed = json.loads(result)
+                if parsed.get("status") == "success":
+                    self._selected_count = self._selection_clicks
+                    return {
+                        "status": "success",
+                        "selected_count": self._selected_count,
+                        "reason": (
+                            "The local guard confirmed the stable Picker after Qwen filled "
+                            "the bounded selection quota"
+                        ),
+                    }
+            await asyncio.sleep(0.25)
+        raise BrowserMissionTimeout(
+            "Google Picker did not stabilize after reaching the bounded selection limit"
+        )
+
+    def _check_cancelled(self) -> None:
+        if self._cancellation_check is not None and bool(self._cancellation_check()):
+            raise BrowserMissionCancelled("The bound combined photo run was cancelled")
 
     async def open_picker(self, picker_uri: str) -> dict[str, object]:
+        self._check_cancelled()
         await self.model_client.prepare()
         try:
             opened = await super().open_picker(picker_uri)
@@ -510,6 +628,7 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
         return dict(payload) if isinstance(payload, dict) else {}
 
     async def _tool_result(self, name: str, arguments: dict[str, Any], *, phase: str) -> str:
+        self._check_cancelled()
         if self._session is None:
             raise BrowserMissionChromeUnavailable("Chrome DevTools MCP assistant is not connected")
         if name == "take_snapshot":
@@ -537,8 +656,23 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                 ]
                 visible_unselected = [entry for entry in eligible if not bool(entry["checked"])]
                 at_limit = self._selection_clicks >= self._selection_limit
+                self._reached_cutoff = self._reached_cutoff or any(
+                    entry["date"] < cutoff for entry in _photo_entries(snapshot, today=self._reference_date)
+                )
+                if self._scroll_pending_signature:
+                    current_signature = json.dumps(
+                        [[str(entry["uid"]), str(entry["date"])] for entry in eligible],
+                        separators=(",", ":"),
+                    )
+                    self._stable_end_observations = (
+                        self._stable_end_observations + 1
+                        if current_signature == self._scroll_pending_signature
+                        else 0
+                    )
+                    self._scroll_pending_signature = ""
+                exhausted = self._reached_cutoff or self._stable_end_observations >= 2
                 ready_for_confirmation = bool(self._selection_clicks) and (
-                    at_limit or not visible_unselected
+                    at_limit or (not visible_unselected and exhausted)
                 )
                 signature = json.dumps(
                     [
@@ -559,6 +693,59 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
             if len(snapshot) > self.max_snapshot_chars:
                 snapshot = snapshot[: self.max_snapshot_chars] + "\n[SNAPSHOT_TRUNCATED]"
             return snapshot
+        if name == "scroll_picker":
+            if phase != "selection" or not self._last_snapshot:
+                raise BrowserMissionError("Qwen requested Picker scrolling without a fresh snapshot")
+            if "press_key" not in self._discovered_tools:
+                raise BrowserMissionChromeUnavailable(
+                    "Chrome DevTools MCP does not expose the bounded PageDown tool"
+                )
+            cutoff = self._reference_date - timedelta(days=self._recent_days - 1)
+            entries = _photo_entries(self._last_snapshot, today=self._reference_date)
+            eligible = [
+                entry for entry in entries if cutoff <= entry["date"] <= self._reference_date
+            ]
+            visible_unselected = [entry for entry in eligible if not bool(entry["checked"])]
+            if (
+                visible_unselected
+                or self._selection_clicks >= self._selection_limit
+                or self._reached_cutoff
+            ):
+                self._record_guard_denial("unsafe_scroll_request")
+                if self._denied_clicks >= 3:
+                    raise BrowserMissionError("Qwen repeatedly requested unsafe Picker scrolling")
+                return json.dumps(
+                    {
+                        "status": "denied",
+                        "reason": "Select visible eligible photos first, or confirm after reaching the limit/cutoff.",
+                    },
+                    separators=(",", ":"),
+                )
+            self._scroll_pending_signature = json.dumps(
+                [[str(entry["uid"]), str(entry["date"])] for entry in eligible],
+                separators=(",", ":"),
+            )
+            try:
+                result = await self._session.call_tool(
+                    "press_key",
+                    {"key": "PageDown", "includeSnapshot": False},
+                )
+            except (OSError, RuntimeError, TimeoutError) as exc:
+                raise BrowserMissionChromeUnavailable(
+                    "Chrome DevTools MCP PageDown failed"
+                ) from exc
+            if bool(getattr(result, "isError", False)):
+                raise BrowserMissionChromeUnavailable("Chrome DevTools MCP PageDown failed")
+            self._scroll_count += 1
+            self._last_snapshot = ""
+            self._snapshot_signature = ""
+            self._stable_ready_observations = 0
+            self._denied_clicks = 0
+            await asyncio.sleep(0.5)
+            return json.dumps(
+                {"status": "scrolled", "scroll_count": self._scroll_count},
+                separators=(",", ":"),
+            )
         if name == "confirm_picker_selection":
             if phase != "selection" or not self._last_snapshot:
                 raise BrowserMissionError("Qwen requested confirmation without a fresh selection snapshot")
@@ -574,16 +761,18 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
             ]
             visible_unselected = [entry for entry in eligible if not bool(entry["checked"])]
             at_limit = self._selection_clicks >= self._selection_limit
+            exhausted = self._reached_cutoff or self._stable_end_observations >= 2
             buttons = _completion_buttons(self._last_snapshot)
             if (
                 self._confirmation_clicked
                 or requested_count != self._selection_clicks
                 or (visible_unselected and not at_limit)
+                or (not at_limit and not exhausted)
                 or self._stable_ready_observations < 2
                 or len(buttons) != 1
                 or bool(buttons[0]["disabled"])
             ):
-                self._denied_clicks += 1
+                self._record_guard_denial("premature_confirmation")
                 if self._denied_clicks >= 3:
                     raise BrowserMissionError("Qwen repeatedly requested unsafe Picker confirmation")
                 return json.dumps(
@@ -591,7 +780,7 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                         "status": "denied",
                         "reason": (
                             "Confirmation requires the exact successful click count, two stable fresh snapshots, "
-                            "no visible eligible unchecked photos unless the 100-photo limit was reached, and one "
+                            "no visible eligible unchecked photos unless the requested selection limit was reached, and one "
                             "enabled Done/완료 button. Re-inspect and correct the selection."
                         ),
                     },
@@ -634,7 +823,7 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
             or len(set(requested_uids)) != len(requested_uids)
             or not self._last_snapshot
         ):
-            self._denied_clicks += 1
+            self._record_guard_denial("invalid_or_stale_uid")
             if self._denied_clicks >= 3:
                 raise BrowserMissionError("Qwen repeatedly requested clicks without a valid fresh snapshot UID")
             return json.dumps(
@@ -658,7 +847,7 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                     for entry in requested_entries
                 )
             ):
-                self._denied_clicks += 1
+                self._record_guard_denial("out_of_policy_photo_uid")
                 if self._denied_clicks >= 3:
                     raise BrowserMissionError(
                         "Qwen repeatedly requested photo clicks outside the bounded recent-date policy"
@@ -682,7 +871,7 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                 or bool(buttons[0]["disabled"])
                 or str(buttons[0]["uid"]) != uid
             ):
-                self._denied_clicks += 1
+                self._record_guard_denial("unsafe_final_button_uid")
                 if self._denied_clicks >= 3:
                     raise BrowserMissionError("Qwen repeatedly requested unsafe final confirmation clicks")
                 return json.dumps(
@@ -714,9 +903,11 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
     async def _run_phase(self, phase: str, instruction: str) -> dict[str, Any]:
         self._mission_instruction = instruction
         self._messages = [self._system_message, {"role": "user", "content": instruction}]
-        tools = _mission_tools(phase)
         for _step in range(self.max_model_steps):
+            self._check_cancelled()
+            tools = self._tools_for_phase(phase)
             message = await self.model_client.complete(self._messages, tools)
+            self._check_cancelled()
             calls = message.get("tool_calls")
             if not isinstance(calls, list) or len(calls) != 1:
                 self._messages.append(_assistant_message(message))
@@ -742,19 +933,77 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                 except (TypeError, ValueError) as exc:
                     raise BrowserMissionError("Qwen returned an invalid terminal count") from exc
                 if phase == "selection" and status == "no_recent_photos":
-                    if self._selection_clicks or selected_count:
-                        raise BrowserMissionError("Qwen reported an inconsistent empty selection")
+                    cutoff = self._reference_date - timedelta(days=self._recent_days - 1)
+                    eligible = (
+                        [
+                            entry
+                            for entry in _photo_entries(
+                                self._last_snapshot, today=self._reference_date
+                            )
+                            if cutoff <= entry["date"] <= self._reference_date
+                        ]
+                        if self._last_snapshot
+                        else []
+                    )
+                    if (
+                        self._selection_clicks
+                        or selected_count
+                        or not self._last_snapshot
+                        or eligible
+                        or not (
+                            self._reached_cutoff
+                            or self._stable_end_observations >= 2
+                        )
+                    ):
+                        self._record_guard_denial("unverified_empty_report")
+                        self._messages.append({
+                            "role": "tool",
+                            "tool_call_id": str(call.get("id") or uuid.uuid4().hex),
+                            "name": name,
+                            "content": json.dumps(
+                                {
+                                    "status": "denied",
+                                    "reason": (
+                                        "No-recent-photos requires a fresh empty snapshot and bounded "
+                                        "end/cutoff exploration. Take another snapshot or scroll safely."
+                                    ),
+                                },
+                                separators=(",", ":"),
+                            ),
+                        })
+                        continue
                 elif phase == "confirmation" and status == "success":
                     if not self._confirmation_clicked or selected_count != self._selected_count:
                         raise BrowserMissionError("Qwen reported confirmation without the required click")
                 else:
+                    self._unverified_terminal_reports += 1
+                    self._last_guard_code = f"model_terminal_{status}"[:48]
+                    if self._unverified_terminal_reports < 3:
+                        self._messages.append({
+                            "role": "tool",
+                            "tool_call_id": str(call.get("id") or uuid.uuid4().hex),
+                            "name": name,
+                            "content": json.dumps(
+                                {
+                                    "status": "denied",
+                                    "reason": (
+                                        "The local guard has not verified a blocking page or transport failure. "
+                                        "Take a fresh snapshot and continue only with locally permitted actions."
+                                    ),
+                                },
+                                separators=(",", ":"),
+                            ),
+                        })
+                        continue
                     if status == "user_action_required":
                         raise BrowserMissionUserActionRequired("browser_user_action_required")
                     if status == "retryable_error":
                         raise BrowserMissionChromeUnavailable(
-                            "Qwen reported a retryable browser error"
+                            "Qwen repeatedly reported an unverified browser error"
                         )
-                    raise BrowserMissionError("Qwen browser mission stopped safely")
+                    raise BrowserMissionError(
+                        "Qwen repeatedly reported an unverified unsafe state"
+                    )
                 return arguments
             result = await self._tool_result(name, arguments, phase=phase)
             self._messages.append({
@@ -772,6 +1021,10 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                 }
             if name == "select_recent_photos" and result.startswith('{"status":"clicked"'):
                 self._compact_after_action()
+                if self._selection_clicks >= self._selection_limit:
+                    return await self._confirm_reached_selection_limit()
+            elif name == "scroll_picker" and result.startswith('{"status":"scrolled"'):
+                self._compact_after_action()
         raise BrowserMissionTimeout("Qwen browser mission exceeded its tool-step limit")
 
     async def preselect_recent(
@@ -782,7 +1035,7 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
         today: date | None = None,
         **_kwargs: Any,
     ) -> dict[str, object]:
-        self._selection_limit = max(1, min(int(count), 100))
+        self._selection_limit = max(1, min(int(count), 1000))
         self._recent_days = max(1, min(int(recent_days), 31))
         self._reference_date = today or date.today()
         cutoff = self._reference_date - timedelta(days=self._recent_days - 1)
@@ -797,9 +1050,11 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                 "Do not open photo previews to infer dates. "
                 "Use select_recent_photos once with all eligible visible individual-photo UIDs, then re-observe. "
                 "If the page changed or newly loaded eligible photos appear, use another bounded batch. After a "
-                "two consecutive fresh snapshots show a stable eligible set with every visible eligible photo "
-                "selected, call confirm_picker_selection. If the 100-photo safety limit is reached, leave all "
-                "additional photos unchecked and confirm the bounded 100-photo selection after two stable snapshots. "
+                "fresh snapshot has no eligible unchecked visible photos, call scroll_picker once and then "
+                "re-observe. Continue bounded PageDown exploration until the requested limit, the cutoff date, "
+                "or two PageDown attempts reveal no new eligible viewport. Only then use two stable fresh "
+                "snapshots and call confirm_picker_selection. If the requested safety limit is reached, leave all "
+                "additional photos unchecked and confirm the bounded selection after two stable snapshots. "
                 "Use report_browser_mission only for no recent photos, user action, retryable error, or unsafe state."
             ),
         )

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 import fcntl
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -21,10 +22,12 @@ import uuid
 from photos_mcp.application.google_picker_assisted_workflow import (
     run_google_picker_assisted_workflow,
 )
+from photos_mcp.application.combined_curation import reconcile_combined_curation
 from photos_mcp.infrastructure.browser_assist.chrome_devtools_mcp import (
     ChromeDevToolsMcpAssistant,
 )
 from photos_mcp.infrastructure.browser_assist.qwen_browser_mission import (
+    BrowserMissionCancelled,
     BrowserMissionError,
     QwenChromeDevToolsMcpAssistant,
     QwenRouterMissionClient,
@@ -49,7 +52,10 @@ _MISSION_EXIT_CODES = {
     "unsafe_browser_state": 25,
     "browser_mission_timeout": 26,
     "browser_user_action_required": 27,
+    "browser_mission_cancelled": 28,
 }
+
+_BOUND_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 
 
 def mission_exit_code(error: BrowserMissionError) -> int:
@@ -99,6 +105,63 @@ def _safe_model_metrics(assistant: object) -> dict[str, object]:
         "completion_tokens": max(0, int(payload.get("completion_tokens") or 0)),
         "total_tokens": max(0, int(payload.get("total_tokens") or 0)),
     }
+
+
+def _safe_browser_diagnostics(assistant: object) -> dict[str, object]:
+    diagnostics = getattr(assistant, "diagnostics", None)
+    payload = diagnostics() if callable(diagnostics) else {}
+    if not isinstance(payload, dict):
+        return {}
+    allowed = {
+        "selection_clicks",
+        "selected_count",
+        "scroll_count",
+        "denied_action_count",
+        "unverified_terminal_reports",
+        "stable_ready_observations",
+        "stable_end_observations",
+        "reached_cutoff",
+        "confirmation_clicked",
+        "last_guard_code",
+    }
+    return {key: payload[key] for key in allowed if key in payload}
+
+
+def record_bound_mission_failure(
+    repository: RunRepository,
+    *,
+    action_request_id: str,
+    automation_run_id: str,
+    parent_run_id: str,
+    mission_run_id: str,
+    reason_code: str,
+    cancelled: bool,
+    completed_at: str,
+) -> None:
+    """Propagate a terminal browser mission to its child and combined parent."""
+
+    status = "cancelled" if cancelled else "failed"
+    if action_request_id:
+        repository.update_user_action_status(action_request_id, status)
+    if automation_run_id:
+        current = repository.get_automation_run(automation_run_id) or {
+            "automation_run_id": automation_run_id,
+            "provider": "google_photos",
+            "parent_run_id": parent_run_id,
+        }
+        repository.upsert_automation_run(
+            {
+                **current,
+                "status": status,
+                "terminal": True,
+                "error_code": reason_code[:48],
+                "browser_mission_run_id": mission_run_id,
+                "completed_at": completed_at,
+            }
+        )
+    if parent_run_id and not cancelled:
+        # The combined reconciler owns the only external notification.
+        reconcile_combined_curation(repository=repository)
 
 
 def ensure_dedicated_chrome(
@@ -189,6 +252,20 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
         raise RuntimeError("Google Photos OAuth is not configured in PhotosMcp")
     repository = RunRepository(default_run_repository_path())
     runtime = build_google_photos_runtime(settings=settings)
+
+    def bound_run_cancelled() -> bool:
+        if args.action_request_id:
+            action = repository.get_user_action_request(args.action_request_id)
+            if action is not None and str(action.get("status") or "") == "cancelled":
+                return True
+        for run_id in (args.automation_run_id, args.parent_run_id):
+            if not run_id:
+                continue
+            automation = repository.get_automation_run(run_id)
+            if automation is not None and str(automation.get("status") or "") == "cancelled":
+                return True
+        return False
+
     assistant_options = {
         "command": args.mcp_command,
         "package": args.mcp_package,
@@ -205,6 +282,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
                 request_timeout_seconds=args.model_request_timeout_seconds,
             ),
             max_model_steps=args.max_model_steps,
+            cancellation_check=bound_run_cancelled,
             **assistant_options,
         )
     else:
@@ -219,12 +297,17 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
         "status": "running",
         "last_stage": "starting",
         "recent_days": max(1, min(int(args.recent_days), 31)),
-        "selection_limit": max(1, min(int(args.preselect_count), 100)),
+        "selection_limit": max(1, min(int(args.preselect_count), 1000)),
+        "action_request_id": args.action_request_id,
+        "automation_run_id": args.automation_run_id,
+        "parent_run_id": args.parent_run_id,
         "created_at": created_at,
     }
     repository.upsert_browser_mission_run(observed)
 
     def track(stage: str, payload: dict[str, object]) -> None:
+        if bound_run_cancelled():
+            raise BrowserMissionCancelled("The bound combined photo run was cancelled")
         observed["last_stage"] = stage
         session_id = str(payload.get("session_id") or "")
         if session_id:
@@ -250,9 +333,12 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
             max_pixels=args.max_pixels,
             preselect_count=args.preselect_count,
             recent_days=args.recent_days,
+            action_request_id=args.action_request_id,
+            automation_run_id=args.automation_run_id,
             auto_confirm=args.auto_confirm,
             timeout_seconds=args.timeout_seconds,
             progress_callback=track,
+            cancellation_check=bound_run_cancelled,
         )
         model_metrics = _safe_model_metrics(assistant)
         completed = {
@@ -282,15 +368,28 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
                 ValueError: "picker_validation_error",
             }.get(type(exc), "picker_interrupted")
         )
+        cancelled = isinstance(exc, (BrowserMissionCancelled, asyncio.CancelledError))
+        completed_at = datetime.now(UTC).isoformat()
         repository.upsert_browser_mission_run(
             {
                 **observed,
-                "status": "failed",
+                "status": "cancelled" if cancelled else "failed",
                 "error_code": reason_code[:48],
                 "elapsed_seconds": round(time.monotonic() - started, 3),
                 "model_metrics": _safe_model_metrics(assistant),
-                "completed_at": datetime.now(UTC).isoformat(),
+                "browser_diagnostics": _safe_browser_diagnostics(assistant),
+                "completed_at": completed_at,
             }
+        )
+        record_bound_mission_failure(
+            repository,
+            action_request_id=args.action_request_id,
+            automation_run_id=args.automation_run_id,
+            parent_run_id=args.parent_run_id,
+            mission_run_id=mission_run_id,
+            reason_code=reason_code,
+            cancelled=cancelled,
+            completed_at=completed_at,
         )
         raise
     finally:
@@ -309,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
         "--preselect-count",
         type=int,
         default=100,
-        help="Maximum recent-window photos to select (Picker safety cap: 100)",
+        help="Maximum recent-window photos to select (Picker safety cap: 1000)",
     )
     parser.add_argument(
         "--recent-days",
@@ -322,7 +421,10 @@ def main(argv: list[str] | None = None) -> int:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    parser.add_argument("--timeout-seconds", type=float, default=24 * 60 * 60)
+    parser.add_argument("--timeout-seconds", type=float, default=6 * 60 * 60)
+    parser.add_argument("--action-request-id", default="")
+    parser.add_argument("--automation-run-id", default="")
+    parser.add_argument("--parent-run-id", default="")
     parser.add_argument("--mcp-command", default="/opt/homebrew/bin/npx")
     parser.add_argument("--mcp-package", default="chrome-devtools-mcp@1.8.0")
     parser.add_argument(
@@ -363,6 +465,18 @@ def main(argv: list[str] | None = None) -> int:
         default=runtime_root / "browser-assist" / "google-picker-worker.lock",
     )
     args = parser.parse_args(argv)
+    if not 1 <= args.limit <= 1000:
+        parser.error("--limit must be between 1 and 1000")
+    if not 1 <= args.preselect_count <= 1000:
+        parser.error("--preselect-count must be between 1 and 1000")
+    if not 1 <= args.recent_days <= 31:
+        parser.error("--recent-days must be between 1 and 31")
+    if not 600 <= args.timeout_seconds <= 21600:
+        parser.error("--timeout-seconds must be between 600 and 21600")
+    for name in ("action_request_id", "automation_run_id", "parent_run_id"):
+        value = str(getattr(args, name) or "")
+        if value and not _BOUND_ID_RE.fullmatch(value):
+            parser.error(f"--{name.replace('_', '-')} has an invalid identifier")
     try:
         ensure_dedicated_chrome(
             browser_url=args.browser_url,
@@ -375,6 +489,9 @@ def main(argv: list[str] | None = None) -> int:
         reason_code = str(getattr(exc, "reason_code", "unsafe_browser_state"))
         print(f"Google Picker assistant stopped safely: {reason_code}", file=sys.stderr)
         return mission_exit_code(exc)
+    except asyncio.CancelledError:
+        print("Google Picker assistant stopped safely: browser_mission_cancelled", file=sys.stderr)
+        return _MISSION_EXIT_CODES["browser_mission_cancelled"]
     except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
         print(f"Google Picker assistant failed: {exc}", file=sys.stderr)
         return 1

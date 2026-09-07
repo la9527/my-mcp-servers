@@ -172,8 +172,82 @@ async def test_daily_curate_blocks_write_mode_and_creates_google_picker_action(t
     assert google["notification_required"] is True
     assert google["picker_worker_required"] is True
     assert google["picker_worker_reason"] == "new_action"
+    assert google["lookback_days"] == 2
+    assert google["requested_limit"] == 50
+    assert google["timeout_seconds"] == 21600.0
     assert google["local_run_date"] == "2026-09-03"
     assert repository.list_user_action_requests(statuses={"pending"})[0]["request_id"] == google["user_action"]["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_google_daily_curate_preserves_manual_period_count_and_parent_scope(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "automation.db")
+
+    async def submit(**_kwargs):
+        raise AssertionError("Google Picker action creation must not start analysis")
+
+    result = await start_daily_curation(
+        repository=repository,
+        options={
+            "source": "google",
+            "mode": "review_only",
+            "lookback_days": 14,
+            "limit": 700,
+            "timeout_seconds": 14400,
+            "trigger": "telegram",
+            "parent_run_id": "manual-combined-1",
+            "action_base_url": "https://photos-mac.tail123.ts.net/photos-actions",
+        },
+        photos_run_fn=submit,
+        now=datetime(2026, 9, 3, 0, 0, tzinfo=UTC),
+    )
+
+    assert result["lookback_days"] == 14
+    assert result["lookback_hours"] == 336.0
+    assert result["requested_limit"] == 700
+    assert result["timeout_seconds"] == 14400.0
+    assert result["trigger"] == "telegram"
+    assert result["parent_run_id"] == "manual-combined-1"
+    assert result["notification_required"] is False
+    assert "최근 14일" in result["user_action"]["message"]
+    assert "최대 700장" in result["user_action"]["message"]
+    event = repository.list_user_action_requests(statuses={"pending"})[0]
+    assert event["delivery_policy"] == "internal"
+    assert event["parent_run_id"] == "manual-combined-1"
+
+
+@pytest.mark.asyncio
+async def test_google_daily_curate_creates_fresh_picker_action_for_combined_retry(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "automation.db")
+
+    async def submit(**_kwargs):
+        raise AssertionError("Google Picker action creation must not start analysis")
+
+    options = {
+        "source": "google",
+        "mode": "review_only",
+        "lookback_days": 10,
+        "limit": 50,
+        "action_base_url": "https://photos-mac.tail123.ts.net/photos-actions",
+    }
+    first = await start_daily_curation(
+        repository=repository,
+        options={**options, "parent_run_id": "combined-first"},
+        photos_run_fn=submit,
+        now=datetime(2026, 9, 3, 0, 0, tzinfo=UTC),
+    )
+    repository.update_user_action_status(first["user_action"]["request_id"], "failed")
+    retried = await start_daily_curation(
+        repository=repository,
+        options={**options, "parent_run_id": "combined-retry"},
+        photos_run_fn=submit,
+        now=datetime(2026, 9, 3, 0, 5, tzinfo=UTC),
+    )
+
+    assert retried["automation_run_id"] != first["automation_run_id"]
+    assert retried["user_action"]["request_id"] != first["user_action"]["request_id"]
+    assert retried["picker_worker_required"] is True
+    assert retried["picker_worker_reason"] == "new_action"
 
 
 @pytest.mark.asyncio

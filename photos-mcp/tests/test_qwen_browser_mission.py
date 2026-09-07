@@ -43,7 +43,10 @@ class FakeChromeSession:
 
     async def list_tools(self):
         return SimpleNamespace(
-            tools=[SimpleNamespace(name=name) for name in ("navigate_page", "take_snapshot", "click")]
+            tools=[
+                SimpleNamespace(name=name)
+                for name in ("navigate_page", "take_snapshot", "click", "press_key")
+            ]
         )
 
     def snapshot(self) -> str:
@@ -147,12 +150,19 @@ async def test_qwen_agent_observes_before_each_click_and_confirms(tmp_path) -> N
 
 
 class LargeGridChromeSession(FakeChromeSession):
-    def __init__(self, *, total: int = 101, reveal_second_after: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        total: int = 101,
+        reveal_second_after: int = 0,
+        at_cutoff: bool = True,
+    ) -> None:
         super().__init__()
         self.total = total
         self.reveal_second_after = reveal_second_after
         self.snapshot_calls = 0
         self.selected_uids: set[str] = set()
+        self.at_cutoff = at_cutoff
 
     def snapshot(self) -> str:
         visible = self.total
@@ -165,6 +175,12 @@ class LargeGridChromeSession(FakeChromeSession):
             lines.extend((
                 f'uid={uid} checkbox "사진 선택"{checked}',
                 f'uid=2_{index} button "사진 미리보기" description="사진 세부정보"',
+            ))
+        if self.at_cutoff:
+            lines.extend((
+                'uid=7_0 StaticText "8월 1일"',
+                'uid=7_1 checkbox "사진 선택"',
+                'uid=7_2 button "사진 미리보기" description="사진 세부정보"',
             ))
         disabled = "" if self.selected_uids else " disabled"
         lines.append(f'uid=8_1 button "완료"{disabled}')
@@ -184,7 +200,42 @@ class LargeGridChromeSession(FakeChromeSession):
             else:
                 self.selected_uids.add(uid)
             return SimpleNamespace(isError=False, content=[])
+        if name == "press_key":
+            return SimpleNamespace(isError=False, content=[])
         return SimpleNamespace(isError=False, content=[])
+
+
+class PagedGridChromeSession(LargeGridChromeSession):
+    def __init__(self) -> None:
+        super().__init__(total=0, at_cutoff=False)
+        self.page = 0
+
+    def snapshot(self) -> str:
+        visible = (1, 2) if self.page == 0 else (3,)
+        lines = ['uid=9_0 dialog "Google Photos Picker"', 'uid=9_1 StaticText "오늘"']
+        for index in visible:
+            uid = f"1_{index}"
+            checked = " checked" if uid in self.selected_uids else ""
+            lines.extend((
+                f'uid={uid} checkbox "사진 선택"{checked}',
+                f'uid=2_{index} button "사진 미리보기" description="사진 세부정보"',
+            ))
+        if self.page == 1:
+            lines.extend((
+                'uid=7_0 StaticText "8월 1일"',
+                'uid=7_1 checkbox "사진 선택"',
+                'uid=7_2 button "사진 미리보기" description="사진 세부정보"',
+            ))
+        disabled = "" if self.selected_uids else " disabled"
+        lines.append(f'uid=8_1 button "완료"{disabled}')
+        return "\n".join(lines)
+
+    async def call_tool(self, name, arguments):
+        if name == "press_key":
+            assert arguments["key"] == "PageDown"
+            self.page = 1
+            return SimpleNamespace(isError=False, content=[])
+        return await super().call_tool(name, arguments)
 
 
 @pytest.mark.asyncio
@@ -201,7 +252,7 @@ async def test_qwen_agent_confirms_bounded_100_when_101_recent_photos_are_visibl
     )
     requested = [f"1_{index}" for index in range(1, 101)]
     chrome = LargeGridChromeSession(total=101)
-    assistant, _model, _chrome = build_assistant(tmp_path, [
+    assistant, model, _chrome = build_assistant(tmp_path, [
         tool_call("take_snapshot", {}, "s1"),
         tool_call("select_recent_photos", {"uids": requested}, "c1"),
         tool_call("take_snapshot", {}, "s2"),
@@ -213,6 +264,118 @@ async def test_qwen_agent_confirms_bounded_100_when_101_recent_photos_are_visibl
     assert result["selected_after"] == 100
     assert len(chrome.selected_uids) == 100
     assert "1_101" not in chrome.selected_uids
+    assert chrome.confirmed is True
+    for _messages, tools in model.calls[2:]:
+        tool_names = {tool["function"]["name"] for tool in tools}
+        assert "select_recent_photos" not in tool_names
+        assert "scroll_picker" not in tool_names
+    await assistant.close()
+
+
+def test_qwen_agent_tightens_batch_schema_to_remaining_selection_capacity(tmp_path) -> None:
+    assistant, _model, _chrome = build_assistant(tmp_path, [])
+    assistant._selection_limit = 50
+    assistant._selection_clicks = 42
+
+    tools = assistant._tools_for_phase("selection")
+
+    select_tool = next(
+        tool for tool in tools if tool["function"]["name"] == "select_recent_photos"
+    )
+    assert select_tool["function"]["parameters"]["properties"]["uids"]["maxItems"] == 8
+
+
+@pytest.mark.asyncio
+async def test_qwen_agent_auto_confirms_after_filling_exact_limit(tmp_path, monkeypatch) -> None:
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(
+        "photos_mcp.infrastructure.browser_assist.qwen_browser_mission.asyncio.sleep",
+        no_sleep,
+    )
+    assistant, model, chrome = build_assistant(tmp_path, [
+        tool_call("take_snapshot", {}, "s1"),
+        tool_call("select_recent_photos", {"uids": ["1_3"]}, "c1"),
+    ])
+    await assistant.open_picker("https://photos.google.com/picker/session-token")
+
+    result = await assistant.preselect_recent(1, recent_days=10)
+
+    assert result["selected_after"] == 1
+    assert chrome.selected is True
+    assert chrome.confirmed is True
+    assert len(model.calls) == 2
+    assert assistant.diagnostics()["stable_ready_observations"] >= 2
+    await assistant.close()
+
+
+@pytest.mark.asyncio
+async def test_qwen_agent_accepts_requested_count_above_legacy_100_cap(tmp_path, monkeypatch) -> None:
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(
+        "photos_mcp.infrastructure.browser_assist.qwen_browser_mission.asyncio.sleep",
+        no_sleep,
+    )
+    first = [f"1_{index}" for index in range(1, 101)]
+    chrome = LargeGridChromeSession(total=101)
+    assistant, model, _chrome = build_assistant(tmp_path, [
+        tool_call("take_snapshot", {}, "s1"),
+        tool_call("select_recent_photos", {"uids": first}, "c1"),
+        tool_call("take_snapshot", {}, "s2"),
+        tool_call("select_recent_photos", {"uids": ["1_101"]}, "c2"),
+        tool_call("take_snapshot", {}, "s3"),
+        tool_call("take_snapshot", {}, "s4"),
+        tool_call("confirm_picker_selection", {"selected_count": 101}, "r1"),
+    ], chrome=chrome)
+    await assistant.open_picker("https://photos.google.com/picker/session-token")
+    result = await assistant.preselect_recent(1000, recent_days=10)
+
+    assert result["requested_count"] == 1000
+    assert result["selected_after"] == 101
+    assert len(chrome.selected_uids) == 101
+    terminal_schema = next(
+        tool["function"]["parameters"]["properties"]["selected_count"]
+        for tool in model.calls[0][1]
+        if tool["function"]["name"] == "report_browser_mission"
+    )
+    assert terminal_schema["maximum"] == 1000
+    assert chrome.confirmed is True
+    await assistant.close()
+
+
+@pytest.mark.asyncio
+async def test_qwen_agent_uses_bounded_page_down_to_reach_later_recent_photos(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(
+        "photos_mcp.infrastructure.browser_assist.qwen_browser_mission.asyncio.sleep",
+        no_sleep,
+    )
+    chrome = PagedGridChromeSession()
+    assistant, _model, _chrome = build_assistant(tmp_path, [
+        tool_call("take_snapshot", {}, "s1"),
+        tool_call("select_recent_photos", {"uids": ["1_1", "1_2"]}, "c1"),
+        tool_call("take_snapshot", {}, "s2"),
+        tool_call("scroll_picker", {}, "p1"),
+        tool_call("take_snapshot", {}, "s3"),
+        tool_call("select_recent_photos", {"uids": ["1_3"]}, "c2"),
+        tool_call("take_snapshot", {}, "s4"),
+        tool_call("take_snapshot", {}, "s5"),
+        tool_call("confirm_picker_selection", {"selected_count": 3}, "r1"),
+    ], chrome=chrome)
+    await assistant.open_picker("https://photos.google.com/picker/session-token")
+    result = await assistant.preselect_recent(10, recent_days=10)
+
+    assert result["selected_after"] == 3
+    assert chrome.selected_uids == {"1_1", "1_2", "1_3"}
+    assert chrome.page == 1
     assert chrome.confirmed is True
     await assistant.close()
 
@@ -253,6 +416,31 @@ async def test_qwen_agent_blocks_old_photo_even_when_model_requests_it(tmp_path)
         await assistant.preselect_recent(10, recent_days=10)
     assert chrome.selected is False
     assert chrome.confirmed is False
+    await assistant.close()
+
+
+@pytest.mark.asyncio
+async def test_qwen_agent_recovers_from_one_unverified_unsafe_report(tmp_path) -> None:
+    assistant, _model, chrome = build_assistant(tmp_path, [
+        tool_call(
+            "report_browser_mission",
+            {"status": "unsafe_state", "selected_count": 0, "reason": "uncertain"},
+            "u1",
+        ),
+        tool_call("take_snapshot", {}, "s1"),
+        tool_call("select_recent_photos", {"uids": ["1_3"]}, "c1"),
+        tool_call("take_snapshot", {}, "s2"),
+        tool_call("take_snapshot", {}, "s3"),
+        tool_call("confirm_picker_selection", {"selected_count": 1}, "r1"),
+    ])
+    await assistant.open_picker("https://photos.google.com/picker/session-token")
+
+    result = await assistant.preselect_recent(1, recent_days=10)
+
+    assert result["selected_after"] == 1
+    assert chrome.confirmed is True
+    assert assistant.diagnostics()["unverified_terminal_reports"] == 1
+    assert assistant.diagnostics()["last_guard_code"] == "model_terminal_unsafe_state"
     await assistant.close()
 
 

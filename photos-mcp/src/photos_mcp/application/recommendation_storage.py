@@ -28,6 +28,7 @@ from photos_mcp.infrastructure.sources.google_photos.import_repository import (
 )
 from photos_mcp.infrastructure.vendor_adapter.gateway import call_vendor
 from photos_mcp.application.story_generation import refresh_recommendation_story
+from photos_mcp.application.combined_curation import reconcile_combined_curation
 
 
 DEFAULT_RECOMMENDATION_ROOT = Path(
@@ -705,6 +706,95 @@ async def materialize_recommendations_for_run(
     )
 
 
+async def auto_publish_approved_groups(
+    *,
+    repository: RunRepository,
+    group_ids: list[str] | tuple[str, ...],
+    root: str | Path | None = None,
+    call_vendor_fn: VendorCallable = call_vendor,
+    publish_service_factory: Callable[..., Any] | None = None,
+    photos_run_fn: VendorCallable | None = None,
+) -> dict[str, Any]:
+    """Append new recommendations only to a previously approved fixed album.
+
+    First-time publication remains approval-gated. Automatic continuation is
+    eligible only when an earlier successful write left both ``approved_once``
+    policy state and a provider album identifier on the monthly group.
+    """
+
+    if publish_service_factory is None:
+        # Delayed imports avoid the publisher's intentional dependency on the
+        # local recommendation storage primitives in this module.
+        from photos_mcp.application.recommendation_publish import (
+            RecommendationGroupPublishService,
+        )
+
+        publish_service_factory = RecommendationGroupPublishService
+    if photos_run_fn is None:
+        from photos_mcp.application.run_service import photos_run
+
+        photos_run_fn = photos_run
+    service = None
+    results: list[dict[str, Any]] = []
+    eligible = 0
+    published = 0
+    failed = 0
+    for group_id in sorted({str(value) for value in group_ids if str(value)}):
+        group = repository.get_recommendation_group(group_id) or {}
+        if (
+            str(group.get("policy_state") or "") != "approved_once"
+            or str(group.get("destination_provider") or "")
+            not in {"apple_photos", "google_photos"}
+            or not str(group.get("destination_album_id") or "")
+        ):
+            continue
+        eligible += 1
+        if service is None:
+            service = publish_service_factory(
+                repository=repository,
+                root=root,
+                call_vendor_fn=call_vendor_fn,
+                photos_run_fn=photos_run_fn,
+            )
+        try:
+            plan = service.prepare_plan(group_id)
+            if str(plan.get("status") or "") == "ready":
+                result = await service.execute(group_id, plan)
+            else:
+                result = plan
+        except Exception as exc:  # keep verified local storage as the primary result
+            result = {
+                "status": "failed",
+                "group_id": group_id,
+                "error_code": "automatic_album_publish_failed",
+                "error_type": type(exc).__name__,
+            }
+        result = dict(result) if isinstance(result, dict) else {
+            "status": "failed",
+            "group_id": group_id,
+            "error_code": "invalid_automatic_publish_result",
+        }
+        published += max(0, int(result.get("published_count") or 0))
+        if str(result.get("status") or "") in {"failed", "partial", "blocked"}:
+            # A completed duplicate-suppressed plan is not a failure.
+            failed += max(1, int(result.get("failed_count") or 0))
+        results.append(
+            {
+                "group_id": group_id,
+                "status": str(result.get("status") or "unknown"),
+                "published_count": max(0, int(result.get("published_count") or 0)),
+                "failed_count": max(0, int(result.get("failed_count") or 0)),
+                "error_code": str(result.get("error_code") or "")[:80],
+            }
+        )
+    return {
+        "eligible_group_count": eligible,
+        "published_count": published,
+        "failed_count": failed,
+        "groups": results,
+    }
+
+
 def queue_recommendation_storage_notification(
     *,
     repository: RunRepository,
@@ -713,6 +803,11 @@ def queue_recommendation_storage_notification(
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Queue one redacted KST Telegram summary, including valid zero-result runs."""
+
+    if str(automation_run.get("parent_run_id") or ""):
+        # A combined parent emits the single user-facing result after every
+        # requested provider child has reached its storage terminal state.
+        return None
 
     recommended = max(0, int(storage_result.get("recommended_count") or 0))
     observed = now or _utcnow()
@@ -784,6 +879,8 @@ async def reconcile_pending_recommendations(
     story_refresh_count = 0
     story_fallback_count = 0
     story_failed_count = 0
+    album_published_count = 0
+    album_publish_failed_count = 0
 
     async def refresh_story_safely() -> None:
         nonlocal story_refresh_count, story_fallback_count, story_failed_count
@@ -807,27 +904,40 @@ async def reconcile_pending_recommendations(
             policy_version=DEFAULT_RECOMMENDATION_POLICY_VERSION,
         )
         if existing and str(existing.get("status") or "") == "completed":
-            if not isinstance(automation_run.get("recommendation_storage"), dict):
-                storage_summary = {
+            storage_summary = {
+                **(
+                    dict(automation_run.get("recommendation_storage") or {})
+                    if isinstance(automation_run.get("recommendation_storage"), dict)
+                    else {}
+                ),
+                "status": "completed",
+                "collection_id": str(existing.get("collection_id") or ""),
+                "analysis_run_id": analysis_run_id,
+                "recommended_count": int(existing.get("recommended_count") or 0),
+                "materialized_count": int(existing.get("materialized_count") or 0),
+                "new_file_count": int(existing.get("new_file_count") or 0),
+                "duplicate_count": int(existing.get("duplicate_count") or 0),
+                "failed_count": int(existing.get("failed_count") or 0),
+                "groups": list(existing.get("group_ids") or []),
+                "local_root_ready": True,
+            }
+            automatic_publish = await auto_publish_approved_groups(
+                repository=repository,
+                group_ids=list(existing.get("group_ids") or []),
+                root=root,
+                call_vendor_fn=call_vendor_fn,
+            )
+            album_published_count += int(automatic_publish["published_count"])
+            album_publish_failed_count += int(automatic_publish["failed_count"])
+            storage_summary["automatic_publish"] = automatic_publish
+            repository.upsert_automation_run(
+                {
+                    **automation_run,
                     "status": "completed",
-                    "collection_id": str(existing.get("collection_id") or ""),
-                    "analysis_run_id": analysis_run_id,
-                    "recommended_count": int(existing.get("recommended_count") or 0),
-                    "materialized_count": int(existing.get("materialized_count") or 0),
-                    "new_file_count": int(existing.get("new_file_count") or 0),
-                    "duplicate_count": int(existing.get("duplicate_count") or 0),
-                    "failed_count": int(existing.get("failed_count") or 0),
-                    "groups": list(existing.get("group_ids") or []),
-                    "local_root_ready": True,
+                    "terminal": True,
+                    "recommendation_storage": storage_summary,
                 }
-                repository.upsert_automation_run(
-                    {
-                        **automation_run,
-                        "status": "completed",
-                        "terminal": True,
-                        "recommendation_storage": storage_summary,
-                    }
-                )
+            )
             await refresh_story_safely()
             continue
         inspected += 1
@@ -886,6 +996,19 @@ async def reconcile_pending_recommendations(
         materialized += max(0, int(storage_result.get("materialized_count") or 0))
         new_files += max(0, int(storage_result.get("new_file_count") or 0))
         duplicates += max(0, int(storage_result.get("duplicate_count") or 0))
+        if storage_status in {"completed", "partial"}:
+            automatic_publish = await auto_publish_approved_groups(
+                repository=repository,
+                group_ids=list(storage_result.get("groups") or []),
+                root=root,
+                call_vendor_fn=call_vendor_fn,
+            )
+            storage_result = {
+                **storage_result,
+                "automatic_publish": automatic_publish,
+            }
+            album_published_count += int(automatic_publish["published_count"])
+            album_publish_failed_count += int(automatic_publish["failed_count"])
         updated = {
             **automation_run,
             "status": storage_status,
@@ -912,6 +1035,7 @@ async def reconcile_pending_recommendations(
         )
         if storage_status in {"completed", "partial"}:
             await refresh_story_safely()
+    combined = reconcile_combined_curation(repository=repository)
     return {
         "status": "completed" if not failed and not partial else "partial",
         "inspected_run_count": inspected,
@@ -925,4 +1049,7 @@ async def reconcile_pending_recommendations(
         "story_refresh_count": story_refresh_count,
         "story_fallback_count": story_fallback_count,
         "story_failed_count": story_failed_count,
+        "album_published_count": album_published_count,
+        "album_publish_failed_count": album_publish_failed_count,
+        **combined,
     }

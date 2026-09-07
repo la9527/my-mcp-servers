@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+import math
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -15,6 +16,12 @@ from photos_mcp.interfaces.mcp.facade.public_tools import photos_select as facad
 from photos_mcp.interfaces.mcp.facade.public_tools import photos_workflow as facade_photos_workflow
 from photos_mcp.interfaces.mcp.facade.public_tools import photos_write as facade_photos_write
 from photos_mcp.application.run_support import call_vendor
+from photos_mcp.application.combined_curation import (
+    combined_curation_status,
+    retry_combined_curation,
+    start_combined_curation,
+    stop_combined_curation,
+)
 from photos_mcp.domain.models.automation import validate_private_action_base_url
 from photos_mcp.application.mutation_approval import (
     _safe_mutation_error,
@@ -620,19 +627,49 @@ def build_server(
             return JSONResponse({"status": "blocked", "error_code": "invalid_json"}, status_code=400)
         if not isinstance(body, dict):
             return JSONResponse({"status": "blocked", "error_code": "invalid_json_object"}, status_code=400)
+        allowed_fields = {
+            "source", "source_id", "limit", "selection_profile", "exclude_screenshots",
+            "lookback_days", "lookback_hours", "overlap_hours", "mode", "action_base_url",
+            "timeout_seconds", "trigger", "parent_run_id",
+        }
+        if set(body) - allowed_fields:
+            return JSONResponse({"status": "blocked", "error_code": "unknown_daily_curate_option"}, status_code=400)
         source = str(body.get("source") or "apple").strip().lower()
         if source not in {"apple", "google"}:
             return JSONResponse({"status": "blocked", "error_code": "unsupported_daily_curate_source"}, status_code=400)
         try:
+            limit = int(body.get("limit") or 50)
+            if body.get("lookback_days") is not None:
+                lookback_days = int(body["lookback_days"])
+                lookback_hours = float(body.get("lookback_hours") or lookback_days * 24.0)
+            else:
+                lookback_hours = float(body.get("lookback_hours") or 48.0)
+                lookback_days = int(math.ceil(lookback_hours / 24.0))
+            timeout_seconds = float(body.get("timeout_seconds") or 21600.0)
+            overlap_hours = float(body.get("overlap_hours") or 6.0)
+            if not 1 <= limit <= 1000:
+                raise ValueError("limit out of range")
+            if not 1 <= lookback_days <= 31:
+                raise ValueError("lookback_days out of range")
+            if not 1.0 <= lookback_hours <= 24.0 * 31.0:
+                raise ValueError("lookback_hours out of range")
+            if not 600.0 <= timeout_seconds <= 21600.0:
+                raise ValueError("timeout_seconds out of range")
+            if not 0.0 <= overlap_hours <= 48.0:
+                raise ValueError("overlap_hours out of range")
             options = {
                 "source": source,
                 "source_id": str(body.get("source_id") or ("system-library" if source == "apple" else "default-account")),
-                "limit": max(1, min(int(body.get("limit") or 50), 500)),
+                "limit": limit,
                 "selection_profile": str(body.get("selection_profile") or "general"),
                 "exclude_screenshots": bool(body.get("exclude_screenshots", True)),
-                "lookback_hours": max(1.0, min(float(body.get("lookback_hours") or 48.0), 24.0 * 31.0)),
-                "overlap_hours": max(0.0, min(float(body.get("overlap_hours") or 6.0), 48.0)),
+                "lookback_days": lookback_days,
+                "lookback_hours": lookback_hours,
+                "overlap_hours": overlap_hours,
                 "mode": "review_only",
+                "timeout_seconds": timeout_seconds,
+                "trigger": str(body.get("trigger") or "scheduled"),
+                "parent_run_id": str(body.get("parent_run_id") or ""),
             }
             if body.get("action_base_url"):
                 options["action_base_url"] = validate_private_action_base_url(
@@ -647,6 +684,128 @@ def build_server(
         )
         normalized = _ingest_tool_response("photos_workflow", payload, state_store)
         return JSONResponse(normalized if isinstance(normalized, dict) else {"result": normalized})
+
+    @mcp.custom_route("/automation/daily-curate-all", methods=["POST"], include_in_schema=False)
+    async def http_daily_curate_all(request):
+        """Start one durable parent for the selected Apple/Google sources."""
+        if config.host not in {"127.0.0.1", "localhost", "::1"}:
+            return JSONResponse({"status": "blocked", "error_code": "loopback_required"}, status_code=403)
+        if state_store is None:
+            return JSONResponse(
+                {"status": "blocked", "error_code": "state_store_unavailable"},
+                status_code=503,
+            )
+        try:
+            content_length = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            content_length = 0
+        if content_length > 8192:
+            return JSONResponse({"status": "blocked", "error_code": "request_too_large"}, status_code=413)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return JSONResponse({"status": "blocked", "error_code": "invalid_json"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"status": "blocked", "error_code": "invalid_json_object"}, status_code=400)
+        allowed_fields = {
+            "source", "limit", "apple_limit", "google_limit", "lookback_days",
+            "timeout_seconds", "trigger", "action_base_url",
+        }
+        if set(body) - allowed_fields:
+            return JSONResponse(
+                {"status": "blocked", "error_code": "unknown_combined_curate_option"},
+                status_code=400,
+            )
+        source = str(body.get("source") or "all").strip().lower()
+        if source not in {"all", "apple", "google"}:
+            return JSONResponse(
+                {"status": "blocked", "error_code": "unsupported_combined_curate_source"},
+                status_code=400,
+            )
+        try:
+            limit = int(body.get("limit") or 1000)
+            lookback_days = int(body.get("lookback_days") or 10)
+            timeout_seconds = float(body.get("timeout_seconds") or 21600.0)
+            if not 1 <= limit <= 1000:
+                raise ValueError("limit out of range")
+            if not 1 <= lookback_days <= 31:
+                raise ValueError("lookback_days out of range")
+            if not 600.0 <= timeout_seconds <= 21600.0:
+                raise ValueError("timeout_seconds out of range")
+            if source == "all":
+                if limit < 2:
+                    raise ValueError("combined limit requires two slots")
+                apple_raw = body.get("apple_limit")
+                google_raw = body.get("google_limit")
+                if (apple_raw is None) != (google_raw is None):
+                    raise ValueError("both provider limits are required together")
+                apple_limit = int(apple_raw) if apple_raw is not None else limit // 2
+                google_limit = int(google_raw) if google_raw is not None else limit - apple_limit
+                if not 1 <= apple_limit <= 1000 or not 1 <= google_limit <= 1000:
+                    raise ValueError("provider limit out of range")
+                if apple_limit + google_limit > limit:
+                    raise ValueError("provider limits exceed combined limit")
+                sources = ("apple", "google")
+            elif source == "apple":
+                if body.get("google_limit") is not None:
+                    raise ValueError("google limit is not available for apple-only runs")
+                apple_limit = int(body.get("apple_limit") or limit)
+                google_limit = 0
+                if not 1 <= apple_limit <= limit:
+                    raise ValueError("apple limit out of range")
+                sources = ("apple",)
+            else:
+                if body.get("apple_limit") is not None:
+                    raise ValueError("apple limit is not available for google-only runs")
+                apple_limit = 0
+                google_limit = int(body.get("google_limit") or limit)
+                if not 1 <= google_limit <= limit:
+                    raise ValueError("google limit out of range")
+                sources = ("google",)
+            trigger = str(body.get("trigger") or "scheduled")
+            if trigger not in {"scheduled", "telegram"}:
+                raise ValueError("unsupported trigger")
+            combined_options = {
+                "source": source,
+                "sources": sources,
+                "limit": limit,
+                "apple_limit": apple_limit,
+                "google_limit": google_limit,
+                "lookback_days": lookback_days,
+                "timeout_seconds": timeout_seconds,
+                "trigger": trigger,
+            }
+            if body.get("action_base_url"):
+                combined_options["action_base_url"] = validate_private_action_base_url(
+                    str(body["action_base_url"])
+                )
+        except (TypeError, ValueError):
+            return JSONResponse(
+                {"status": "blocked", "error_code": "invalid_combined_curate_options"},
+                status_code=400,
+            )
+
+        async def start_child(_source: str, child_options: dict[str, Any]) -> dict[str, Any]:
+            payload = await facade_photos_workflow(
+                state_store=state_store,
+                action="daily_curate",
+                options=child_options,
+            )
+            normalized = _ingest_tool_response("photos_workflow", payload, state_store)
+            return normalized if isinstance(normalized, dict) else {"result": normalized}
+
+        try:
+            payload = await start_combined_curation(
+                repository=state_store.run_repository,
+                options=combined_options,
+                start_child=start_child,
+            )
+        except (OSError, RuntimeError, ValueError):
+            return JSONResponse(
+                {"status": "failed", "error_code": "combined_curate_start_failed"},
+                status_code=500,
+            )
+        return JSONResponse(payload)
 
     @mcp.custom_route(
         "/automation/reconcile-recommendations",
@@ -668,6 +827,153 @@ def build_server(
             )
         payload = await reconcile_pending_recommendations(
             repository=state_store.run_repository,
+        )
+        return JSONResponse(payload)
+
+    @mcp.custom_route(
+        "/automation/combined-control",
+        methods=["POST"],
+        include_in_schema=False,
+    )
+    async def http_combined_control(request):
+        """Read or safely control the durable combined photo batch."""
+
+        if config.host not in {"127.0.0.1", "localhost", "::1"}:
+            return JSONResponse(
+                {"status": "blocked", "error_code": "loopback_required"},
+                status_code=403,
+            )
+        if state_store is None:
+            return JSONResponse(
+                {"status": "blocked", "error_code": "state_store_unavailable"},
+                status_code=503,
+            )
+        try:
+            content_length = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            content_length = 0
+        if content_length > 4096:
+            return JSONResponse(
+                {"status": "blocked", "error_code": "request_too_large"},
+                status_code=413,
+            )
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return JSONResponse(
+                {"status": "blocked", "error_code": "invalid_json"},
+                status_code=400,
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"status": "blocked", "error_code": "invalid_json_object"},
+                status_code=400,
+            )
+        if set(body) - {"action", "run_id", "confirm_run_id"}:
+            return JSONResponse(
+                {"status": "blocked", "error_code": "unknown_combined_control_option"},
+                status_code=400,
+            )
+        action = str(body.get("action") or "status").strip().lower()
+        if action not in {"status", "latest", "retry", "stop", "share"}:
+            return JSONResponse(
+                {"status": "blocked", "error_code": "unsupported_combined_control_action"},
+                status_code=400,
+            )
+        run_id = str(body.get("run_id") or "").strip()
+        confirm_run_id = str(body.get("confirm_run_id") or "").strip()
+        for candidate in (run_id, confirm_run_id):
+            if candidate and (
+                not candidate.startswith("combined-")
+                or len(candidate) > 80
+                or not candidate.replace("-", "").isalnum()
+            ):
+                return JSONResponse(
+                    {"status": "blocked", "error_code": "invalid_combined_run_id"},
+                    status_code=400,
+                )
+
+        if action in {"status", "latest"}:
+            payload = combined_curation_status(
+                repository=state_store.run_repository,
+                run_id=run_id,
+                prefer_active=action == "status",
+            )
+            return JSONResponse(payload)
+
+        if action == "share":
+            story = build_recommendation_story(state_store.run_repository)
+            if not story.get("photos"):
+                return JSONResponse(
+                    {"status": "blocked", "error_code": "share_story_is_empty"},
+                    status_code=409,
+                )
+            service = StoryShareService(
+                state_store.run_repository,
+                session_secret=load_session_secret(),
+            )
+            created, passcode = service.create(
+                story,
+                duration_days=30,
+                download_enabled=True,
+            )
+            share_id = str(created.get("share_id") or "")
+            package = state_store.run_repository.get_shared_story_package(share_id) or {}
+            image_service = owner_assets(state_store.run_repository)
+            try:
+                for photo in package.get("photos") or []:
+                    for kind in ("thumb", "preview", "download"):
+                        image_service.derivative(
+                            share_id=share_id,
+                            public_asset_id=str(photo["public_asset_id"]),
+                            local_asset_id=str(photo["local_asset_id"]),
+                            kind=kind,
+                        )
+            except (KeyError, ShareImageError):
+                service.revoke(share_id)
+                image_service.purge_share(share_id)
+                return JSONResponse(
+                    {"status": "failed", "error_code": "share_derivative_failed"},
+                    status_code=500,
+                )
+            return JSONResponse(
+                {
+                    "status": "completed",
+                    "share_id": share_id,
+                    "share_url": f"{default_public_base_url()}/s/{share_id}",
+                    "passcode": passcode,
+                    "expires_at": str(created.get("expires_at") or ""),
+                    "photo_count": len(package.get("photos") or []),
+                    "download_enabled": True,
+                },
+                status_code=201,
+            )
+
+        async def start_child(_source: str, child_options: dict[str, Any]) -> dict[str, Any]:
+            payload = await facade_photos_workflow(
+                state_store=state_store,
+                action="daily_curate",
+                options=child_options,
+            )
+            normalized = _ingest_tool_response("photos_workflow", payload, state_store)
+            return normalized if isinstance(normalized, dict) else {"result": normalized}
+
+        if action == "retry":
+            payload = await retry_combined_curation(
+                repository=state_store.run_repository,
+                start_child=start_child,
+                run_id=run_id,
+            )
+            return JSONResponse(payload)
+
+        async def cancel_analysis(analysis_run_id: str) -> Any:
+            return await call_vendor("photo-ranker", "cancel_job", analysis_run_id)
+
+        payload = await stop_combined_curation(
+            repository=state_store.run_repository,
+            run_id=run_id,
+            confirm_run_id=confirm_run_id,
+            cancel_analysis=cancel_analysis,
         )
         return JSONResponse(payload)
 

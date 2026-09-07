@@ -180,6 +180,7 @@ class ChromeDevToolsMcpAssistant:
         self._stack: AsyncExitStack | None = None
         self._session = None
         self._errlog = None
+        self._discovered_tools: set[str] = set()
 
     def capabilities(self) -> dict[str, object]:
         return {
@@ -229,6 +230,7 @@ class ChromeDevToolsMcpAssistant:
             )
             await session.initialize()
             discovered = {tool.name for tool in (await session.list_tools()).tools}
+            self._discovered_tools = set(discovered)
             missing = _REQUIRED_TOOLS - discovered
             if missing:
                 raise RuntimeError(
@@ -386,6 +388,7 @@ class ChromeDevToolsMcpAssistant:
     async def close(self) -> None:
         stack, self._stack = self._stack, None
         self._session = None
+        self._discovered_tools = set()
         if stack is not None:
             await stack.aclose()
         if self._errlog is not None:
