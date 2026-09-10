@@ -84,7 +84,7 @@ from photos_mcp.interfaces.http.story_web import (
 API_PREFIX = "/mobile-client/v1"
 STORY_PREFIX = "/mobile-client/story"
 DOWNLOAD_PREFIX = "/mobile-client/download"
-ANDROID_APP_VERSION = "0.6.2"
+ANDROID_APP_VERSION = "0.6.3"
 MOBILE_SESSION_COOKIE = "photos_mobile_story_session"
 MAX_BODY_BYTES = 32 * 1024
 SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{8,160}$")

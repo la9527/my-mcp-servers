@@ -3,7 +3,7 @@
 - 작성일: 2026-09-10
 - 대상: PhotosMcp macOS 앱, Android 앱, Apple Photos, Google Photos, 로컬 추천 보관소, Story·공유, 인물·위치 데이터
 - 검토 방식: 저장소·DB 감사, 추천 게시 경로 감사, UX·복구 정책 감사의 독립 에이전트 3개 결과와 운영 DB read-only 실측을 통합
-- 상태: Phase 0 안전장치 구현·운영 데이터 교정·회귀 검증 완료, generation/current-head 전환은 후속 단계
+- 상태: Phase 0 완료. Phase 1 DB·파일 진단 및 Phase 2 수동 실행 generation/current-head 구현·검증 완료. 일일 자동화 전환·과거 backfill·앨범 게시 UI는 후속 단계.
 
 ## 1. 결정 요약
 
@@ -296,6 +296,10 @@ Google Picker 임시 metadata sidecar와 Android 암호화 GPS 원장은 다르�
 Phase 0은 기존 로컬 파일이나 앨범을 migration하지 않는다. 현재 96개 누적 group member와 94개 Apple album receipt는 그대로 유지한다. 과거 데이터를 자동 정리하면 사용자가 보려던 추천 앨범이 바뀔 수 있으므로 current-head backfill과 dry-run 보고서가 먼저다.
 
 ## 9. 후속 구현 단계
+
+2026-09-10 추가 반영: 수동 날짜 실행의 scope/head와 복수 provider collection을 묶는 generation snapshot, 원자적 revision 비교 전환, 동등 결과 표시, current 모바일 홈을 구현했다. `album_snapshot_preview`는 실제 게시 없는 계획 함수로 제공한다. 완료된 전체 재분석만 전환하고 증분·부분·실패·충돌은 이력으로 남긴다. 기존 14개 collection의 자동 승격은 하지 않는다. 자세한 실측과 범위는 [검증 보고서 43](../../08-reports/01-validation/43-recommendation-generation-and-readonly-audit-2026-09-10.md)을 참조한다.
+
+통합 Apple/Google 실행은 collection이 여러 개이므로 구현에서는 head가 `generation_id`를 가리키고 그 snapshot이 `collection_ids`를 보관한다. 결과 집합이 같으면 최신 분석 provenance를 current로 전환하면서 `equivalent_to_generation_id`를 남긴다.
 
 ### Phase 1 — 무결성 진단과 안전한 backfill
 

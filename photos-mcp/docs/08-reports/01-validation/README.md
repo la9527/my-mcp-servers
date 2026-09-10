@@ -1,5 +1,7 @@
 # 실행 검증 보고서
 
+- [2026-09-10 추천 버전·현재 결과와 읽기 전용 진단](43-recommendation-generation-and-readonly-audit-2026-09-10.md): 수동 전체 재분석의 복수 provider snapshot과 원자적 current 전환, 실패·증분·동시 실행 보호를 구현했다. 운영 로컬 파일 96개의 hash를 검증하고 과거 집계 차이 한 건을 자동 변경 없이 식별했다.
+
 실제 앱 또는 MCP 검증 결과를 날짜가 포함된 Markdown 파일로 추가한다.
 
 권장 파일명:

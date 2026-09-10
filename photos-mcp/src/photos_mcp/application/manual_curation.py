@@ -10,6 +10,9 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from photos_mcp.application.story_generation import ensure_scoped_story
+from photos_mcp.application.recommendation_lifecycle import (
+    begin_manual_recommendation_version, recommendation_version_projection,
+)
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 from photos_mcp.infrastructure.vendor_adapter.photo_source import PhotoSourcePort
 
@@ -435,6 +438,7 @@ async def dispatch_next_manual_curation(
     request = dict(operation.get("request") or {})
     request["operation_id"] = operation_id
     try:
+        begin_manual_recommendation_version(repository, operation)
         started = await starter(request)
         run_id = str(started.get("automation_run_id") or started.get("run_id") or "")
         if not run_id:
@@ -446,6 +450,11 @@ async def dispatch_next_manual_curation(
             result={"accepted": True},
         )
     except Exception as exc:
+        if repository.get_recommendation_generation(operation_id):
+            repository.finish_recommendation_generation(
+                generation_id=operation_id, collection_ids=set(), story_id="",
+                outcome="failed", complete_scope=False, recommended_count=0,
+            )
         return repository.update_curation_operation(
             operation_id,
             status="failed",
@@ -506,6 +515,27 @@ def reconcile_manual_curation_operations(
             "unfinished_count": max(0, int(parent.get("unfinished_count") or 0)),
             **_manual_failure_projection(repository, parent),
         }
+        if operation.get("origin") in {"android", "mac_app"}:
+            # Old operations lack a start revision: record them for audit only.
+            had_version = repository.get_recommendation_generation(operation["operation_id"]) is not None
+            begin_manual_recommendation_version(repository, operation)
+            children = [repository.get_automation_run(str(cid)) or {}
+                        for cid in dict(parent.get("child_run_ids") or {}).values()]
+            complete_scope = (
+                had_version and bool(request.get("reanalyze"))
+                and not result["unfinished_count"] and not result["source_errors"]
+                and set(dict(parent.get("child_run_ids") or {})) == set(request.get("sources") or [])
+                and all(child.get("status") == "completed" for child in children)
+            )
+            repository.finish_recommendation_generation(
+                generation_id=operation["operation_id"],
+                collection_ids=_manual_collection_ids(repository, parent),
+                story_id=story_id, outcome=status, complete_scope=complete_scope,
+                recommended_count=result["recommended_count"],
+            )
+            result["recommendation_version"] = recommendation_version_projection(
+                repository, operation["operation_id"],
+            )
         repository.update_curation_operation(
             str(operation["operation_id"]),
             status=status if status in TERMINAL_OPERATION_STATUSES else "failed",
@@ -573,4 +603,5 @@ def manual_operation_projection(repository: RunRepository, operation_id: str) ->
         "error_stage": failure["error_stage"],
         "source_errors": failure["source_errors"],
         "retry_available": bool((parent or {}).get("retry_available", True)),
+        "recommendation_version": recommendation_version_projection(repository, operation_id),
     }

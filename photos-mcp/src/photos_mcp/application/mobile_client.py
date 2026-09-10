@@ -362,6 +362,18 @@ def current_mobile_story(
     *,
     identity_repository: PersonIdentityRepository | None = None,
 ) -> dict[str, Any]:
+    snapshots = repository.list_current_recommendation_snapshots()
+    if snapshots:
+        for version in snapshots:
+            snapshot = version["snapshot"]
+            if not snapshot.get("asset_ids"):
+                # A completed empty result is a real current state, not a
+                # reason to resurrect an older recommendation archive.
+                return {}
+            story = repository.get_story_manifest(snapshot.get("story_id") or "")
+            if story and story.get("status") != "deleted":
+                return mobile_story_projection(story)
+        return {}
     # Story reads must never create or resurrect a manifest as a side effect.
     # The desktop and Android clients therefore project the same newest visible
     # manifest, while explicit analysis/refresh commands remain the only writers.

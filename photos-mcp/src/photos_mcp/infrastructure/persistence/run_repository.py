@@ -10,6 +10,9 @@ import time
 from typing import Any
 
 from photos_mcp.infrastructure.runtime.paths import photo_ranker_runtime_root
+from photos_mcp.infrastructure.persistence.recommendation_versions import (
+    RecommendationVersionsMixin, VERSION_SCHEMA,
+)
 
 
 ACTIVE_RUN_STATUSES = {
@@ -44,7 +47,7 @@ def _decode(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
-class RunRepository:
+class RunRepository(RecommendationVersionsMixin):
     """Canonical workflow, approval, and mutation receipt store.
 
     The default path is the vendor job database so the facade and the ranking
@@ -75,6 +78,7 @@ class RunRepository:
 
     def _init_schema(self) -> None:
         with self._lock:
+            self._conn.executescript(VERSION_SCHEMA)
             self._conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS workflow_runs (
