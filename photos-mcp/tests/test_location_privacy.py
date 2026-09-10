@@ -65,7 +65,7 @@ def test_offline_gazetteer_derives_city_and_timezone_without_network() -> None:
         provenance="embedded_exif",
     )
 
-    assert seoul is not None and seoul["owner_label"] == "서울 일대"
+    assert seoul is not None and seoul["owner_label"] == "서울"
     assert seoul["location_timezone"] == "Asia/Seoul"
     assert paris is not None and paris["location_timezone"] == "Europe/Paris"
     assert remote is not None and remote["owner_label"] == ""
@@ -98,7 +98,7 @@ def test_same_scene_inference_is_safe_label_only_and_idempotent(tmp_path: Path) 
     safe = repo.get_recommendation_asset_location("candidate")
 
     assert safe is not None
-    assert safe["label"] == "서울 일대 (추정)"
+    assert safe["label"] == "서울"
     assert safe["status"] == "contextual_estimate"
     assert safe["provenance"] == "same_scene_gps_anchor"
     assert safe["confidence"] == 0.9
@@ -175,7 +175,14 @@ def test_repository_schema_contains_timezone_and_separate_inference_table(tmp_pa
         )
     }
 
-    assert {"location_timezone", "location_timezone_source"} <= private_columns
+    assert {
+        "location_timezone",
+        "location_timezone_source",
+        "resolution_status",
+        "google_place_id",
+        "poi_type",
+        "provider_checked_at",
+    } <= private_columns
     assert "recommendation_asset_location_inferences" in tables
 
 
@@ -210,7 +217,7 @@ def test_nearby_clock_time_inference_requires_an_actual_timestamp(tmp_path: Path
     assert infer_contextual_locations(repo, collection_id) == 1
     timed = repo.get_recommendation_asset_location("timed")
 
-    assert timed is not None and timed["label"] == "부산 일대 (추정)"
+    assert timed is not None and timed["label"] == "부산"
     assert timed["provenance"] == "nearby_time_gps_anchor"
     assert timed["confidence"] == 0.72
     assert repo.get_recommendation_asset_location("date-only") is None

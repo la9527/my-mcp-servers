@@ -1,0 +1,530 @@
+"""Privacy-safe projections for the PhotosMcp Android companion."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+import hashlib
+from typing import Any, Callable
+
+from photos_mcp.application.combined_curation import combined_curation_status
+from photos_mcp.application.person_identity_repository import PersonIdentityRepository
+from photos_mcp.infrastructure.persistence.run_repository import RunRepository
+
+
+MOBILE_SCHEMA_VERSION = 1
+TERMINAL_EVENT_STATUSES = {
+    "completed",
+    "partial",
+    "partial_timeout",
+    "failed",
+    "cancelled",
+    "interrupted",
+}
+_DERIVED_SOURCE_ERROR_CODES = {"google_mcp_gate_failed"}
+
+
+def _bounded_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _text(value: Any, limit: int = 160) -> str:
+    return str(value or "")[:limit]
+
+
+def mobile_envelope(data: Any, *, next_cursor: str | None = None) -> dict[str, Any]:
+    return {
+        "schema_version": MOBILE_SCHEMA_VERSION,
+        "server_time": datetime.now(UTC).isoformat(),
+        "data": data,
+        "next_cursor": next_cursor,
+    }
+
+
+def mobile_run_projection(repository: RunRepository, run_id: str) -> dict[str, Any]:
+    status = combined_curation_status(
+        repository=repository,
+        run_id=run_id,
+        prefer_active=False,
+    )
+    if status.get("status") == "not_found":
+        return {"run_id": _text(run_id, 80), "status": "not_found", "terminal": True}
+    children = []
+    for provider, child in sorted(dict(status.get("children") or {}).items()):
+        if not isinstance(child, dict):
+            continue
+        children.append(
+            {
+                "provider": _text(provider, 32),
+                "status": _text(child.get("status"), 32),
+                "terminal": bool(child.get("terminal")),
+                "processed_count": _bounded_int(child.get("processed_count")),
+                "recommended_count": _bounded_int(child.get("recommended_count")),
+                "error_code": _text(child.get("error_code"), 48),
+            }
+        )
+    source_errors = [
+        {
+            "source": item["provider"],
+            "status": item["status"],
+            "error_code": item["error_code"],
+        }
+        for item in children
+        if item["error_code"]
+        or item["status"] in {"failed", "cancelled", "interrupted"}
+    ][:8]
+    primary_error_code = _text(
+        status.get("gate_error_code") or status.get("error_code"), 48
+    )
+    if not primary_error_code:
+        primary_error_code = next(
+            (
+                item["error_code"]
+                for item in source_errors
+                if item["error_code"]
+                and item["error_code"] not in _DERIVED_SOURCE_ERROR_CODES
+            ),
+            "",
+        )
+    if not primary_error_code:
+        primary_error_code = next(
+            (item["error_code"] for item in source_errors if item["error_code"]),
+            "",
+        )
+    gate_status = _text(status.get("gate_status"), 32)
+    error_stage = (
+        "google_mcp_readiness"
+        if gate_status == "failed"
+        else "provider_processing"
+        if source_errors
+        else "workflow"
+        if status.get("status") in {"failed", "interrupted"}
+        else ""
+    )
+    return {
+        "run_id": _text(status.get("run_id"), 80),
+        "status": _text(status.get("status"), 32),
+        "terminal": bool(status.get("terminal")),
+        "source": _text(status.get("source"), 24),
+        "trigger": _text(status.get("trigger"), 32),
+        "run_kind": (
+            "date_story"
+            if status.get("scope_kind") == "capture_date_bounded"
+            else "daily_curation"
+        ),
+        "date_from": _text(status.get("date_from"), 32),
+        "date_to": _text(status.get("date_to"), 32),
+        "timezone": _text(status.get("timezone") or "Asia/Seoul", 40),
+        "operation_id": _text(status.get("operation_id"), 80),
+        "story_id": _text(status.get("story_id"), 160),
+        "lookback_days": _bounded_int(status.get("lookback_days")),
+        "requested_limit": min(1000, _bounded_int(status.get("requested_limit"))),
+        "timeout_seconds": min(21600, _bounded_int(status.get("timeout_seconds"))),
+        "remaining_seconds": min(21600, _bounded_int(status.get("remaining_seconds"))),
+        "created_at": _text(status.get("created_at"), 48),
+        "completed_at": _text(status.get("completed_at"), 48),
+        "processed_count": _bounded_int(status.get("processed_count")),
+        "recommended_count": _bounded_int(status.get("recommended_count")),
+        "materialized_count": _bounded_int(status.get("materialized_count")),
+        "failed_count": _bounded_int(status.get("failed_count")),
+        "failed_source_count": _bounded_int(status.get("failed_source_count")),
+        "album_published_count": _bounded_int(status.get("album_published_count")),
+        "album_publish_failed_count": _bounded_int(
+            status.get("album_publish_failed_count")
+        ),
+        "unfinished_count": _bounded_int(status.get("unfinished_count")),
+        "error_code": primary_error_code,
+        "error_stage": error_stage,
+        "source_errors": source_errors,
+        "retry_available": bool(status.get("retry_available")),
+        "stop_available": bool(status.get("stop_available")),
+        "children": children,
+    }
+
+
+def list_mobile_runs(
+    repository: RunRepository,
+    *,
+    offset: int = 0,
+    limit: int = 20,
+) -> tuple[list[dict[str, Any]], str | None]:
+    ids = [
+        _text(item.get("automation_run_id"), 80)
+        for item in repository.list_automation_runs()
+        if str(item.get("provider") or "") == "combined"
+    ]
+    ids = [value for value in reversed(ids) if value]
+    window = ids[offset : offset + limit]
+    next_cursor = str(offset + len(window)) if offset + len(window) < len(ids) else None
+    return [mobile_run_projection(repository, run_id) for run_id in window], next_cursor
+
+
+def mobile_timeline(run: dict[str, Any]) -> list[dict[str, Any]]:
+    status = str(run.get("status") or "unknown")
+    children = {str(item.get("provider")): item for item in run.get("children") or []}
+    child_states = set()
+    for provider, child in children.items():
+        child_states.add(str(child.get("status") or "unknown"))
+    terminal = bool(run.get("terminal"))
+    stages = [
+        ("discovering", "사진 범위 확인", "completed" if children else "running"),
+        (
+            "importing",
+            "Apple·Google 사진 준비",
+            "completed"
+            if children and child_states <= TERMINAL_EVENT_STATUSES
+            else "running"
+            if children
+            else "pending",
+        ),
+        (
+            "analyzing",
+            "품질·장면 분석",
+            "completed" if _bounded_int(run.get("processed_count")) else "pending",
+        ),
+        (
+            "materializing",
+            "추천 파일 저장",
+            "completed" if _bounded_int(run.get("materialized_count")) else "pending",
+        ),
+        (
+            "publishing_album",
+            "앨범 반영",
+            "completed" if _bounded_int(run.get("album_published_count")) else "pending",
+        ),
+        (
+            "generating_story",
+            "Story 구성",
+            "completed" if terminal and status in {"completed", "partial", "partial_timeout"} else "pending",
+        ),
+    ]
+    if status == "awaiting_user_action":
+        stages.insert(1, ("waiting_user_action", "사용자 확인 필요", "action_required"))
+    if status in {"failed", "cancelled", "interrupted"}:
+        for index, (key, label, stage_status) in enumerate(stages):
+            if stage_status in {"running", "pending"}:
+                stages[index] = (key, label, "failed" if stage_status == "running" else "pending")
+                break
+    return [
+        {"stage": key, "label": label, "status": stage_status}
+        for key, label, stage_status in stages
+    ]
+
+
+def _mobile_confirmed_people(value: Any) -> list[dict[str, str]]:
+    people: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in value if isinstance(value, (list, tuple)) else ():
+        if not isinstance(item, dict):
+            continue
+        display_name = _text(item.get("display_name"), 80).strip()
+        if not display_name or display_name in seen:
+            continue
+        seen.add(display_name)
+        people.append({"display_name": display_name})
+        if len(people) >= 32:
+            break
+    return people
+
+
+def _mobile_story_people_fields(source: dict[str, Any]) -> dict[str, Any]:
+    """Strip a Story v3 people block down to confirmed presentation fields."""
+
+    people = _mobile_confirmed_people(source.get("confirmed_people"))
+    if not people:
+        return {}
+    names = [item["display_name"] for item in people]
+    # Rebuild rather than copying the caption so an identity ref, revision, or
+    # other internal text can never hitch a ride in an otherwise safe field.
+    return {
+        "confirmed_people": people,
+        "people_caption": _text(f"함께한 사람: {', '.join(names)}", 400),
+    }
+
+
+def mobile_story_projection(story: dict[str, Any]) -> dict[str, Any]:
+    people_are_server_derived = (
+        str(story.get("schema_version") or "") == "recommendation-story-v3"
+    )
+    photos = []
+    for photo in story.get("photos") or []:
+        if not isinstance(photo, dict):
+            continue
+        asset_id = _text(photo.get("asset_id"), 160)
+        if not asset_id:
+            continue
+        photo_projection = {
+            "asset_id": asset_id,
+            "title": _text(photo.get("title"), 200),
+            "alt": _text(photo.get("alt"), 300),
+            "capture_date": _text(photo.get("capture_date"), 32),
+            "location": _text(photo.get("location"), 120),
+            "location_status": _text(photo.get("location_status"), 32),
+            "recommendation_slot": _bounded_int(photo.get("recommendation_slot")),
+            "availability": {
+                "recommended_copy": True,
+                "preview": True,
+                "original_download": False,
+            },
+        }
+        if people_are_server_derived:
+            photo_projection.update(_mobile_story_people_fields(photo))
+        photos.append(photo_projection)
+    valid_ids = {item["asset_id"] for item in photos}
+    chapters = []
+    for chapter in story.get("chapters") or []:
+        if not isinstance(chapter, dict):
+            continue
+        asset_ids = [
+            _text(value, 160)
+            for value in chapter.get("asset_ids") or []
+            if _text(value, 160) in valid_ids
+        ]
+        location_groups = []
+        for group in chapter.get("location_groups") or []:
+            if not isinstance(group, dict):
+                continue
+            location_groups.append(
+                {
+                    "label": _text(group.get("label"), 120),
+                    "status": _text(group.get("status"), 32),
+                    "asset_ids": [
+                        _text(value, 160)
+                        for value in group.get("asset_ids") or []
+                        if _text(value, 160) in valid_ids
+                    ],
+                }
+            )
+        chapter_projection = {
+            "date": _text(chapter.get("date"), 32),
+            "title": _text(chapter.get("title"), 200),
+            "summary": _text(chapter.get("summary"), 1000),
+            "locations": [_text(value, 120) for value in chapter.get("locations") or []],
+            "asset_ids": asset_ids,
+            "location_groups": location_groups,
+        }
+        if people_are_server_derived:
+            chapter_projection.update(_mobile_story_people_fields(chapter))
+        chapters.append(chapter_projection)
+    generation = story.get("generation") if isinstance(story.get("generation"), dict) else {}
+    scope = story.get("scope") if isinstance(story.get("scope"), dict) else {}
+    people_overview = []
+    if people_are_server_derived:
+        for item in story.get("people_overview") or []:
+            if not isinstance(item, dict):
+                continue
+            display_name = _text(item.get("display_name"), 80).strip()
+            if not display_name:
+                continue
+            people_overview.append(
+                {
+                    "display_name": display_name,
+                    "photo_count": _bounded_int(item.get("photo_count")),
+                }
+            )
+            if len(people_overview) >= 32:
+                break
+    return {
+        "story_id": _text(story.get("story_id"), 160),
+        "revision": _bounded_int(story.get("revision")) or 1,
+        "title": _text(story.get("title"), 200),
+        "subtitle": _text(story.get("subtitle"), 1000),
+        "closing": _text(story.get("closing"), 1000),
+        "date_from": _text(story.get("date_from"), 32),
+        "date_to": _text(story.get("date_to"), 32),
+        "updated_at": _text(story.get("updated_at"), 48),
+        "origin": "manual" if scope.get("origin_run_id") else "automatic",
+        "origin_run_id": _text(scope.get("origin_run_id"), 80),
+        "photo_count": len(photos),
+        "generation": {
+            "source": _text(generation.get("source"), 48),
+            "model": _text(generation.get("model"), 80),
+        },
+        "photos": photos,
+        "chapters": chapters,
+        "people_overview": people_overview,
+        "location_overview": [
+            {
+                "label": _text(item.get("label"), 120),
+                "status": _text(item.get("status"), 32),
+                "count": _bounded_int(item.get("count")),
+            }
+            for item in story.get("location_overview") or []
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def current_mobile_story(
+    repository: RunRepository,
+    *,
+    identity_repository: PersonIdentityRepository | None = None,
+) -> dict[str, Any]:
+    # Story reads must never create or resurrect a manifest as a side effect.
+    # The desktop and Android clients therefore project the same newest visible
+    # manifest, while explicit analysis/refresh commands remain the only writers.
+    stories = repository.list_story_manifests(limit=1)
+    if not stories:
+        return {}
+    return mobile_story_projection(stories[0])
+
+
+def mobile_dashboard(
+    repository: RunRepository,
+    *,
+    daemon_status: str,
+    identity_repository: PersonIdentityRepository | None = None,
+) -> dict[str, Any]:
+    runs, _next = list_mobile_runs(repository, limit=1)
+    story = current_mobile_story(
+        repository,
+        identity_repository=identity_repository,
+    )
+    pending_actions = repository.list_user_action_requests(statuses={"pending", "notified"})
+    return {
+        "daemon_status": _text(daemon_status, 32),
+        "latest_run": runs[0] if runs else None,
+        "latest_story": (
+            {
+                "story_id": story.get("story_id"),
+                "revision": story.get("revision"),
+                "title": story.get("title"),
+                "photo_count": len(story.get("photos") or []),
+                "updated_at": story.get("updated_at"),
+                "people_overview": story.get("people_overview") or [],
+            }
+            if story
+            else None
+        ),
+        "action_required_count": len(pending_actions),
+    }
+
+
+IdentityActionHandleFactory = Callable[[str, int], str]
+
+
+def _mobile_person(
+    repository: PersonIdentityRepository,
+    person_identity_id: str,
+    *,
+    action_handle_factory: IdentityActionHandleFactory | None = None,
+) -> dict[str, Any]:
+    identity = repository.get_identity(person_identity_id)
+    personal_allowed = repository.current_consent(
+        identity.person_identity_id, "owner"
+    )
+    family_allowed = repository.current_consent(
+        identity.person_identity_id, "family_share"
+    )
+    item: dict[str, Any] = {
+        "identity_status": _text(identity.identity_status, 32),
+    }
+    may_show_name = (
+        identity.identity_status == "user_confirmed"
+        and identity.name_status == "user_confirmed"
+    )
+    if may_show_name:
+        display_name = _text(identity.display_name.strip(), 80)
+        if display_name:
+            item["display_name"] = display_name
+    if identity.identity_status == "user_confirmed":
+        item["story_name_consent"] = {
+            "personal_story": personal_allowed,
+            "family_share": family_allowed,
+        }
+        if action_handle_factory is not None:
+            item["consent_action_handle"] = action_handle_factory(
+                identity.person_identity_id,
+                identity.identity_revision,
+            )
+    return item
+
+
+def mobile_person(
+    repository: PersonIdentityRepository,
+    person_identity_id: str,
+    *,
+    action_handle_factory: IdentityActionHandleFactory | None = None,
+) -> dict[str, Any]:
+    """Project one identity without exposing its repository identifier."""
+
+    return _mobile_person(
+        repository,
+        person_identity_id,
+        action_handle_factory=action_handle_factory,
+    )
+
+
+def mobile_people(
+    repository: PersonIdentityRepository,
+    *,
+    action_handle_factory: IdentityActionHandleFactory | None = None,
+) -> list[dict[str, Any]]:
+    """Build a minimal, path-free projection for the owner mobile app.
+
+    Records are rebuilt from an allow-list. Because this is the authenticated
+    owner-only consent screen, an owner-confirmed identity/name remains visible
+    while its Story consent is off. Candidate and provider-asserted names are
+    never copied.
+    """
+
+    people: list[dict[str, Any]] = []
+    for identity in repository.list_identities():
+        people.append(
+            _mobile_person(
+                repository,
+                identity.person_identity_id,
+                action_handle_factory=action_handle_factory,
+            )
+        )
+    return people
+
+
+def mobile_people_review_summary(
+    repository: PersonIdentityRepository,
+) -> dict[str, int]:
+    """Build count-only review state without identity or face material."""
+
+    summary = repository.identity_review_summary()
+    counts = {
+        "candidate_identity_count": _bounded_int(summary.candidate_identity_count),
+        "conflicted_identity_count": _bounded_int(summary.conflicted_identity_count),
+        "candidate_membership_count": _bounded_int(summary.candidate_membership_count),
+        "pending_lineage_hold_count": _bounded_int(summary.pending_lineage_hold_count),
+    }
+    counts["total_review_count"] = sum(counts.values())
+    return counts
+
+
+def mobile_events(
+    repository: RunRepository,
+    *,
+    acknowledged: set[str],
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for item in reversed(repository.list_automation_runs()):
+        if str(item.get("provider") or "") != "combined":
+            continue
+        run_id = _text(item.get("automation_run_id"), 80)
+        status = _text(item.get("status"), 32)
+        if not run_id or status not in TERMINAL_EVENT_STATUSES | {"awaiting_user_action"}:
+            continue
+        stamp = _text(item.get("completed_at") or item.get("updated_at") or item.get("created_at"), 48)
+        digest = hashlib.sha256(f"{run_id}\n{status}\n{stamp}".encode()).hexdigest()[:24]
+        event_id = f"evt_{digest}"
+        events.append(
+            {
+                "event_id": event_id,
+                "category": "action_required" if status == "awaiting_user_action" else "run_finished",
+                "status": status,
+                "run_id": run_id,
+                "created_at": stamp,
+                "acknowledged": event_id in acknowledged,
+            }
+        )
+        if len(events) >= limit:
+            break
+    return events

@@ -10,7 +10,11 @@ import json
 import secrets
 from typing import Any
 
-from photos_mcp.application.story_generation import ensure_recommendation_story
+from photos_mcp.application.story_generation import (
+    StoryIdentityRepository,
+    ensure_recommendation_story,
+    normalize_story_person_evidence,
+)
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
 
@@ -47,13 +51,45 @@ def _passcode_hash(passcode: str, salt: bytes) -> str:
     return _b64encode(digest)
 
 
+def _identity_revocation_tag(secret: bytes, person_ref: str) -> str:
+    """Build an internal-only, unlinkable share revocation index key."""
+
+    return _b64encode(
+        hmac.new(
+            secret,
+            f"person-share-revocation-v1\0{person_ref}".encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+    )
+
+
 def build_recommendation_story(
     repository: RunRepository,
     *,
     now: datetime | None = None,
+    identity_repository: StoryIdentityRepository | None = None,
 ) -> dict[str, Any]:
     """Return an idempotent evidence-backed StoryManifest."""
-    return ensure_recommendation_story(repository, now=now)
+    return ensure_recommendation_story(
+        repository,
+        now=now,
+        identity_repository=identity_repository,
+    )
+
+
+def _public_people_fields(
+    person_refs: set[str],
+    people_by_ref: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    if any(person_ref not in people_by_ref for person_ref in person_refs):
+        raise ValueError("unknown_story_person_ref")
+    names = [people_by_ref[person_ref]["display_name"] for person_ref in sorted(person_refs)]
+    if not names:
+        return {}
+    return {
+        "confirmed_people": [{"display_name": name} for name in names],
+        "people_caption": f"함께한 사람: {', '.join(names)}",
+    }
 
 
 class StoryShareService:
@@ -77,6 +113,8 @@ class StoryShareService:
         duration_days: int = DEFAULT_SHARE_DAYS,
         download_enabled: bool = True,
         passcode: str = "",
+        include_person_names: bool = False,
+        identity_repository: StoryIdentityRepository | None = None,
     ) -> tuple[dict[str, Any], str]:
         days = max(1, min(int(duration_days), MAX_SHARE_DAYS))
         code = passcode.strip() or f"{secrets.randbelow(1_000_000):06d}"
@@ -85,17 +123,35 @@ class StoryShareService:
         now = self._now_fn().astimezone(UTC)
         salt = secrets.token_bytes(16)
         share_id = secrets.token_urlsafe(18)
+        story_photos = [
+            photo
+            for photo in story.get("photos") or []
+            if isinstance(photo, dict) and photo.get("asset_id")
+        ]
+        local_asset_ids = [str(photo["asset_id"]) for photo in story_photos]
+        if include_person_names and identity_repository is None:
+            raise ValueError("identity_repository_required")
+        family_identity = normalize_story_person_evidence(
+            (
+                identity_repository.build_story_person_evidence(
+                    local_asset_ids,
+                    audience="family_share",
+                )
+                if include_person_names and identity_repository is not None
+                else {"person_refs": [], "assets": []}
+            ),
+            local_asset_ids=local_asset_ids,
+        )
         public_photos = []
         public_id_by_ref: dict[str, str] = {}
         public_id_by_asset: dict[str, str] = {}
-        for index, photo in enumerate(story.get("photos") or [], start=1):
-            if not isinstance(photo, dict) or not photo.get("asset_id"):
-                continue
+        for index, photo in enumerate(story_photos, start=1):
             public_asset_id = secrets.token_urlsafe(12)
             photo_ref = str(photo.get("photo_ref") or "")
             public_id_by_asset[str(photo["asset_id"])] = public_asset_id
             if photo_ref:
                 public_id_by_ref[photo_ref] = public_asset_id
+            family_refs = set(family_identity["refs_by_asset"][str(photo["asset_id"])])
             public_photos.append(
                 {
                     "public_asset_id": public_asset_id,
@@ -108,6 +164,17 @@ class StoryShareService:
                     "alt": str(photo.get("alt") or "공유 사진")[:160],
                     "location": str(photo.get("share_location") or "")[:80],
                     "location_status": str(photo.get("location_status") or "unknown")[:40],
+                    "latitude": photo.get("latitude"),
+                    "longitude": photo.get("longitude"),
+                    "google_place_id": str(photo.get("google_place_id") or "")[:255],
+                    "poi_type": str(photo.get("poi_type") or "")[:80],
+                    "resolution_status": str(
+                        photo.get("resolution_status") or "coordinate_only"
+                    )[:40],
+                    **_public_people_fields(
+                        family_refs,
+                        family_identity["people_by_ref"],
+                    ),
                 }
             )
         public_chapters = []
@@ -134,6 +201,40 @@ class StoryShareService:
                     continue
                 label = str(photo.get("location") or "").strip() or "위치 미상"
                 location_groups.setdefault(label, []).append(public_id)
+            public_location_groups = []
+            for label, group_ids in location_groups.items():
+                mapped = next(
+                    (
+                        photo
+                        for photo in public_photos
+                        if photo.get("public_asset_id") in group_ids
+                        and photo.get("latitude") is not None
+                        and photo.get("longitude") is not None
+                    ),
+                    None,
+                )
+                group = {
+                    "label": label,
+                    "status": (
+                        "unknown"
+                        if label == "위치 미상"
+                        else "contextual_estimate"
+                        if any(
+                            photo.get("location_status") == "contextual_estimate"
+                            for photo in public_photos
+                            if photo.get("public_asset_id") in group_ids
+                        )
+                        else "confirmed_gps"
+                    ),
+                    "public_asset_ids": group_ids,
+                }
+                if mapped is not None:
+                    group["map"] = {
+                        "latitude": round(float(mapped["latitude"]), 7),
+                        "longitude": round(float(mapped["longitude"]), 7),
+                        "google_place_id": str(mapped.get("google_place_id") or "")[:255],
+                    }
+                public_location_groups.append(group)
             public_chapters.append(
                 {
                     "chapter_id": str(chapter.get("chapter_id") or "")[:40],
@@ -149,37 +250,41 @@ class StoryShareService:
                             and str(photo.get("location") or "")
                         }
                     ),
-                    "location_groups": [
+                    "location_groups": public_location_groups,
+                    **_public_people_fields(
                         {
-                            "label": label,
-                            "status": (
-                                "unknown"
-                                if label == "위치 미상"
-                                else "contextual_estimate"
-                                if any(
-                                    photo.get("location_status") == "contextual_estimate"
-                                    for photo in public_photos
-                                    if photo.get("public_asset_id") in group_ids
-                                )
-                                else "confirmed_gps"
-                            ),
-                            "public_asset_ids": group_ids,
-                        }
-                        for label, group_ids in location_groups.items()
-                    ],
+                            person_ref
+                            for photo in public_photos
+                            if photo.get("public_asset_id") in ids
+                            for person_ref in family_identity["refs_by_asset"].get(
+                                str(photo.get("local_asset_id") or ""),
+                                [],
+                            )
+                        },
+                        family_identity["people_by_ref"],
+                    ),
                 }
             )
         overview_groups: dict[str, list[dict[str, Any]]] = {}
         for photo in public_photos:
             label = str(photo.get("location") or "").strip() or "위치 미상"
             overview_groups.setdefault(label, []).append(photo)
+        family_photo_counts: dict[str, int] = {}
+        for photo in public_photos:
+            for person_ref in set(
+                family_identity["refs_by_asset"].get(
+                    str(photo.get("local_asset_id") or ""),
+                    [],
+                )
+            ):
+                family_photo_counts[person_ref] = family_photo_counts.get(person_ref, 0) + 1
         package = {
             "share_id": share_id,
             "story_id": str(story.get("story_id") or ""),
             "story_revision": max(1, int(story.get("revision") or 1)),
             "status": "active",
             "session_version": 1,
-            "privacy_profile": "share_safe",
+            "privacy_profile": "family_detailed",
             "title": str(story.get("title") or "사진 이야기")[:160],
             "subtitle": str(story.get("subtitle") or "")[:300],
             "closing": str(story.get("closing") or "")[:300],
@@ -207,6 +312,20 @@ class StoryShareService:
                 }
                 for label, items in overview_groups.items()
             ],
+            "people_overview": [
+                {
+                    "display_name": family_identity["people_by_ref"][person_ref]["display_name"],
+                    "photo_count": family_photo_counts[person_ref],
+                }
+                for person_ref in sorted(family_photo_counts)
+            ],
+            "person_names_included": bool(include_person_names),
+            # Private package-only index. Public projections intentionally omit
+            # both these keyed tags and repository person identifiers.
+            "identity_revocation_tags": sorted(
+                _identity_revocation_tag(self._secret, person_ref)
+                for person_ref in family_photo_counts
+            ),
             "download_enabled": bool(download_enabled),
             "derivative_policy": "share-jpeg-2048-q88-v1",
             "passcode_salt": _b64encode(salt),
@@ -309,6 +428,26 @@ class StoryShareService:
         self.repository.upsert_shared_story_package(updated)
         return True
 
+    def revoke_for_person(self, person_identity_id: str) -> tuple[str, ...]:
+        """Revoke active name-bearing shares associated with one private id."""
+
+        tag = _identity_revocation_tag(self._secret, person_identity_id)
+        revoked: list[str] = []
+        for package in self.repository.list_shared_story_packages(limit=500):
+            if str(package.get("status") or "") != "active":
+                continue
+            tags = {
+                str(value)
+                for value in package.get("identity_revocation_tags") or []
+                if str(value)
+            }
+            if tag not in tags:
+                continue
+            share_id = str(package.get("share_id") or "")
+            if share_id and self.revoke(share_id):
+                revoked.append(share_id)
+        return tuple(revoked)
+
     @staticmethod
     def find_photo(package: dict[str, Any], public_asset_id: str) -> dict[str, Any] | None:
         return next(
@@ -340,6 +479,8 @@ class StoryShareService:
                 "created_at",
                 "expires_at",
                 "location_overview",
+                "people_overview",
+                "person_names_included",
             )
         }
         if include_story:
@@ -347,7 +488,9 @@ class StoryShareService:
                 {key: photo.get(key) for key in (
                     "public_asset_id", "photo_ref", "sequence", "capture_date", "title",
                     "summary", "alt", "location",
-                    "location_status",
+                    "location_status", "latitude", "longitude",
+                    "google_place_id", "poi_type", "resolution_status",
+                    "confirmed_people", "people_caption",
                 )}
                 for photo in package.get("photos") or []
                 if isinstance(photo, dict)
@@ -363,9 +506,19 @@ class StoryShareService:
                         "locations",
                         "public_asset_ids",
                         "location_groups",
+                        "confirmed_people",
+                        "people_caption",
                     )
                 }
                 for chapter in package.get("chapters") or []
                 if isinstance(chapter, dict)
             ]
+            for photo in safe["photos"]:
+                if not photo.get("confirmed_people"):
+                    photo.pop("confirmed_people", None)
+                    photo.pop("people_caption", None)
+            for chapter in safe["chapters"]:
+                if not chapter.get("confirmed_people"):
+                    chapter.pop("confirmed_people", None)
+                    chapter.pop("people_caption", None)
         return safe

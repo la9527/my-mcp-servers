@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+import os
 import sys
 from typing import Sequence
 
@@ -96,6 +97,10 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
 
     try:
         with acquire_single_instance_lock(config):
+            # Enable network-backed place enrichment only for the real daemon
+            # lifetime.  Diagnostic CLI modes and rejected duplicate launches
+            # must not leak this process-global setting into their callers.
+            os.environ.setdefault("PHOTOS_MCP_GOOGLE_LOCATION_ENABLED", "1")
             logger.info("single-instance lock acquired bundle_path=%s", config.bundle_path)
             state_store = PhotosMcpStateStore(
                 endpoint=config.endpoint,

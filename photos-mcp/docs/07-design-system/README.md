@@ -1,8 +1,8 @@
-# AppKit 디자인 시스템
+# PhotosMcp 디자인 시스템
 
 > 구현 기준: `src/photos_mcp/ui_theme.py`와 `*_appkit.py`
 
-Photos MCP UI는 macOS의 창, 입력, 색상, SF Symbols, 접근성 동작을 우선한다. 별도 이미지 mockup은 방향 참고일 뿐이며 실제 화면의 기준은 공통 토큰과 창 크기별 레이아웃 검증이다.
+Photos MCP UI는 각 플랫폼의 기본 입력·접근성 동작을 우선한다. macOS는 AppKit과 SF Symbols, Android는 system font와 로컬 VectorDrawable을 사용한다. 별도 이미지 mockup은 방향 참고일 뿐이며 실제 화면의 기준은 공통 토큰과 화면 크기별 레이아웃 검증이다.
 
 ## 문서 구성
 
@@ -10,6 +10,7 @@ Photos MCP UI는 macOS의 창, 입력, 색상, SF Symbols, 접근성 동작을 �
 - [컴포넌트](03-components.md): 버튼, 카드, 목록, 선택 상태
 - [화면 패턴](04-screen-patterns.md): 메인, 폴더 브라우저, 결과 갤러리, 뷰어
 - [접근성](05-accessibility.md): 키보드, VoiceOver, 대비, 상태 전달
+- [Android Companion](06-android-companion.md): 모바일 명칭, 색상, 아이콘, navigation, WebView 계약
 
 ## 설계 원칙
 

@@ -297,6 +297,7 @@ class JobDB:
             WHERE
                 status = 'running'
                 AND result_json IS NOT NULL
+                AND finished_at IS NOT NULL
             """
         ).rowcount
         if repaired_running_with_results:

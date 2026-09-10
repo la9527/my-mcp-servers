@@ -35,6 +35,7 @@ def test_build_py2app_setup_kwargs_uses_photos_mcp_bundle_defaults() -> None:
     assert "mcp" in kwargs["options"]["py2app"]["packages"]
     assert "bitarray" in kwargs["options"]["py2app"]["packages"]
     assert "bitstring" in kwargs["options"]["py2app"]["packages"]
+    assert "cryptography" in kwargs["options"]["py2app"]["packages"]
     assert "uvicorn" in kwargs["options"]["py2app"]["packages"]
     assert "anyio._backends._asyncio" in kwargs["options"]["py2app"]["includes"]
     assert "uvicorn.protocols.http.h11_impl" in kwargs["options"]["py2app"]["includes"]
@@ -78,6 +79,7 @@ def test_pyproject_declares_self_contained_runtime_extras() -> None:
     extras = data["project"]["optional-dependencies"]
 
     assert "uvicorn>=0.30" in dependencies
+    assert "cryptography>=44.0" in dependencies
     assert "photoscript" in extras["apple"]
     assert "wurlitzer>=3.0" in extras["apple"]
     assert "httpx>=0.27" in extras["vlm"]

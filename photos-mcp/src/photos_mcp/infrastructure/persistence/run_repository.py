@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -158,6 +159,30 @@ class RunRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_photo_automation_runs_status
                     ON photo_automation_runs(status, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS curation_operations (
+                    operation_id TEXT PRIMARY KEY,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    request_hash TEXT NOT NULL,
+                    origin TEXT NOT NULL,
+                    device_fingerprint TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    run_id TEXT NOT NULL DEFAULT '',
+                    request_json TEXT NOT NULL DEFAULT '{}',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    started_at TEXT NOT NULL DEFAULT '',
+                    completed_at TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_curation_operations_queue
+                    ON curation_operations(status, created_at);
+                CREATE TABLE IF NOT EXISTS curation_command_nonces (
+                    device_fingerprint TEXT NOT NULL,
+                    nonce_hash TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (device_fingerprint, nonce_hash)
+                );
                 CREATE TABLE IF NOT EXISTS browser_mission_runs (
                     mission_run_id TEXT PRIMARY KEY,
                     picker_session_id TEXT NOT NULL DEFAULT '',
@@ -269,6 +294,10 @@ class RunRepository:
                     timezone_source TEXT NOT NULL DEFAULT '',
                     location_timezone TEXT NOT NULL DEFAULT '',
                     location_timezone_source TEXT NOT NULL DEFAULT '',
+                    resolution_status TEXT NOT NULL DEFAULT 'coordinate_only',
+                    google_place_id TEXT NOT NULL DEFAULT '',
+                    poi_type TEXT NOT NULL DEFAULT '',
+                    provider_checked_at TEXT NOT NULL DEFAULT '',
                     privacy_class TEXT NOT NULL DEFAULT 'exact_private',
                     observed_at TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
@@ -367,6 +396,26 @@ class RunRepository:
             self._ensure_column_locked(
                 "recommendation_asset_locations_private",
                 "location_timezone_source",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column_locked(
+                "recommendation_asset_locations_private",
+                "resolution_status",
+                "TEXT NOT NULL DEFAULT 'coordinate_only'",
+            )
+            self._ensure_column_locked(
+                "recommendation_asset_locations_private",
+                "google_place_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column_locked(
+                "recommendation_asset_locations_private",
+                "poi_type",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column_locked(
+                "recommendation_asset_locations_private",
+                "provider_checked_at",
                 "TEXT NOT NULL DEFAULT ''",
             )
             self._conn.commit()
@@ -574,6 +623,352 @@ class RunRepository:
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [_decode(row["payload_json"], {}) for row in rows]
+
+    def terminal_curation_history_count(self) -> int:
+        """Count desktop/mobile history rows that are safe to remove.
+
+        Android's 작업 and 알림 screens are projections of these rows rather
+        than the vendor job table used by the desktop 작업 기록 screen.
+        """
+        terminal_automation = {
+            "completed",
+            "completed_empty",
+            "partial",
+            "partial_timeout",
+            "failed",
+            "cancelled",
+            "interrupted",
+        }
+        terminal_operations = terminal_automation
+        terminal_missions = {"completed", "failed", "cancelled", "interrupted"}
+        with self._lock:
+            total = 0
+            for table, statuses in (
+                ("photo_automation_runs", terminal_automation),
+                ("curation_operations", terminal_operations),
+                ("browser_mission_runs", terminal_missions),
+            ):
+                placeholders = ",".join("?" for _ in statuses)
+                total += int(
+                    self._conn.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE status IN ({placeholders})",  # noqa: S608
+                        tuple(sorted(statuses)),
+                    ).fetchone()[0]
+                )
+            removable_run_ids = {
+                str(row["automation_run_id"])
+                for row in self._conn.execute(
+                    "SELECT automation_run_id FROM photo_automation_runs WHERE status IN ("
+                    + ",".join("?" for _ in terminal_automation)
+                    + ")",
+                    tuple(sorted(terminal_automation)),
+                ).fetchall()
+            }
+            for row in self._conn.execute(
+                "SELECT status, request_type, payload_json FROM user_action_requests"
+            ).fetchall():
+                payload = _decode(row["payload_json"], {})
+                if str(row["status"] or "") in {"completed", "failed", "cancelled"} or str(
+                    payload.get("automation_run_id") or ""
+                ) in removable_run_ids or str(row["request_type"] or "").endswith("_failure"):
+                    total += 1
+        return total
+
+    def clear_terminal_curation_history(self) -> dict[str, int]:
+        """Remove terminal cross-client history while preserving active work.
+
+        Story manifests and durable recommendation copies intentionally have
+        their own lifecycle and are not deleted by clearing 작업 기록.
+        """
+        terminal_automation = {
+            "completed",
+            "completed_empty",
+            "partial",
+            "partial_timeout",
+            "failed",
+            "cancelled",
+            "interrupted",
+        }
+        terminal_operations = terminal_automation
+        terminal_missions = {"completed", "failed", "cancelled", "interrupted"}
+        counts = {
+            "automation_runs": 0,
+            "curation_operations": 0,
+            "browser_missions": 0,
+            "user_actions": 0,
+        }
+        with self._lock:
+            removable_run_ids = {
+                str(row["automation_run_id"])
+                for row in self._conn.execute(
+                    "SELECT automation_run_id FROM photo_automation_runs WHERE status IN ("
+                    + ",".join("?" for _ in terminal_automation)
+                    + ")",
+                    tuple(sorted(terminal_automation)),
+                ).fetchall()
+            }
+            removable_action_ids: list[str] = []
+            for row in self._conn.execute(
+                "SELECT request_id, status, request_type, payload_json FROM user_action_requests"
+            ).fetchall():
+                payload = _decode(row["payload_json"], {})
+                if str(row["status"] or "") in {"completed", "failed", "cancelled"} or str(
+                    payload.get("automation_run_id") or ""
+                ) in removable_run_ids or str(row["request_type"] or "").endswith("_failure"):
+                    removable_action_ids.append(str(row["request_id"]))
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                if removable_action_ids:
+                    placeholders = ",".join("?" for _ in removable_action_ids)
+                    cursor = self._conn.execute(
+                        f"DELETE FROM user_action_requests WHERE request_id IN ({placeholders})",  # noqa: S608
+                        tuple(removable_action_ids),
+                    )
+                    counts["user_actions"] = max(0, int(cursor.rowcount))
+                for key, table, statuses in (
+                    ("browser_missions", "browser_mission_runs", terminal_missions),
+                    ("curation_operations", "curation_operations", terminal_operations),
+                    ("automation_runs", "photo_automation_runs", terminal_automation),
+                ):
+                    placeholders = ",".join("?" for _ in statuses)
+                    cursor = self._conn.execute(
+                        f"DELETE FROM {table} WHERE status IN ({placeholders})",  # noqa: S608
+                        tuple(sorted(statuses)),
+                    )
+                    counts[key] = max(0, int(cursor.rowcount))
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return counts
+
+    def enqueue_curation_operation(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically register one durable command or return its prior receipt.
+
+        Reusing an idempotency key with a different canonical body is rejected
+        instead of silently starting an unrelated photo analysis.
+        """
+        operation_id = str(payload.get("operation_id") or "")
+        idempotency_key = str(payload.get("idempotency_key") or "")
+        request_hash = str(payload.get("request_hash") or "")
+        origin = str(payload.get("origin") or "")
+        if not operation_id or not idempotency_key or not request_hash or not origin:
+            raise ValueError("Curation operation requires id, idempotency, hash, and origin")
+        normalized = dict(payload)
+        now = _utcnow_iso()
+        created_at = str(normalized.get("created_at") or now)
+        normalized.setdefault("status", "queued")
+        normalized.setdefault("created_at", created_at)
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT * FROM curation_operations WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["request_hash"]) != request_hash:
+                    raise ValueError("idempotency_key_conflict")
+                return self._curation_operation_row(existing), False
+            self._conn.execute(
+                """INSERT INTO curation_operations
+                   (operation_id, idempotency_key, request_hash, origin,
+                    device_fingerprint, status, run_id, request_json, result_json,
+                    created_at, updated_at, started_at, completed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    operation_id,
+                    idempotency_key,
+                    request_hash,
+                    origin,
+                    str(normalized.get("device_fingerprint") or ""),
+                    str(normalized.get("status") or "queued"),
+                    str(normalized.get("run_id") or ""),
+                    _json(normalized.get("request") or {}),
+                    _json(normalized.get("result") or {}),
+                    created_at,
+                    now,
+                    str(normalized.get("started_at") or ""),
+                    str(normalized.get("completed_at") or ""),
+                ),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT * FROM curation_operations WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+        return self._curation_operation_row(row), True
+
+    def get_curation_operation(self, operation_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM curation_operations WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+        return self._curation_operation_row(row) if row is not None else None
+
+    def get_curation_operation_by_idempotency(
+        self,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM curation_operations WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        return self._curation_operation_row(row) if row is not None else None
+
+    def list_curation_operations(
+        self,
+        *,
+        statuses: set[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM curation_operations"
+        params: list[Any] = []
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            sql += f" WHERE status IN ({placeholders})"  # noqa: S608
+            params.extend(sorted(statuses))
+        sql += " ORDER BY created_at ASC LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._lock:
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [self._curation_operation_row(row) for row in rows]
+
+    def update_curation_operation(
+        self,
+        operation_id: str,
+        *,
+        status: str,
+        run_id: str = "",
+        result: dict[str, Any] | None = None,
+        started_at: str = "",
+        completed_at: str = "",
+    ) -> dict[str, Any] | None:
+        now = _utcnow_iso()
+        with self._lock:
+            self._conn.execute(
+                """UPDATE curation_operations SET status = ?, run_id = ?,
+                   result_json = ?, updated_at = ?,
+                   started_at = CASE WHEN ? != '' THEN ? ELSE started_at END,
+                   completed_at = CASE WHEN ? != '' THEN ? ELSE completed_at END
+                   WHERE operation_id = ?""",
+                (
+                    status,
+                    run_id,
+                    _json(result or {}),
+                    now,
+                    started_at,
+                    started_at,
+                    completed_at,
+                    completed_at,
+                    operation_id,
+                ),
+            )
+            self._conn.commit()
+        return self.get_curation_operation(operation_id)
+
+    def claim_next_curation_operation(self) -> dict[str, Any] | None:
+        """Claim one queued command while no combined analysis is active."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            active = self._conn.execute(
+                """SELECT 1 FROM photo_automation_runs
+                   WHERE provider = 'combined'
+                     AND status IN ('pending','running','waiting_source','waiting_model','writing')
+                   LIMIT 1"""
+            ).fetchone()
+            if active is not None:
+                self._conn.rollback()
+                return None
+            row = self._conn.execute(
+                """SELECT * FROM curation_operations
+                   WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"""
+            ).fetchone()
+            if row is None:
+                self._conn.rollback()
+                return None
+            now = _utcnow_iso()
+            updated = self._conn.execute(
+                """UPDATE curation_operations
+                   SET status = 'dispatching', started_at = ?, updated_at = ?
+                   WHERE operation_id = ? AND status = 'queued'""",
+                (now, now, str(row["operation_id"])),
+            )
+            if updated.rowcount != 1:
+                self._conn.rollback()
+                return None
+            self._conn.commit()
+            claimed = self._conn.execute(
+                "SELECT * FROM curation_operations WHERE operation_id = ?",
+                (str(row["operation_id"]),),
+            ).fetchone()
+        return self._curation_operation_row(claimed)
+
+    def requeue_stale_curation_operations(
+        self,
+        *,
+        older_than_seconds: int = 300,
+        now: datetime | None = None,
+    ) -> int:
+        """Recover only commands stranded before a parent run was bound."""
+        observed = now or datetime.now(UTC)
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=UTC)
+        cutoff = (observed - timedelta(seconds=max(60, older_than_seconds))).isoformat()
+        with self._lock:
+            cursor = self._conn.execute(
+                """UPDATE curation_operations
+                   SET status = 'queued', started_at = '', updated_at = ?
+                   WHERE status = 'dispatching' AND started_at != '' AND started_at < ?""",
+                (observed.isoformat(), cutoff),
+            )
+            self._conn.commit()
+        return max(0, int(cursor.rowcount))
+
+    def consume_curation_command_nonce(
+        self,
+        *,
+        device_fingerprint: str,
+        nonce: str,
+        request_hash: str,
+    ) -> bool:
+        if not device_fingerprint or not nonce or not request_hash:
+            return False
+        nonce_hash = hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """INSERT INTO curation_command_nonces
+                       (device_fingerprint, nonce_hash, request_hash, created_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (device_fingerprint, nonce_hash, request_hash, _utcnow_iso()),
+                )
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                return False
+
+    @staticmethod
+    def _curation_operation_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "operation_id": str(row["operation_id"]),
+            "idempotency_key": str(row["idempotency_key"]),
+            "request_hash": str(row["request_hash"]),
+            "origin": str(row["origin"]),
+            "device_fingerprint": str(row["device_fingerprint"]),
+            "status": str(row["status"]),
+            "run_id": str(row["run_id"]),
+            "request": _decode(row["request_json"], {}),
+            "result": _decode(row["result_json"], {}),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+            "started_at": str(row["started_at"]),
+            "completed_at": str(row["completed_at"]),
+        }
 
     def upsert_browser_mission_run(self, payload: dict[str, Any]) -> dict[str, Any]:
         run_id = str(payload.get("mission_run_id") or "")
@@ -940,9 +1335,10 @@ class RunRepository:
                     coarse_latitude, coarse_longitude, provenance,
                     location_status, owner_label, share_label, label_source,
                     label_distance_km, capture_timezone, timezone_source,
-                    location_timezone, location_timezone_source, privacy_class,
+                    location_timezone, location_timezone_source, resolution_status,
+                    google_place_id, poi_type, provider_checked_at, privacy_class,
                     observed_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(local_asset_id) DO UPDATE SET
                      latitude_exact=excluded.latitude_exact,
                      longitude_exact=excluded.longitude_exact,
@@ -958,6 +1354,10 @@ class RunRepository:
                      timezone_source=excluded.timezone_source,
                      location_timezone=excluded.location_timezone,
                      location_timezone_source=excluded.location_timezone_source,
+                     resolution_status=excluded.resolution_status,
+                     google_place_id=excluded.google_place_id,
+                     poi_type=excluded.poi_type,
+                     provider_checked_at=excluded.provider_checked_at,
                      privacy_class=excluded.privacy_class,
                      observed_at=excluded.observed_at,
                      updated_at=excluded.updated_at""",
@@ -977,6 +1377,10 @@ class RunRepository:
                     str(snapshot.get("timezone_source") or "unknown")[:40],
                     str(snapshot.get("location_timezone") or "")[:80],
                     str(snapshot.get("location_timezone_source") or "unknown")[:40],
+                    str(snapshot.get("resolution_status") or "coordinate_only")[:40],
+                    str(snapshot.get("google_place_id") or "")[:255],
+                    str(snapshot.get("poi_type") or "")[:80],
+                    str(snapshot.get("provider_checked_at") or "")[:40],
                     "exact_private",
                     str(snapshot.get("observed_at") or now),
                     now,
@@ -1044,21 +1448,35 @@ class RunRepository:
             )
             self._conn.commit()
 
+    def clear_recommendation_asset_location_inferences(self) -> int:
+        """Clear derived labels so they can be rebuilt from current GPS anchors."""
+        with self._lock:
+            count = int(
+                self._conn.execute(
+                    "SELECT COUNT(*) FROM recommendation_asset_location_inferences"
+                ).fetchone()[0]
+            )
+            self._conn.execute("DELETE FROM recommendation_asset_location_inferences")
+            self._conn.commit()
+        return count
+
     def get_recommendation_asset_location(
         self,
         local_asset_id: str,
         *,
         audience: str = "owner",
     ) -> dict[str, Any] | None:
-        """Return a coordinate-free projection; exact columns stay private."""
+        """Return the family Story projection, including user-owned exact GPS."""
         if audience not in {"owner", "share"}:
             raise ValueError("Unsupported location audience")
         with self._lock:
             row = self._conn.execute(
-                """SELECT provenance, location_status, owner_label, share_label,
+                """SELECT latitude_exact, longitude_exact, provenance,
+                          location_status, owner_label, share_label,
                           label_source, label_distance_km, capture_timezone,
                           timezone_source, location_timezone,
-                          location_timezone_source
+                          location_timezone_source, resolution_status,
+                          google_place_id, poi_type, provider_checked_at
                    FROM recommendation_asset_locations_private
                    WHERE local_asset_id = ?""",
                 (local_asset_id,),
@@ -1104,7 +1522,84 @@ class RunRepository:
                 row["location_timezone_source"] or "unknown"
             ),
             "confidence": 1.0,
+            "latitude": float(row["latitude_exact"]),
+            "longitude": float(row["longitude_exact"]),
+            "resolution_status": str(row["resolution_status"] or "coordinate_only"),
+            "google_place_id": str(row["google_place_id"] or ""),
+            "poi_type": str(row["poi_type"] or ""),
+            "provider_checked_at": str(row["provider_checked_at"] or ""),
         }
+
+    def list_recommendation_asset_locations_private(self) -> list[dict[str, Any]]:
+        """Return exact GPS records for trusted local maintenance workflows."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT local_asset_id, latitude_exact, longitude_exact,
+                          provenance, location_status, owner_label, share_label,
+                          label_source, label_distance_km, capture_timezone,
+                          timezone_source, location_timezone,
+                          location_timezone_source, resolution_status,
+                          google_place_id, poi_type, provider_checked_at, observed_at
+                   FROM recommendation_asset_locations_private
+                   ORDER BY local_asset_id"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def remove_local_recommendation_assets(self, local_asset_ids: set[str]) -> dict[str, int]:
+        """Remove local projections while retaining external delivery provenance.
+
+        Apple/Google album receipts are also the durable ownership and managed-
+        output exclusion record.  Deleting a local derivative must therefore
+        never erase evidence that a remote PhotosMcp copy still exists.
+        """
+        normalized = sorted({str(value) for value in local_asset_ids if str(value)})
+        if not normalized:
+            return {
+                "assets": 0,
+                "members": 0,
+                "locations": 0,
+                "group_members": 0,
+                "receipts": 0,
+                "external_receipts_preserved": 0,
+            }
+        placeholders = ",".join("?" for _ in normalized)
+        params = tuple(normalized)
+        tables = {
+            "group_members": "recommendation_group_members",
+            "members": "recommendation_members",
+            "locations": "recommendation_asset_locations_private",
+            "inferences": "recommendation_asset_location_inferences",
+            "assets": "local_recommendation_assets",
+        }
+        counts: dict[str, int] = {}
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                preserved = self._conn.execute(
+                    f"""SELECT COUNT(*) FROM recommendation_destination_receipts
+                        WHERE local_asset_id IN ({placeholders})
+                          AND destination_type != 'local_store'""",  # noqa: S608
+                    params,
+                ).fetchone()
+                counts["external_receipts_preserved"] = int(preserved[0])
+                cursor = self._conn.execute(
+                    f"""DELETE FROM recommendation_destination_receipts
+                        WHERE local_asset_id IN ({placeholders})
+                          AND destination_type = 'local_store'""",  # noqa: S608
+                    params,
+                )
+                counts["receipts"] = max(0, int(cursor.rowcount))
+                for key, table in tables.items():
+                    cursor = self._conn.execute(
+                        f"DELETE FROM {table} WHERE local_asset_id IN ({placeholders})",  # noqa: S608
+                        params,
+                    )
+                    counts[key] = max(0, int(cursor.rowcount))
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return counts
 
     def upsert_recommendation_group(self, payload: dict[str, Any]) -> dict[str, Any]:
         group_id = str(payload.get("group_id") or "")
@@ -1243,11 +1738,19 @@ class RunRepository:
             ).fetchone()
         return _decode(row["manifest_json"], {}) if row is not None else None
 
-    def list_story_manifests(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def list_story_manifests(
+        self,
+        *,
+        limit: int = 50,
+        include_deleted: bool = False,
+    ) -> list[dict[str, Any]]:
         bounded = max(1, min(int(limit), 200))
+        where = "" if include_deleted else " WHERE status <> 'deleted'"
         with self._lock:
             rows = self._conn.execute(
-                "SELECT manifest_json FROM story_manifests ORDER BY updated_at DESC LIMIT ?",
+                "SELECT manifest_json FROM story_manifests"
+                + where
+                + " ORDER BY updated_at DESC LIMIT ?",
                 (bounded,),
             ).fetchall()
         return [_decode(row["manifest_json"], {}) for row in rows]

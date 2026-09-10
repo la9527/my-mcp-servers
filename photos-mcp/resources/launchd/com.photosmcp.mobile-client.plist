@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.photosmcp.mobile-client</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Volumes/ExtData/01_Projects/PhotosMcp/photos-mcp/.venv/bin/python</string>
+        <string>-m</string>
+        <string>photos_mcp.mobile_client_server</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>18794</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Volumes/ExtData/01_Projects/PhotosMcp/photos-mcp</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>PHOTOS_MCP_MOBILE_CONTROLS_ENABLED</key>
+        <string>1</string>
+        <key>PHOTOS_MCP_STORY_DIRECTOR_ENABLED</key>
+        <string>1</string>
+        <key>PHOTOS_MCP_GOOGLE_LOCATION_ENABLED</key>
+        <string>1</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/Users/byoungyoungla/.photos-mcp/logs/mobile-client.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/byoungyoungla/.photos-mcp/logs/mobile-client.log</string>
+</dict>
+</plist>

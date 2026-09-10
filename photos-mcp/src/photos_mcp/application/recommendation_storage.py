@@ -21,13 +21,17 @@ from photos_mcp.application.location_privacy import (
     extract_file_location,
     infer_contextual_locations,
 )
+from photos_mcp.infrastructure.google_location import enrich_location_snapshot
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 from photos_mcp.infrastructure.runtime.paths import photos_mcp_runtime_root
 from photos_mcp.infrastructure.sources.google_photos.import_repository import (
     GoogleImportLeaseRepository,
 )
 from photos_mcp.infrastructure.vendor_adapter.gateway import call_vendor
-from photos_mcp.application.story_generation import refresh_recommendation_story
+from photos_mcp.application.story_generation import (
+    StoryIdentityRepository,
+    refresh_recommendation_story,
+)
 from photos_mcp.application.combined_curation import reconcile_combined_curation
 
 
@@ -238,6 +242,7 @@ class RecommendationStorageService:
         policy_version: str = DEFAULT_RECOMMENDATION_POLICY_VERSION,
         local_run_date: str = "",
         google_asset_map: dict[str, dict[str, str]] | None = None,
+        enroll_in_publish_groups: bool = True,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         observed = now or _utcnow()
@@ -284,6 +289,8 @@ class RecommendationStorageService:
                 "duplicate_count": 0,
                 "failed_count": 0,
                 "located_count": 0,
+                "poi_verified_count": 0,
+                "administrative_location_count": 0,
                 "inferred_location_count": 0,
                 "groups": [],
                 "local_root_ready": False,
@@ -304,6 +311,8 @@ class RecommendationStorageService:
                 "duplicate_count": 0,
                 "failed_count": len(exact),
                 "located_count": 0,
+                "poi_verified_count": 0,
+                "administrative_location_count": 0,
                 "inferred_location_count": 0,
                 "error_code": "recommendation_root_unavailable",
                 "groups": [],
@@ -316,6 +325,8 @@ class RecommendationStorageService:
         failed_count = 0
         materialized_count = 0
         located_count = 0
+        poi_verified_count = 0
+        administrative_location_count = 0
         touched_dates: set[str] = set()
         group_ids: set[str] = set()
         for item in exact:
@@ -437,6 +448,16 @@ class RecommendationStorageService:
                         observed_at=observed.isoformat(),
                     )
                     if snapshot is not None:
+                        snapshot = enrich_location_snapshot(snapshot)
+                        resolution_status = str(snapshot.get("resolution_status") or "")
+                        if resolution_status == "poi_verified":
+                            poi_verified_count += 1
+                        elif resolution_status in {
+                            "administrative",
+                            "offline_administrative",
+                            "offline_fallback",
+                        }:
+                            administrative_location_count += 1
                         self.repository.upsert_recommendation_asset_location_private(
                             local_asset_id,
                             snapshot,
@@ -475,43 +496,44 @@ class RecommendationStorageService:
                         "reconciled_at": observed.isoformat(),
                     }
                 )
-                month = (
-                    capture_date[:7]
-                    if capture_date != "undated"
-                    else effective_run_date[:7]
-                )
-                group_id = f"monthly:{month}"
-                destination_provider = os.getenv(
-                    "PHOTOS_MCP_RECOMMENDATION_DEFAULT_DESTINATION",
-                    "apple_photos",
-                ).strip()
-                if destination_provider not in {
-                    "apple_photos",
-                    "google_photos",
-                    "local_only",
-                }:
-                    destination_provider = "apple_photos"
-                group_defaults = {
-                    "group_id": group_id,
-                    "group_type": "monthly",
-                    "display_name": f"{month} 추천",
-                    "date_from": f"{month}-01",
-                    "date_to": "",
-                    "destination_provider": destination_provider,
-                    "destination_album_id": "",
-                    "destination_album_name": f"{month} 추천",
-                    "policy_state": "draft",
-                }
-                existing_group = self.repository.get_recommendation_group(group_id)
-                self.repository.upsert_recommendation_group(
-                    {**group_defaults, **dict(existing_group or {})}
-                )
-                self.repository.add_recommendation_group_member(
-                    group_id=group_id,
-                    local_asset_id=local_asset_id,
-                    collection_id=collection_id,
-                )
-                group_ids.add(group_id)
+                if enroll_in_publish_groups:
+                    month = (
+                        capture_date[:7]
+                        if capture_date != "undated"
+                        else effective_run_date[:7]
+                    )
+                    group_id = f"monthly:{month}"
+                    destination_provider = os.getenv(
+                        "PHOTOS_MCP_RECOMMENDATION_DEFAULT_DESTINATION",
+                        "apple_photos",
+                    ).strip()
+                    if destination_provider not in {
+                        "apple_photos",
+                        "google_photos",
+                        "local_only",
+                    }:
+                        destination_provider = "apple_photos"
+                    group_defaults = {
+                        "group_id": group_id,
+                        "group_type": "monthly",
+                        "display_name": f"{month} 추천",
+                        "date_from": f"{month}-01",
+                        "date_to": "",
+                        "destination_provider": destination_provider,
+                        "destination_album_id": "",
+                        "destination_album_name": f"{month} 추천",
+                        "policy_state": "draft",
+                    }
+                    existing_group = self.repository.get_recommendation_group(group_id)
+                    self.repository.upsert_recommendation_group(
+                        {**group_defaults, **dict(existing_group or {})}
+                    )
+                    self.repository.add_recommendation_group_member(
+                        group_id=group_id,
+                        local_asset_id=local_asset_id,
+                        collection_id=collection_id,
+                    )
+                    group_ids.add(group_id)
                 touched_dates.add(capture_date)
                 materialized_count += 1
             except (OSError, ValueError):
@@ -547,6 +569,8 @@ class RecommendationStorageService:
             "duplicate_count": duplicates,
             "failed_count": failed_count,
             "located_count": located_count,
+            "poi_verified_count": poi_verified_count,
+            "administrative_location_count": administrative_location_count,
             "inferred_location_count": inferred_location_count,
             "group_ids": sorted(group_ids),
             "completed_at": observed.isoformat(),
@@ -562,6 +586,8 @@ class RecommendationStorageService:
             "duplicate_count": duplicates,
             "failed_count": failed_count,
             "located_count": located_count,
+            "poi_verified_count": poi_verified_count,
+            "administrative_location_count": administrative_location_count,
             "inferred_location_count": inferred_location_count,
             "groups": sorted(group_ids),
             "local_root_ready": True,
@@ -695,7 +721,15 @@ async def materialize_recommendations_for_run(
         if provider == "google_photos"
         else {}
     )
-    return RecommendationStorageService(repository=repository, root=root).materialize(
+    automation_run = (
+        repository.get_automation_run(automation_run_id)
+        if automation_run_id
+        else None
+    ) or {}
+    publication_policy = str(
+        automation_run.get("publication_policy") or "approved_groups"
+    )
+    storage_result = RecommendationStorageService(repository=repository, root=root).materialize(
         analysis_run_id=analysis_run_id,
         automation_run_id=automation_run_id,
         provider=provider,
@@ -703,7 +737,20 @@ async def materialize_recommendations_for_run(
         items=items,
         local_run_date=local_run_date,
         google_asset_map=google_map,
+        enroll_in_publish_groups=publication_policy != "none",
     )
+    result_summary = (
+        summary.get("result_summary")
+        if isinstance(summary.get("result_summary"), dict)
+        else {}
+    )
+    return {
+        **storage_result,
+        "excluded_screen_capture_count": max(
+            0,
+            int(result_summary.get("excluded_screen_capture_count") or 0),
+        ),
+    }
 
 
 async def auto_publish_approved_groups(
@@ -830,7 +877,11 @@ def queue_recommendation_storage_notification(
         f"{max(0, int(storage_result.get('materialized_count') or 0))}장이 완료되었습니다. "
         f"신규 파일 {max(0, int(storage_result.get('new_file_count') or 0))}장, "
         f"중복 통합 {max(0, int(storage_result.get('duplicate_count') or 0))}장, "
-        f"실패 {max(0, int(storage_result.get('failed_count') or 0))}장입니다."
+        f"실패 {max(0, int(storage_result.get('failed_count') or 0))}장입니다. "
+        f"지도 반영 {max(0, int(storage_result.get('located_count') or 0))}장"
+        f"(장소명 {max(0, int(storage_result.get('poi_verified_count') or 0))}장, "
+        f"행정구역 {max(0, int(storage_result.get('administrative_location_count') or 0))}장), "
+        f"캡처 제외 {max(0, int(storage_result.get('excluded_screen_capture_count') or 0))}장입니다."
     )
     result_url = validate_private_action_base_url(
         os.getenv("PHOTOS_MCP_OWNER_STORY_URL", DEFAULT_OWNER_STORY_URL)
@@ -865,6 +916,7 @@ async def reconcile_pending_recommendations(
     root: str | Path | None = None,
     call_vendor_fn: VendorCallable = call_vendor,
     limit: int = 20,
+    identity_repository: StoryIdentityRepository | None = None,
 ) -> dict[str, Any]:
     """Advance terminal daily analyses through the required local-store gate."""
 
@@ -885,7 +937,10 @@ async def reconcile_pending_recommendations(
     async def refresh_story_safely() -> None:
         nonlocal story_refresh_count, story_fallback_count, story_failed_count
         try:
-            story = await refresh_recommendation_story(repository)
+            story = await refresh_recommendation_story(
+                repository,
+                identity_repository=identity_repository,
+            )
             story_refresh_count += 1
             generation = story.get("generation") if isinstance(story, dict) else {}
             if isinstance(generation, dict) and generation.get("source") == "deterministic_fallback":
@@ -904,12 +959,27 @@ async def reconcile_pending_recommendations(
             policy_version=DEFAULT_RECOMMENDATION_POLICY_VERSION,
         )
         if existing and str(existing.get("status") or "") == "completed":
+            previous_storage = (
+                dict(automation_run.get("recommendation_storage") or {})
+                if isinstance(automation_run.get("recommendation_storage"), dict)
+                else {}
+            )
+            # A completed local-store receipt is durable. Polling this endpoint
+            # must be an inexpensive no-op; otherwise every five-minute Hermes
+            # poll republishes albums and regenerates the story through a remote
+            # LLM. That can exceed the notifier timeout and falsely look like an
+            # external-volume failure even though the store is healthy.
+            if (
+                bool(automation_run.get("terminal"))
+                and str(automation_run.get("status") or "") in {"completed", "partial"}
+                and str(previous_storage.get("status") or "") in {"completed", "partial"}
+                and str(previous_storage.get("collection_id") or "")
+                == str(existing.get("collection_id") or "")
+            ):
+                continue
+            inspected += 1
             storage_summary = {
-                **(
-                    dict(automation_run.get("recommendation_storage") or {})
-                    if isinstance(automation_run.get("recommendation_storage"), dict)
-                    else {}
-                ),
+                **previous_storage,
                 "status": "completed",
                 "collection_id": str(existing.get("collection_id") or ""),
                 "analysis_run_id": analysis_run_id,
@@ -921,24 +991,37 @@ async def reconcile_pending_recommendations(
                 "groups": list(existing.get("group_ids") or []),
                 "local_root_ready": True,
             }
-            automatic_publish = await auto_publish_approved_groups(
-                repository=repository,
-                group_ids=list(existing.get("group_ids") or []),
-                root=root,
-                call_vendor_fn=call_vendor_fn,
-            )
+            if str(automation_run.get("publication_policy") or "") == "none":
+                automatic_publish = {
+                    "status": "skipped",
+                    "published_count": 0,
+                    "failed_count": 0,
+                    "reason": "manual_story_read_only",
+                }
+            else:
+                automatic_publish = await auto_publish_approved_groups(
+                    repository=repository,
+                    group_ids=list(existing.get("group_ids") or []),
+                    root=root,
+                    call_vendor_fn=call_vendor_fn,
+                )
             album_published_count += int(automatic_publish["published_count"])
             album_publish_failed_count += int(automatic_publish["failed_count"])
             storage_summary["automatic_publish"] = automatic_publish
             repository.upsert_automation_run(
                 {
                     **automation_run,
-                    "status": "completed",
+                    "status": (
+                        "partial"
+                        if max(0, int(automation_run.get("unfinished_count") or 0))
+                        else "completed"
+                    ),
                     "terminal": True,
                     "recommendation_storage": storage_summary,
                 }
             )
-            await refresh_story_safely()
+            if str(automation_run.get("scope_kind") or "") != "capture_date_bounded":
+                await refresh_story_safely()
             continue
         inspected += 1
         storage_result = await materialize_recommendations_for_run(
@@ -997,22 +1080,36 @@ async def reconcile_pending_recommendations(
         new_files += max(0, int(storage_result.get("new_file_count") or 0))
         duplicates += max(0, int(storage_result.get("duplicate_count") or 0))
         if storage_status in {"completed", "partial"}:
-            automatic_publish = await auto_publish_approved_groups(
-                repository=repository,
-                group_ids=list(storage_result.get("groups") or []),
-                root=root,
-                call_vendor_fn=call_vendor_fn,
-            )
+            if str(automation_run.get("publication_policy") or "") == "none":
+                automatic_publish = {
+                    "status": "skipped",
+                    "published_count": 0,
+                    "failed_count": 0,
+                    "reason": "manual_story_read_only",
+                }
+            else:
+                automatic_publish = await auto_publish_approved_groups(
+                    repository=repository,
+                    group_ids=list(storage_result.get("groups") or []),
+                    root=root,
+                    call_vendor_fn=call_vendor_fn,
+                )
             storage_result = {
                 **storage_result,
                 "automatic_publish": automatic_publish,
             }
             album_published_count += int(automatic_publish["published_count"])
             album_publish_failed_count += int(automatic_publish["failed_count"])
+        effective_storage_status = (
+            "partial"
+            if max(0, int(automation_run.get("unfinished_count") or 0))
+            and storage_status in {"completed", "partial"}
+            else storage_status
+        )
         updated = {
             **automation_run,
-            "status": storage_status,
-            "terminal": storage_status in {"completed", "partial", "failed"},
+            "status": effective_storage_status,
+            "terminal": effective_storage_status in {"completed", "partial", "failed"},
             "analysis_status": "completed",
             "recommendation_storage": storage_result,
             "recommended_count": max(
@@ -1028,12 +1125,16 @@ async def reconcile_pending_recommendations(
             str(automation_run.get("automation_run_id") or ""),
             "completed",
         )
-        queue_recommendation_storage_notification(
-            repository=repository,
-            automation_run=updated,
-            storage_result=storage_result,
-        )
-        if storage_status in {"completed", "partial"}:
+        if str(automation_run.get("scope_kind") or "") != "capture_date_bounded":
+            queue_recommendation_storage_notification(
+                repository=repository,
+                automation_run=updated,
+                storage_result=storage_result,
+            )
+        if (
+            storage_status in {"completed", "partial"}
+            and str(automation_run.get("scope_kind") or "") != "capture_date_bounded"
+        ):
             await refresh_story_safely()
     combined = reconcile_combined_curation(repository=repository)
     return {

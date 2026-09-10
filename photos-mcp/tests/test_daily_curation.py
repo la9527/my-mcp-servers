@@ -20,6 +20,50 @@ class FakeAddedPhotoSource:
         self.calls.append((source, filters))
         return {"items": list(self.items), "next_cursor": ""}
 
+    async def list_photos(self, source: str, **filters):
+        self.calls.append((source, filters))
+        return list(self.items)
+
+
+@pytest.mark.asyncio
+async def test_exact_capture_date_run_queries_apple_without_advancing_daily_checkpoint(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "automation.db")
+    source = FakeAddedPhotoSource([{"id": "apple-exact", "filename": "exact.jpg"}])
+    submissions = []
+
+    async def submit(**kwargs):
+        submissions.append(kwargs)
+        return {"run_id": "analysis-exact", "status": "pending"}
+
+    result = await start_daily_curation(
+        repository=repository,
+        options={
+            "source": "apple",
+            "source_id": "system-library",
+            "limit": 20,
+            "mode": "review_only",
+            "scope_kind": "capture_date_bounded",
+            "date_from": "2026-08-17",
+            "date_to": "2026-08-18",
+            "operation_id": "manual-op-exact",
+            "publication_policy": "none",
+        },
+        photos_run_fn=submit,
+        source_port=source,
+        now=datetime(2026, 9, 8, tzinfo=UTC),
+    )
+
+    assert source.calls == [
+        (
+            "apple",
+            {"date_from": "2026-08-17", "date_to": "2026-08-18", "limit": 20},
+        )
+    ]
+    assert result["scope_kind"] == "capture_date_bounded"
+    assert result["publication_policy"] == "none"
+    assert submissions[0]["selected_photo_ids_json"] == '["apple-exact"]'
+    assert repository.get_automation_checkpoint("daily:apple:system-library") is None
+
 
 def test_daily_curate_contract_accepts_validated_tailscale_action_base() -> None:
     validated = validate_action_options(
@@ -76,6 +120,46 @@ async def test_daily_curate_submits_only_new_apple_asset_ids_and_is_idempotent(t
     assert second["no_op"] is True
     assert second["already_processed_count"] == 2
     assert len(submissions) == 1
+
+
+@pytest.mark.asyncio
+async def test_exact_capture_reanalysis_submits_already_processed_apple_assets(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "automation.db")
+    source = FakeAddedPhotoSource([{"id": "apple-existing", "filename": "again.jpg"}])
+    repository.upsert_processed_photo_asset(
+        {
+            "provider": "apple",
+            "source_id": "system-library",
+            "provider_asset_id": "apple-existing",
+            "status": "completed",
+        }
+    )
+    submissions = []
+
+    async def submit(**kwargs):
+        submissions.append(kwargs)
+        return {"run_id": "analysis-again", "status": "pending"}
+
+    result = await start_daily_curation(
+        repository=repository,
+        options={
+            "source": "apple",
+            "source_id": "system-library",
+            "limit": 20,
+            "mode": "review_only",
+            "scope_kind": "capture_date_bounded",
+            "date_from": "2026-09-01",
+            "date_to": "2026-09-01",
+            "reanalyze": True,
+            "publication_policy": "none",
+        },
+        photos_run_fn=submit,
+        source_port=source,
+    )
+
+    assert result["reanalyze"] is True
+    assert result["submitted_count"] == 1
+    assert submissions[0]["selected_photo_ids_json"] == '["apple-existing"]'
 
 
 @pytest.mark.asyncio
@@ -415,6 +499,44 @@ async def test_google_picker_job_handoff_completes_latest_automation_action(tmp_
     assert run["picker_session_id"] == "picker-session-1"
     assert run["selected_photo_count"] == 19
     assert run["excluded_video_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_google_picker_partial_download_records_remaining_photos(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "automation.db")
+
+    async def submit(**_kwargs):
+        raise AssertionError("Google Picker action creation must not start analysis")
+
+    created = await start_daily_curation(
+        repository=repository,
+        options={
+            "source": "google",
+            "mode": "review_only",
+            "action_base_url": "https://photos-mac.tail123.ts.net/photos-actions",
+        },
+        photos_run_fn=submit,
+        now=datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+    )
+
+    complete_google_picker_action(
+        repository=repository,
+        analysis_run_id="google-analysis-partial",
+        action_request_id=created["user_action"]["request_id"],
+        automation_run_id=created["automation_run_id"],
+        picker_session_id="picker-session-partial",
+        selected_photo_count=32,
+        result="partial_download",
+        unfinished_count=141,
+        now=datetime(2026, 9, 3, 2, 0, tzinfo=UTC),
+    )
+
+    run = repository.get_automation_run(created["automation_run_id"])
+    assert run is not None
+    assert run["status"] == "partial"
+    assert run["terminal"] is True
+    assert run["selected_photo_count"] == 32
+    assert run["unfinished_count"] == 141
 
 
 @pytest.mark.asyncio

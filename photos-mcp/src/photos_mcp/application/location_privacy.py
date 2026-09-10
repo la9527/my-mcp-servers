@@ -139,7 +139,7 @@ def _offline_label(
     )
     if distance > 90.0:
         return "", "", None, ""
-    return f"{city} 일대", f"{city} 일대", round(distance, 1), timezone
+    return city, city, round(distance, 1), timezone
 
 
 def build_location_snapshot(
@@ -174,6 +174,10 @@ def build_location_snapshot(
             "offline_city_gazetteer" if location_timezone else "unknown"
         ),
         "privacy_class": "exact_private",
+        "resolution_status": "offline_administrative" if owner_label else "coordinate_only",
+        "google_place_id": "",
+        "poi_type": "",
+        "provider_checked_at": "",
         "observed_at": str(observed_at or datetime.now().astimezone().isoformat()),
     }
 
@@ -270,8 +274,8 @@ def infer_contextual_locations(
         repository.upsert_recommendation_asset_location_inference(
             candidate_id,
             {
-                "owner_label": f"{label} (추정)",
-                "share_label": f"{label} (추정)",
+                "owner_label": label,
+                "share_label": label,
                 "location_status": "contextual_estimate",
                 "provenance": provenance,
                 "confidence": confidence,

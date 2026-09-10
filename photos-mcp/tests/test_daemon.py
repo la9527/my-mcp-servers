@@ -201,6 +201,53 @@ def test_history_cleanup_deletes_recovery_records_and_reports_progress(tmp_path,
     assert progress[-1].completed == progress[-1].total == 1
 
 
+def test_full_history_cleanup_also_clears_android_terminal_history_without_desktop_jobs(
+    tmp_path, monkeypatch
+) -> None:
+    controller = _build_controller(tmp_path)
+    repository = controller._state_store.run_repository
+    repository.upsert_automation_run(
+        {
+            "automation_run_id": "combined-old-mobile",
+            "provider": "combined",
+            "status": "completed",
+            "terminal": True,
+        }
+    )
+    repository.upsert_automation_run(
+        {
+            "automation_run_id": "combined-running-mobile",
+            "provider": "combined",
+            "status": "running",
+            "terminal": False,
+        }
+    )
+    repository.upsert_story_manifest(
+        {
+            "story_id": "story-kept-separately",
+            "title": "보존되는 Story",
+            "status": "ready",
+            "photos": [],
+        }
+    )
+    store = SimpleNamespace(list_snapshots=lambda: [], referenced_source_paths=lambda: set())
+
+    monkeypatch.setattr("photos_mcp.app.lifecycle.PhotoRankerJobStore", lambda _module: store)
+    monkeypatch.setattr("photos_mcp.app.lifecycle.load_vendor_server", lambda _name: SimpleNamespace())
+    monkeypatch.setattr(controller, "refresh_jobs_once", lambda: None)
+    monkeypatch.setattr(controller, "_release_orphaned_managed_files", lambda _store: (0, 0))
+
+    report = controller.delete_job_history()
+
+    assert report.deleted_job_ids == ()
+    assert report.cross_client_records_deleted == 1
+    assert report.total_deleted_count == 1
+    assert [item["automation_run_id"] for item in repository.list_automation_runs()] == [
+        "combined-running-mobile"
+    ]
+    assert repository.get_story_manifest("story-kept-separately")["status"] == "ready"
+
+
 def test_history_cleanup_reports_monotonic_progress_for_one_thousand_records(monkeypatch) -> None:
     controller = _build_controller()
     deleted_ids: list[str] = []

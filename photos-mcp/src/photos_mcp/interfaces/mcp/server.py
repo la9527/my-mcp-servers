@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import hashlib
 import json
 import math
 from typing import Any
 from urllib.parse import parse_qs
+import uuid
+from zoneinfo import ZoneInfo
 
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
@@ -22,6 +25,11 @@ from photos_mcp.application.combined_curation import (
     start_combined_curation,
     stop_combined_curation,
 )
+from photos_mcp.application.manual_curation import (
+    enqueue_manual_curation,
+    manual_operation_projection,
+    resolve_selection_contract,
+)
 from photos_mcp.domain.models.automation import validate_private_action_base_url
 from photos_mcp.application.mutation_approval import (
     _safe_mutation_error,
@@ -31,7 +39,16 @@ from photos_mcp.application.mutation_approval import (
 )
 from photos_mcp.application.mutation_service import resolve_mutation_plan
 from photos_mcp.application.recommendation_storage import reconcile_pending_recommendations
-from photos_mcp.application.story_generation import refresh_recommendation_story
+from photos_mcp.application.mobile_location_projection import (
+    project_mobile_locations_to_recommendations,
+)
+from photos_mcp.application.person_identity_repository import PersonIdentityRepository
+from photos_mcp.application.story_generation import (
+    ensure_recommendation_story,
+    ensure_scoped_story,
+    refresh_recommendation_story,
+)
+from photos_mcp.infrastructure.mobile_location import MobileLocationLedger
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore, TERMINAL_JOB_STATUSES, job_snapshot_from_payload
 from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
 from photos_mcp.application.share_image_service import ShareImageError
@@ -46,7 +63,9 @@ from photos_mcp.interfaces.http.story_web import (
     owner_assets,
     owner_mutation_allowed,
     render_owner,
+    render_policy_page,
 )
+from photos_mcp.interfaces.http.mobile_client import register_mobile_client_routes
 
 
 async def _reconcile_album_mutation(receipt: dict[str, Any]) -> dict[str, Any]:
@@ -230,8 +249,10 @@ def build_health_payload(config, state_store: PhotosMcpStateStore | None) -> dic
 def build_server(
     config=None,
     state_store: PhotosMcpStateStore | None = None,
+    identity_repository: PersonIdentityRepository | None = None,
 ) -> FastMCP:
     config = config or load_config()
+    identity_repository = identity_repository or PersonIdentityRepository()
     mcp = FastMCP(
         "photos-mcp",
         instructions=(
@@ -427,11 +448,19 @@ def build_server(
             return HTMLResponse("Forbidden", status_code=403, headers=PUBLIC_HEADERS)
         if state_store is None:
             return HTMLResponse("Unavailable", status_code=503, headers=PUBLIC_HEADERS)
-        story = build_recommendation_story(state_store.run_repository)
+        visible_stories = state_store.run_repository.list_story_manifests(limit=50)
+        story = visible_stories[0] if visible_stories else {
+            "story_id": "",
+            "title": "사진 이야기",
+            "subtitle": "날짜를 선택해 첫 Story를 만들어 보세요.",
+            "photos": [],
+            "chapters": [],
+        }
         service = StoryShareService(
             state_store.run_repository,
             session_secret=load_session_secret(),
         )
+
         active_shares = []
         for candidate in state_store.run_repository.list_shared_story_packages(limit=100):
             candidate_id = str(candidate.get("share_id") or "")
@@ -445,9 +474,124 @@ def build_server(
                 story,
                 public_base=default_public_base_url(),
                 active_shares=active_shares,
+                stories=visible_stories,
+                recent_operations=[
+                    projected
+                    for operation in state_store.run_repository.list_curation_operations(
+                        statuses={"queued", "dispatching", "running"},
+                        limit=20,
+                    )
+                    if (
+                        projected := manual_operation_projection(
+                            state_store.run_repository,
+                            str(operation.get("operation_id") or ""),
+                        )
+                    )
+                    is not None
+                ],
+                notice_message=(
+                    "작업 화면에 등록했습니다. 진행 상태는 이 페이지를 새로고침하면 확인할 수 있습니다."
+                    if request.query_params.get("manual") == "queued"
+                    else ""
+                ),
             ),
             headers=PUBLIC_HEADERS,
         )
+
+    @mcp.custom_route(
+        "/photos/stories/{story_id}", methods=["GET"], include_in_schema=False
+    )
+    async def http_owner_story_detail(request):
+        from starlette.responses import HTMLResponse
+
+        if not owner_allowed(request):
+            return HTMLResponse("Forbidden", status_code=403, headers=PUBLIC_HEADERS)
+        if state_store is None:
+            return HTMLResponse("Unavailable", status_code=503, headers=PUBLIC_HEADERS)
+        story_id = str(request.path_params.get("story_id") or "")
+        story = state_store.run_repository.get_story_manifest(story_id)
+        if story is None or str(story.get("status") or "ready") == "deleted":
+            return HTMLResponse("Story not found", status_code=404, headers=PUBLIC_HEADERS)
+        return HTMLResponse(
+            render_owner(
+                story,
+                public_base=default_public_base_url(),
+                stories=state_store.run_repository.list_story_manifests(limit=50),
+            ),
+            headers=PUBLIC_HEADERS,
+        )
+
+    @mcp.custom_route(
+        "/photos/story/manual", methods=["POST"], include_in_schema=False
+    )
+    async def http_owner_manual_story(request):
+        from starlette.responses import HTMLResponse, RedirectResponse
+
+        if not owner_mutation_allowed(request):
+            return HTMLResponse("Forbidden", status_code=403, headers=PUBLIC_HEADERS)
+        if state_store is None:
+            return HTMLResponse("Unavailable", status_code=503, headers=PUBLIC_HEADERS)
+        raw = await request.body()
+        if len(raw) > 4096:
+            return HTMLResponse("Request too large", status_code=413, headers=PUBLIC_HEADERS)
+        values = parse_qs(raw.decode("utf-8", errors="replace"), keep_blank_values=True)
+        try:
+            sources = list(dict.fromkeys(values.get("source") or []))
+            limit = int((values.get("limit") or ["500"])[0])
+            payload = {
+                "date_from": (values.get("date_from") or [""])[0],
+                "date_to": (values.get("date_to") or [""])[0],
+                "timezone": "Asia/Seoul",
+                "sources": sources,
+                "selection_mode": (values.get("selection_mode") or ["balanced"])[0],
+                "limit": limit,
+                "exclude_screenshots": True,
+                "timeout_seconds": 21600,
+                "reanalyze": False,
+            }
+            enqueue_manual_curation(
+                repository=state_store.run_repository,
+                request=payload,
+                idempotency_key=f"mac-story-{uuid.uuid4()}",
+                device_id="photos-mcp-mac-app",
+                origin="mac_app",
+            )
+        except (TypeError, ValueError) as exc:
+            visible_stories = state_store.run_repository.list_story_manifests(limit=50)
+            story = visible_stories[0] if visible_stories else {
+                "title": "사진 이야기",
+                "subtitle": "입력값을 확인해 주세요.",
+                "photos": [],
+                "chapters": [],
+            }
+            return HTMLResponse(
+                render_owner(
+                    story,
+                    stories=visible_stories,
+                    notice_message=f"Story 요청을 시작하지 못했습니다: {str(exc)[:80]}",
+                ),
+                status_code=400,
+                headers=PUBLIC_HEADERS,
+            )
+        return RedirectResponse(
+            "/photos?manual=queued", status_code=303, headers=PUBLIC_HEADERS
+        )
+
+    @mcp.custom_route("/photos/privacy", methods=["GET"], include_in_schema=False)
+    async def http_owner_privacy(request):
+        from starlette.responses import HTMLResponse
+
+        if not owner_allowed(request):
+            return HTMLResponse("Forbidden", status_code=403, headers=PUBLIC_HEADERS)
+        return HTMLResponse(render_policy_page("privacy"), headers=PUBLIC_HEADERS)
+
+    @mcp.custom_route("/photos/terms", methods=["GET"], include_in_schema=False)
+    async def http_owner_terms(request):
+        from starlette.responses import HTMLResponse
+
+        if not owner_allowed(request):
+            return HTMLResponse("Forbidden", status_code=403, headers=PUBLIC_HEADERS)
+        return HTMLResponse(render_policy_page("terms"), headers=PUBLIC_HEADERS)
 
     @mcp.custom_route("/photos/share", methods=["POST"], include_in_schema=False)
     async def http_owner_create_share(request):
@@ -465,7 +609,8 @@ def build_server(
             duration_days = int((values.get("duration_days") or ["30"])[0])
         except ValueError:
             return HTMLResponse("Invalid duration", status_code=400, headers=PUBLIC_HEADERS)
-        story = build_recommendation_story(state_store.run_repository)
+        visible_stories = state_store.run_repository.list_story_manifests(limit=1)
+        story = visible_stories[0] if visible_stories else {}
         if not story.get("photos"):
             return HTMLResponse(
                 render_owner(story),
@@ -480,6 +625,8 @@ def build_server(
             story,
             duration_days=duration_days,
             download_enabled=(values.get("download_enabled") or [""])[0] == "1",
+            include_person_names=(values.get("include_person_names") or [""])[0] == "1",
+            identity_repository=identity_repository,
         )
         package = state_store.run_repository.get_shared_story_package(
             str(created["share_id"])
@@ -538,6 +685,7 @@ def build_server(
         await refresh_recommendation_story(
             state_store.run_repository,
             force=True,
+            identity_repository=identity_repository,
         )
         return RedirectResponse("/photos", status_code=303, headers=PUBLIC_HEADERS)
 
@@ -585,6 +733,15 @@ def build_server(
         except ShareImageError:
             return Response(status_code=404, headers=PUBLIC_HEADERS)
         return FileResponse(path, media_type="image/jpeg", headers=PUBLIC_HEADERS)
+
+    @mcp.custom_route("/actions", methods=["GET"], include_in_schema=False)
+    async def http_user_actions_index(_request):
+        from starlette.responses import RedirectResponse
+
+        # Tailscale Serve maps the owner-facing /photos-actions prefix here.
+        # A generic Telegram result link has no request id, so take the owner to
+        # the durable gallery instead of returning a framework 404.
+        return RedirectResponse("/photos", status_code=303, headers=PUBLIC_HEADERS)
 
     @mcp.custom_route("/actions/{request_id}", methods=["GET"], include_in_schema=False)
     async def http_user_action(request):
@@ -709,7 +866,8 @@ def build_server(
             return JSONResponse({"status": "blocked", "error_code": "invalid_json_object"}, status_code=400)
         allowed_fields = {
             "source", "limit", "apple_limit", "google_limit", "lookback_days",
-            "timeout_seconds", "trigger", "action_base_url",
+            "timeout_seconds", "trigger", "action_base_url", "selection_mode",
+            "selection_profile",
         }
         if set(body) - allowed_fields:
             return JSONResponse(
@@ -762,6 +920,10 @@ def build_server(
                 if not 1 <= google_limit <= limit:
                     raise ValueError("google limit out of range")
                 sources = ("google",)
+            selection_mode, selection_profile = resolve_selection_contract(
+                body,
+                sources=sources,
+            )
             trigger = str(body.get("trigger") or "scheduled")
             if trigger not in {"scheduled", "telegram"}:
                 raise ValueError("unsupported trigger")
@@ -772,8 +934,11 @@ def build_server(
                 "apple_limit": apple_limit,
                 "google_limit": google_limit,
                 "lookback_days": lookback_days,
+                "selection_mode": selection_mode,
+                "selection_profile": selection_profile,
                 "timeout_seconds": timeout_seconds,
                 "trigger": trigger,
+                "google_first_gate": set(sources) == {"apple", "google"},
             }
             if body.get("action_base_url"):
                 combined_options["action_base_url"] = validate_private_action_base_url(
@@ -805,6 +970,45 @@ def build_server(
                 {"status": "failed", "error_code": "combined_curate_start_failed"},
                 status_code=500,
             )
+        if bool(payload.get("already_active")):
+            # A 03:00/Telegram request must not disappear behind an Android
+            # manual run. Persist the exact bounded request and let the
+            # loopback mobile worker dispatch it when the active parent ends.
+            queued_request = {
+                **combined_options,
+                "provider_limits": {
+                    "apple": apple_limit,
+                    "google": google_limit,
+                },
+                "publication_policy": "approved_groups",
+                "scope_kind": "date_added_incremental",
+            }
+            encoded = json.dumps(
+                queued_request, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            local_day = datetime.now(UTC).astimezone(ZoneInfo("Asia/Seoul")).date().isoformat()
+            request_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            operation, _created = state_store.run_repository.enqueue_curation_operation(
+                {
+                    "operation_id": f"scheduled-op-{uuid.uuid4().hex[:20]}",
+                    "idempotency_key": (
+                        f"{trigger}:{local_day}:{source}:{lookback_days}:{request_hash[:12]}"
+                    ),
+                    "request_hash": request_hash,
+                    "origin": trigger,
+                    "status": "queued",
+                    "request": queued_request,
+                }
+            )
+            return JSONResponse(
+                {
+                    "status": "queued",
+                    "terminal": False,
+                    "operation_id": operation["operation_id"],
+                    "active_run_id": str(payload.get("automation_run_id") or ""),
+                },
+                status_code=202,
+            )
         return JSONResponse(payload)
 
     @mcp.custom_route(
@@ -827,7 +1031,66 @@ def build_server(
             )
         payload = await reconcile_pending_recommendations(
             repository=state_store.run_repository,
+            identity_repository=identity_repository,
         )
+        try:
+            ledger = MobileLocationLedger()
+            try:
+                location_projection = project_mobile_locations_to_recommendations(
+                    repository=state_store.run_repository,
+                    ledger=ledger,
+                )
+            finally:
+                ledger.close()
+            payload["location_projection"] = location_projection
+            if int(location_projection.get("updated_count") or 0):
+                # Location changes alter Story evidence. Rebuild the global and
+                # active date-scoped manifests locally so late phone uploads are
+                # visible without deleting/re-running a Story. Do not invoke the
+                # optional remote director from this five-minute poll path.
+                updated_stories = 0
+                ensure_recommendation_story(
+                    state_store.run_repository,
+                    identity_repository=identity_repository,
+                )
+                updated_stories += 1
+                for story in state_store.run_repository.list_story_manifests(limit=200):
+                    scope = dict(story.get("scope") or {})
+                    story_id = str(story.get("story_id") or "")
+                    if scope.get("kind") != "capture_date_bounded" or not story_id:
+                        continue
+                    collection_ids = (
+                        {
+                            str(value)
+                            for value in scope.get("collection_ids") or []
+                            if str(value)
+                        }
+                        if "collection_ids" in scope
+                        else None
+                    )
+                    ensure_scoped_story(
+                        state_store.run_repository,
+                        story_id=story_id,
+                        collection_ids=collection_ids,
+                        date_from=str(scope.get("date_from") or ""),
+                        date_to=str(scope.get("date_to") or ""),
+                        origin_run_id=str(scope.get("origin_run_id") or ""),
+                        reanalysis_spec=(
+                            dict(scope.get("reanalysis_spec") or {})
+                            if isinstance(scope.get("reanalysis_spec"), dict)
+                            else None
+                        ),
+                        identity_repository=identity_repository,
+                    )
+                    updated_stories += 1
+                location_projection["story_update_count"] = updated_stories
+        except Exception as exc:
+            # Storage reconciliation remains successful when optional mobile
+            # metadata is unavailable. Return only a redacted failure category.
+            payload["location_projection"] = {
+                "status": "unavailable",
+                "error_type": type(exc).__name__,
+            }
         return JSONResponse(payload)
 
     @mcp.custom_route(
@@ -902,7 +1165,10 @@ def build_server(
             return JSONResponse(payload)
 
         if action == "share":
-            story = build_recommendation_story(state_store.run_repository)
+            story = build_recommendation_story(
+                state_store.run_repository,
+                identity_repository=identity_repository,
+            )
             if not story.get("photos"):
                 return JSONResponse(
                     {"status": "blocked", "error_code": "share_story_is_empty"},
@@ -981,6 +1247,12 @@ def build_server(
     async def http_health_capabilities(_request) -> JSONResponse:
         return JSONResponse(build_health_payload(config, state_store)["capabilities"])
 
+    register_mobile_client_routes(
+        mcp,
+        state_store=state_store,
+        identity_repository=identity_repository,
+    )
+
     return mcp
 
 
@@ -988,7 +1260,12 @@ def build_http_app(
     config=None,
     state_store: PhotosMcpStateStore | None = None,
     mcp: FastMCP | None = None,
+    identity_repository: PersonIdentityRepository | None = None,
 ) -> Starlette:
     config = config or load_config()
-    mcp = mcp or build_server(config=config, state_store=state_store)
+    mcp = mcp or build_server(
+        config=config,
+        state_store=state_store,
+        identity_repository=identity_repository,
+    )
     return mcp.streamable_http_app()

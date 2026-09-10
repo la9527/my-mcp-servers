@@ -279,6 +279,29 @@ def test_build_http_app_serves_read_only_user_action_page() -> None:
     assert missing.status_code == 404
 
 
+def test_build_http_app_redirects_generic_actions_link_to_owner_gallery() -> None:
+    from starlette.testclient import TestClient
+
+    config = load_config()
+    state_store = PhotosMcpStateStore(
+        endpoint=config.endpoint,
+        health_endpoint=config.health_endpoint,
+    )
+    identity_repository = object()
+    app = build_http_app(
+        config=config,
+        state_store=state_store,
+        identity_repository=identity_repository,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/actions", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/photos"
+    assert response.headers["x-robots-tag"] == "noindex, nofollow, noarchive, noimageindex"
+
+
 def test_build_http_app_daily_curate_trigger_is_read_only_and_bounded(monkeypatch) -> None:
     from starlette.testclient import TestClient
     import photos_mcp.interfaces.mcp.server as server_module
@@ -383,9 +406,20 @@ def test_build_http_app_combined_curate_starts_one_parent_and_selected_children(
                 "apple_limit": 400,
                 "google_limit": 600,
                 "lookback_days": 14,
+                "selection_mode": "landscape",
                 "timeout_seconds": 21600,
                 "trigger": "telegram",
                 "action_base_url": "https://photos-mac.tail123.ts.net/photos-actions",
+            },
+        )
+        queued = client.post(
+            "/automation/daily-curate-all",
+            json={
+                "source": "apple",
+                "limit": 20,
+                "lookback_days": 10,
+                "timeout_seconds": 21600,
+                "trigger": "scheduled",
             },
         )
         invalid_sum = client.post(
@@ -396,15 +430,31 @@ def test_build_http_app_combined_curate_starts_one_parent_and_selected_children(
             "/automation/daily-curate-all",
             json={"source": "apple", "limit": 20, "google_limit": 10},
         )
+        invalid_google_people = client.post(
+            "/automation/daily-curate-all",
+            json={
+                "source": "google",
+                "limit": 20,
+                "selection_mode": "people_present",
+            },
+        )
 
     assert response.status_code == 200
+    assert queued.status_code == 202
+    assert queued.json()["status"] == "queued"
+    assert queued.json()["operation_id"].startswith("scheduled-op-")
     payload = response.json()
     assert payload["provider"] == "combined"
-    assert payload["child_run_ids"] == {"apple": "daily-apple", "google": "daily-google"}
-    assert [call["options"]["limit"] for call in calls] == [400, 600]
+    assert payload["child_run_ids"] == {"google": "daily-google"}
+    assert payload["deferred_sources"] == ["apple"]
+    assert payload["gate_status"] == "waiting_google_mcp"
+    assert [call["options"]["limit"] for call in calls] == [600]
     assert all(call["options"]["parent_run_id"] == payload["automation_run_id"] for call in calls)
+    assert calls[0]["options"]["selection_mode"] == "landscape"
+    assert calls[0]["options"]["selection_profile"] == "landscape"
     assert invalid_sum.status_code == 400
     assert invalid_opposite.status_code == 400
+    assert invalid_google_people.status_code == 400
 
 
 def test_build_http_app_reconciles_recommendations_on_loopback(monkeypatch) -> None:
@@ -421,7 +471,21 @@ def test_build_http_app_reconciles_recommendations_on_loopback(monkeypatch) -> N
             "new_file_count": 2,
         }
 
+    class FakeLedger:
+        def close(self):
+            return None
+
+    def fake_projection(**kwargs):
+        assert isinstance(kwargs["ledger"], FakeLedger)
+        return {"status": "completed", "updated_count": 0}
+
     monkeypatch.setattr(server_module, "reconcile_pending_recommendations", fake_reconcile)
+    monkeypatch.setattr(server_module, "MobileLocationLedger", FakeLedger)
+    monkeypatch.setattr(
+        server_module,
+        "project_mobile_locations_to_recommendations",
+        fake_projection,
+    )
     config = load_config()
     state_store = PhotosMcpStateStore(
         endpoint=config.endpoint,
@@ -434,7 +498,82 @@ def test_build_http_app_reconciles_recommendations_on_loopback(monkeypatch) -> N
 
     assert response.status_code == 200
     assert response.json()["new_file_count"] == 2
-    assert calls == [{"repository": state_store.run_repository}]
+    assert response.json()["location_projection"]["updated_count"] == 0
+    assert len(calls) == 1
+    assert calls[0]["repository"] is state_store.run_repository
+    assert calls[0]["identity_repository"] is not None
+
+
+def test_reconcile_refreshes_global_and_scoped_stories_after_late_gps(monkeypatch) -> None:
+    from starlette.testclient import TestClient
+    import photos_mcp.interfaces.mcp.server as server_module
+
+    async def fake_reconcile(**_kwargs):
+        return {"status": "completed"}
+
+    class FakeLedger:
+        def close(self):
+            return None
+
+    global_calls = []
+    scoped_calls = []
+    monkeypatch.setattr(server_module, "reconcile_pending_recommendations", fake_reconcile)
+    monkeypatch.setattr(server_module, "MobileLocationLedger", FakeLedger)
+    monkeypatch.setattr(
+        server_module,
+        "project_mobile_locations_to_recommendations",
+        lambda **_kwargs: {"status": "completed", "updated_count": 1},
+    )
+    monkeypatch.setattr(
+        server_module,
+        "ensure_recommendation_story",
+        lambda repository, **kwargs: global_calls.append((repository, kwargs)) or {},
+    )
+    monkeypatch.setattr(
+        server_module,
+        "ensure_scoped_story",
+        lambda repository, **kwargs: scoped_calls.append((repository, kwargs)) or {},
+    )
+    config = load_config()
+    state_store = PhotosMcpStateStore(
+        endpoint=config.endpoint,
+        health_endpoint=config.health_endpoint,
+    )
+    state_store.run_repository.upsert_story_manifest(
+        {
+            "story_id": "story-manual-late-gps",
+            "title": "수동 Story",
+            "status": "ready",
+            "revision": 1,
+            "scope": {
+                "kind": "capture_date_bounded",
+                "date_from": "2026-09-03",
+                "date_to": "2026-09-09",
+                "origin_run_id": "manual-run",
+                "collection_ids": [],
+            },
+        }
+    )
+    identity_repository = object()
+    app = build_http_app(
+        config=config,
+        state_store=state_store,
+        identity_repository=identity_repository,
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/automation/reconcile-recommendations", json={})
+
+    assert response.status_code == 200
+    assert response.json()["location_projection"]["story_update_count"] == 2
+    assert global_calls == [
+        (state_store.run_repository, {"identity_repository": identity_repository})
+    ]
+    assert len(scoped_calls) == 1
+    # An explicit empty collection set means this run recommended no photos;
+    # it must not expand back to every historical recommendation in the date range.
+    assert scoped_calls[0][1]["collection_ids"] == set()
+    assert scoped_calls[0][1]["date_from"] == "2026-09-03"
 
 
 def test_build_http_app_combined_control_status_latest_and_confirmed_stop() -> None:
@@ -468,7 +607,12 @@ def test_build_http_app_combined_control_status_latest_and_confirmed_stop() -> N
         "processed_count": 4,
         "recommended_count": 2,
     })
-    app = build_http_app(config=config, state_store=state_store)
+    identity_repository = object()
+    app = build_http_app(
+        config=config,
+        state_store=state_store,
+        identity_repository=identity_repository,
+    )
 
     with TestClient(app) as client:
         status = client.post("/automation/combined-control", json={"action": "status"})
@@ -516,7 +660,12 @@ def test_owner_can_refresh_story_and_cross_site_request_is_blocked(monkeypatch) 
         endpoint=config.endpoint,
         health_endpoint=config.health_endpoint,
     )
-    app = build_http_app(config=config, state_store=state_store)
+    identity_repository = object()
+    app = build_http_app(
+        config=config,
+        state_store=state_store,
+        identity_repository=identity_repository,
+    )
 
     with TestClient(app) as client:
         blocked = client.post(
@@ -531,7 +680,65 @@ def test_owner_can_refresh_story_and_cross_site_request_is_blocked(monkeypatch) 
     assert blocked.status_code == 403
     assert refreshed.status_code == 303
     assert refreshed.headers["location"] == "/photos"
-    assert calls == [(state_store.run_repository, {"force": True})]
+    assert calls == [
+        (
+            state_store.run_repository,
+            {"force": True, "identity_repository": identity_repository},
+        )
+    ]
+
+
+def test_owner_story_page_queues_mac_manual_story_without_resurrecting_deleted_data(
+    tmp_path,
+) -> None:
+    from starlette.testclient import TestClient
+
+    config = load_config()
+    state_store = PhotosMcpStateStore(
+        endpoint=config.endpoint,
+        health_endpoint=config.health_endpoint,
+        repository_path=tmp_path / "jobs.db",
+    )
+    app = build_http_app(config=config, state_store=state_store)
+
+    with TestClient(app) as client:
+        owner = client.get("/photos")
+        blocked = client.post(
+            "/photos/story/manual",
+            data={
+                "date_from": "2020-09-01",
+                "date_to": "2020-09-02",
+                "source": "apple",
+                "selection_mode": "balanced",
+                "limit": "100",
+            },
+            headers={"Origin": "https://attacker.example"},
+            follow_redirects=False,
+        )
+        queued = client.post(
+            "/photos/story/manual",
+            data={
+                "date_from": "2020-09-01",
+                "date_to": "2020-09-02",
+                "source": "apple",
+                "selection_mode": "balanced",
+                "limit": "100",
+            },
+            follow_redirects=False,
+        )
+
+    assert owner.status_code == 200
+    assert "날짜로 Story 만들기" in owner.text
+    assert "아직 표시할 Story가 없습니다" in owner.text
+    assert state_store.run_repository.list_story_manifests() == []
+    assert blocked.status_code == 403
+    assert queued.status_code == 303
+    assert queued.headers["location"] == "/photos?manual=queued"
+    operations = state_store.run_repository.list_curation_operations()
+    assert len(operations) == 1
+    assert operations[0]["origin"] == "mac_app"
+    assert operations[0]["request"]["date_from"] == "2020-09-01"
+    assert operations[0]["request"]["sources"] == ["apple"]
 
 
 def test_owner_story_creates_30_day_share_derivatives_and_blocks_cross_site_post(
@@ -541,6 +748,7 @@ def test_owner_story_creates_30_day_share_derivatives_and_blocks_cross_site_post
     from datetime import datetime
     from PIL import Image
     from starlette.testclient import TestClient
+    from photos_mcp.application.story_generation import ensure_recommendation_story
 
     recommendation_root = tmp_path / "recommendations"
     source = recommendation_root / "2026" / "2026-09-06" / "pick.jpg"
@@ -569,6 +777,9 @@ def test_owner_story_creates_30_day_share_derivatives_and_blocks_cross_site_post
             "capture_date_local": "2026-09-06",
         }
     )
+    # The owner page consumes persisted Story manifests. A GET must not
+    # regenerate a deleted Story merely because recommendation files remain.
+    ensure_recommendation_story(state_store.run_repository)
     app = build_http_app(config=config, state_store=state_store)
 
     with TestClient(app) as client:

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PhotosMcp 앨범</string>
+    <string name="brand_name">PhotosMcp</string>
+    <string name="brand_subtitle">나의 사진 앨범</string>
+    <string name="sync_complete">완료 · 위치 %1$d건 큐 등록 · %2$d개 배치 전송 · 남은 배치 %3$d</string>
+    <string name="settings_status">%1$s\n\nGPS Bridge  ·  %2$s\n마지막 위치 동기화  ·  %3$s\n정책  ·  최초 최근 10일, 이후 새 사진만 · 하루 1회\n\n사진 결과 열람은 Tailscale 연결 중에만 가능합니다. 사진 원본은 GPS Bridge로 전송하지 않습니다.</string>
+    <string name="recommendation_count_summary">%1$d장의 추천 사진 · 사진을 눌러 크게 보기</string>
+    <string name="recommendation_viewer_count">%1$d / %2$d</string>
+</resources>

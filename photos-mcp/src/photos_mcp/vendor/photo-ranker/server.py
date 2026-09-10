@@ -68,6 +68,11 @@ SCREEN_CAPTURE_KEYWORDS = (
     "monitor screenshot",
     "browser window",
     "application window",
+    "스크린샷",
+    "화면 캡처",
+    "화면캡처",
+    "화면 기록",
+    "화면기록",
 )
 
 mcp = FastMCP(
@@ -577,6 +582,9 @@ async def _run_classify_job(job) -> dict:
         date_to=filters.get("date_to", ""),
         limit=filters.get("limit", 100),
         selected_photo_ids=list(getattr(job, "request_options", {}).get("selected_photo_ids") or []),
+        exclude_screenshots=bool(
+            getattr(job, "request_options", {}).get("exclude_screenshots")
+        ),
     )
 
     source_load_seconds = round(time.perf_counter() - source_load_started, 3)
@@ -679,6 +687,7 @@ async def _run_sync_classification(
     stage2_step_index: int = 0,
     run_id: str = "",
     retain_checkpoints: bool = False,
+    exclude_screenshots: bool = False,
 ) -> tuple[object | None, JobDB, list[dict]]:
     from .sources import load_photos as _load
 
@@ -705,6 +714,7 @@ async def _run_sync_classification(
         date_from=date_from,
         date_to=date_to,
         limit=limit,
+        exclude_screenshots=exclude_screenshots,
     )
     db = _get_job_db()
     if log_tool_name and load_step_index and log_total_steps:
@@ -1860,6 +1870,7 @@ async def curate_best_photos(
         stage2_step_index=5,
         run_id=run_id,
         retain_checkpoints=True,
+        exclude_screenshots=exclude_screenshots,
     )
     if job is None or not results:
         _log_workflow_step(

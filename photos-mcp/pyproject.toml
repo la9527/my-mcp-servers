@@ -5,6 +5,7 @@ description = "Unified Photos MCP app scaffold for Nanobot"
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=1.0.0",
+    "cryptography>=44.0",
     "numpy>=1.26",
     "imagehash>=4.3",
     "osxphotos>=0.68",
@@ -65,6 +66,9 @@ dev = [
 [project.scripts]
 photos-mcp = "photos_mcp.main:main"
 photos-mcp-live-validate = "photos_mcp.live_validation:main"
+photos-mcp-mobile-location = "photos_mcp.mobile_location_server:main"
+photos-mcp-mobile-location-admin = "photos_mcp.mobile_location_admin:main"
+photos-mcp-mobile-client = "photos_mcp.mobile_client_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/photos_mcp", "src/apple_terminal_helper"]

@@ -332,6 +332,37 @@ def test_local_loader_processes_only_explicit_selected_paths(tmp_path) -> None:
     assert str(skipped) not in [photo["photo_id"] for photo in photos]
 
 
+def test_local_loader_excludes_picker_screenshot_before_limit(tmp_path) -> None:
+    from PIL import Image
+
+    prepare_vendor_runtime("photo-ranker")
+    sources = importlib.import_module("photos_mcp_vendor_photo_ranker.sources")
+    root = tmp_path / "photos"
+    root.mkdir()
+    screenshot = root / "000-imported.jpg"
+    camera_photo = root / "001-camera.jpg"
+    Image.new("RGB", (12, 12), "gray").save(screenshot)
+    Image.new("RGB", (12, 12), "green").save(camera_photo)
+    screenshot.with_name(f"{screenshot.name}.photos-mcp.json").write_text(
+        json.dumps(
+            {
+                "file": {"filename": "Screenshot_20260909_120000.png"},
+                "picker_metadata": {"create_time": "2026-09-09T12:00:00+09:00"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    photos = sources.load_photos(
+        "local",
+        str(root),
+        limit=1,
+        exclude_screenshots=True,
+    )
+
+    assert [Path(photo["photo_id"]).name for photo in photos] == ["001-camera.jpg"]
+
+
 def test_local_loader_converts_sony_arw_to_analysis_jpeg(tmp_path) -> None:
     from PIL import Image
 

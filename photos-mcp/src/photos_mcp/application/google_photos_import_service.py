@@ -135,6 +135,7 @@ class GooglePhotosImportService:
         max_pixels: int | None = None,
         limit: int = 1000,
         exclude_asset_keys: set[str] | None = None,
+        expected_item_count: int | None = None,
         progress_callback: PreparationProgress | None = None,
     ) -> dict[str, Any]:
         """Download Picker-selected photos without starting an analysis job."""
@@ -146,7 +147,10 @@ class GooglePhotosImportService:
             face_quality=False,
             face_clustering=False,
         )
-        assets = await self._selection.consume(session_id)
+        assets = await self._selection.consume(
+            session_id,
+            expected_item_count=expected_item_count,
+        )
         all_photos = tuple(asset for asset in assets if asset.media_type == "photo")
         excluded_keys = exclude_asset_keys or set()
         unprocessed_photos = tuple(
@@ -185,63 +189,94 @@ class GooglePhotosImportService:
 
         report("downloading", 0)
         tasks = [asyncio.create_task(materialize(index, asset)) for index, asset in enumerate(photos)]
-        completed: list[tuple[int, MaterializedPhotoContent]] = []
+        completed: dict[int, MaterializedPhotoContent] = {}
+
+        def preserve(index: int, content: MaterializedPhotoContent) -> None:
+            if index in completed:
+                return
+            sidecar_path = self._write_metadata_sidecar(content)
+            self._leases.save(
+                GoogleImportLease(
+                    session_id=session_id,
+                    asset_key=content.asset.stable_key,
+                    local_path=str(content.local_path),
+                    mime_type=content.mime_type,
+                    metadata_json=json.dumps(
+                        content.asset.metadata,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    sidecar_path=str(sidecar_path),
+                )
+            )
+            completed[index] = content
+
+        def prepared_payload(
+            *,
+            status: str,
+            error: BaseException | None = None,
+        ) -> dict[str, Any]:
+            ordered = sorted(completed.items())
+            paths = tuple(str(content.local_path) for _, content in ordered)
+            payload: dict[str, Any] = {
+                "status": status,
+                "origin_provider": "google_photos",
+                "session_id": session_id,
+                "selected_item_count": len(assets),
+                "total_photo_count": total_photo_count,
+                "materialized_photo_count": len(paths),
+                "unfinished_photo_count": max(0, total_photo_count - len(paths)),
+                "excluded_video_count": excluded_video_count,
+                "previously_processed_count": previously_processed_count,
+                "asset_refs": tuple(
+                    {
+                        "source_id": content.asset.source_id,
+                        "provider_asset_id": content.asset.provider_asset_id,
+                    }
+                    for _, content in ordered
+                ),
+                "paths": paths,
+                "face_analysis_enabled": False,
+            }
+            if error is not None:
+                payload["download_error_type"] = type(error).__name__[:64]
+            return payload
+
         try:
             for pending in asyncio.as_completed(tasks):
                 index, content = await pending
-                sidecar_path = self._write_metadata_sidecar(content)
-                self._leases.save(
-                    GoogleImportLease(
-                        session_id=session_id,
-                        asset_key=content.asset.stable_key,
-                        local_path=str(content.local_path),
-                        mime_type=content.mime_type,
-                        metadata_json=json.dumps(content.asset.metadata, ensure_ascii=False, sort_keys=True),
-                        sidecar_path=str(sidecar_path),
-                    )
-                )
-                completed.append((index, content))
+                preserve(index, content)
                 report("downloading", len(completed))
-        except Exception:
+        except Exception as error:
             for task in tasks:
                 task.cancel()
             settled = await asyncio.gather(*tasks, return_exceptions=True)
-            releasable = {
-                str(content.local_path): content
-                for item in settled
-                if isinstance(item, tuple)
-                for content in (item[1],)
-            }
-            for _, content in completed:
-                releasable[str(content.local_path)] = content
-            for content in releasable.values():
-                await self._content.release(content)
-                self._metadata_sidecar_path(content.local_path).unlink(missing_ok=True)
-            self._leases.mark_released(session_id)
-            report("failed", len(completed))
-            raise
-        completed.sort(key=lambda item: item[0])
-        paths = tuple(str(content.local_path) for _, content in completed)
-        report("completed", len(paths))
-        return {
-            "status": "prepared",
-            "origin_provider": "google_photos",
-            "session_id": session_id,
-            "selected_item_count": len(assets),
-            "total_photo_count": total_photo_count,
-            "materialized_photo_count": len(paths),
-            "excluded_video_count": excluded_video_count,
-            "previously_processed_count": previously_processed_count,
-            "asset_refs": tuple(
-                {
-                    "source_id": content.asset.source_id,
-                    "provider_asset_id": content.asset.provider_asset_id,
-                }
-                for _, content in completed
-            ),
-            "paths": paths,
-            "face_analysis_enabled": False,
-        }
+            for item in settled:
+                if not isinstance(item, tuple):
+                    continue
+                index, content = item
+                if index in completed:
+                    continue
+                try:
+                    preserve(index, content)
+                except Exception:
+                    await self._content.release(content)
+                    self._metadata_sidecar_path(content.local_path).unlink(missing_ok=True)
+            if not completed:
+                report("failed", 0)
+                raise
+            logger.warning(
+                "Google Photos download partially completed session_id=%s "
+                "completed=%d total=%d error_type=%s",
+                session_id,
+                len(completed),
+                total_photo_count,
+                type(error).__name__,
+            )
+            report("partial", len(completed))
+            return prepared_payload(status="prepared_partial", error=error)
+        report("completed", len(completed))
+        return prepared_payload(status="prepared")
 
     @staticmethod
     def _metadata_sidecar_path(content_path: Path) -> Path:
@@ -323,35 +358,51 @@ class GooglePhotosImportService:
             "face_analysis_enabled": False,
         }
 
+    def recover_prepared_selection(self, session_id: str) -> dict[str, Any]:
+        """Recover one exact unbound session without crossing job boundaries."""
+        leases = self._leases.list_session(session_id)
+        existing = tuple(
+            lease
+            for lease in leases
+            if lease.state != "released" and Path(lease.local_path).is_file()
+        )
+        if not existing or any(lease.job_id for lease in existing):
+            return {}
+        self._leases.reset_materialized(session_id)
+        session = self._selection.get(session_id)
+        selected_item_count = int(session.item_count) if session is not None else len(existing)
+        unfinished_photo_count = max(0, selected_item_count - len(existing))
+        asset_refs = []
+        for lease in existing:
+            source_id, separator, provider_asset_id = lease.asset_key.rpartition(":")
+            if separator and source_id and provider_asset_id:
+                asset_refs.append(
+                    {
+                        "source_id": source_id,
+                        "provider_asset_id": provider_asset_id,
+                    }
+                )
+        return {
+            "status": "prepared_partial" if unfinished_photo_count else "prepared",
+            "origin_provider": "google_photos",
+            "session_id": session_id,
+            "selected_item_count": selected_item_count,
+            "total_photo_count": selected_item_count,
+            "materialized_photo_count": len(existing),
+            "unfinished_photo_count": unfinished_photo_count,
+            "excluded_video_count": 0,
+            "asset_refs": tuple(asset_refs),
+            "paths": tuple(lease.local_path for lease in existing),
+            "face_analysis_enabled": False,
+            "recovered": True,
+        }
+
     def recover_latest_prepared_selection(self) -> dict[str, Any]:
         """Recover downloaded photos that were never attached to a real job."""
         for session_id in self._leases.list_unreleased_session_ids():
-            leases = self._leases.list_session(session_id)
-            existing = tuple(lease for lease in leases if Path(lease.local_path).is_file())
-            if not existing:
-                continue
-            bound_job_ids = {lease.job_id for lease in existing if lease.job_id}
-            # A submitted job owns its materialized files even when its state
-            # snapshot is temporarily unavailable during startup or recovery.
-            # Never present those files as a retryable Picker selection.
-            if bound_job_ids:
-                continue
-            self._leases.reset_materialized(session_id)
-            session = self._selection.get(session_id)
-            selected_item_count = int(session.item_count) if session is not None else len(existing)
-            paths = tuple(lease.local_path for lease in existing)
-            return {
-                "status": "prepared",
-                "origin_provider": "google_photos",
-                "session_id": session_id,
-                "selected_item_count": selected_item_count,
-                "total_photo_count": len(paths),
-                "materialized_photo_count": len(paths),
-                "excluded_video_count": max(0, selected_item_count - len(paths)),
-                "paths": paths,
-                "face_analysis_enabled": False,
-                "recovered": True,
-            }
+            recovered = self.recover_prepared_selection(session_id)
+            if recovered:
+                return recovered
         return {}
 
     async def classify_ready_selection(

@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 import fcntl
 import json
 from pathlib import Path
@@ -123,6 +123,8 @@ def _safe_browser_diagnostics(assistant: object) -> dict[str, object]:
         "reached_cutoff",
         "confirmation_clicked",
         "last_guard_code",
+        "deterministic_fallback_active",
+        "fallback_reason",
     }
     return {key: payload[key] for key in allowed if key in payload}
 
@@ -137,6 +139,7 @@ def record_bound_mission_failure(
     reason_code: str,
     cancelled: bool,
     completed_at: str,
+    unfinished_count: int = 0,
 ) -> None:
     """Propagate a terminal browser mission to its child and combined parent."""
 
@@ -155,6 +158,7 @@ def record_bound_mission_failure(
                 "status": status,
                 "terminal": True,
                 "error_code": reason_code[:48],
+                "unfinished_count": max(0, int(unfinished_count)),
                 "browser_mission_run_id": mission_run_id,
                 "completed_at": completed_at,
             }
@@ -162,6 +166,52 @@ def record_bound_mission_failure(
     if parent_run_id and not cancelled:
         # The combined reconciler owns the only external notification.
         reconcile_combined_curation(repository=repository)
+
+
+def find_recoverable_session(
+    repository: RunRepository,
+    importer: object,
+    *,
+    current_mission_run_id: str,
+    date_from: date | None,
+    date_to: date | None,
+    recent_days: int,
+    selection_limit: int,
+    reanalyze: bool,
+) -> str:
+    """Find one durable, scope-matched download checkpoint from an older worker."""
+
+    list_missions = getattr(repository, "list_browser_mission_runs", None)
+    if not callable(list_missions):
+        return ""
+    expected_from = date_from.isoformat() if date_from else ""
+    expected_to = date_to.isoformat() if date_to else ""
+    for mission in list_missions(limit=100):
+        if str(mission.get("mission_run_id") or "") == current_mission_run_id:
+            continue
+        if str(mission.get("status") or "") not in {
+            "running",
+            "failed",
+            "cancelled",
+        }:
+            continue
+        if str(mission.get("date_from") or "") != expected_from:
+            continue
+        if str(mission.get("date_to") or "") != expected_to:
+            continue
+        if not expected_from and int(mission.get("recent_days") or 0) != recent_days:
+            continue
+        if int(mission.get("selection_limit") or 0) != selection_limit:
+            continue
+        if bool(mission.get("reanalyze", False)) != reanalyze:
+            continue
+        session_id = str(mission.get("picker_session_id") or "")
+        recover = getattr(importer, "recover_prepared_selection", None)
+        if not session_id or not callable(recover):
+            continue
+        if recover(session_id):
+            return session_id
+    return ""
 
 
 def ensure_dedicated_chrome(
@@ -194,10 +244,23 @@ def ensure_dedicated_chrome(
                 payload = json.loads(response.read().decode("utf-8"))
         except (OSError, ValueError, json.JSONDecodeError):
             return False
-        return isinstance(payload, list) and any(
-            isinstance(item, dict) and str(item.get("type") or "") == "page"
-            for item in payload
-        )
+        if not isinstance(payload, list):
+            return False
+        for item in payload:
+            if not isinstance(item, dict) or str(item.get("type") or "") != "page":
+                continue
+            target = urlparse(str(item.get("url") or ""))
+            hostname = str(target.hostname or "").lower()
+            google_photos_bootstrap = (
+                hostname == "www.google.com"
+                and target.path.rstrip("/") == "/photos/about"
+            )
+            if target.scheme == "https" and (
+                hostname in {"photos.google.com", "accounts.google.com"}
+                or google_photos_bootstrap
+            ):
+                return True
+        return False
 
     if endpoint_ready():
         if page_ready():
@@ -282,6 +345,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
                 request_timeout_seconds=args.model_request_timeout_seconds,
             ),
             max_model_steps=args.max_model_steps,
+            model_mission_timeout_seconds=args.model_mission_timeout_seconds,
             cancellation_check=bound_run_cancelled,
             **assistant_options,
         )
@@ -297,7 +361,23 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
         "status": "running",
         "last_stage": "starting",
         "recent_days": max(1, min(int(args.recent_days), 31)),
+        "date_from": (
+            getattr(args, "date_from", None).isoformat()
+            if getattr(args, "date_from", None)
+            else ""
+        ),
+        "date_to": (
+            getattr(args, "date_to", None).isoformat()
+            if getattr(args, "date_to", None)
+            else ""
+        ),
         "selection_limit": max(1, min(int(args.preselect_count), 1000)),
+        "workflow_timeout_seconds": max(600, min(int(args.timeout_seconds), 21_600)),
+        "model_mission_timeout_seconds": max(
+            30,
+            min(int(args.model_mission_timeout_seconds), 21_600),
+        ),
+        "reanalyze": bool(getattr(args, "reanalyze", False)),
         "action_request_id": args.action_request_id,
         "automation_run_id": args.automation_run_id,
         "parent_run_id": args.parent_run_id,
@@ -315,7 +395,10 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
         for key in (
             "clicked_count",
             "selected_item_count",
+            "total_photo_count",
+            "completed_photo_count",
             "materialized_photo_count",
+            "unfinished_photo_count",
             "previously_processed_count",
         ):
             if key in payload:
@@ -324,21 +407,43 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
         emit(stage, payload)
 
     try:
-        result = await run_google_picker_assisted_workflow(
-            runtime=runtime,
-            browser_assistant=assistant,
-            repository=repository,
-            selection_profile=args.selection_profile,
-            limit=args.limit,
-            max_pixels=args.max_pixels,
-            preselect_count=args.preselect_count,
-            recent_days=args.recent_days,
-            action_request_id=args.action_request_id,
-            automation_run_id=args.automation_run_id,
-            auto_confirm=args.auto_confirm,
-            timeout_seconds=args.timeout_seconds,
-            progress_callback=track,
-            cancellation_check=bound_run_cancelled,
+        importer = getattr(runtime, "importer", None)
+        resume_session_id = (
+            find_recoverable_session(
+                repository,
+                importer,
+                current_mission_run_id=mission_run_id,
+                date_from=getattr(args, "date_from", None),
+                date_to=getattr(args, "date_to", None),
+                recent_days=max(1, min(int(args.recent_days), 31)),
+                selection_limit=max(1, min(int(args.preselect_count), 1000)),
+                reanalyze=bool(getattr(args, "reanalyze", False)),
+            )
+            if importer is not None
+            else ""
+        )
+        result = await asyncio.wait_for(
+            run_google_picker_assisted_workflow(
+                runtime=runtime,
+                browser_assistant=assistant,
+                repository=repository,
+                selection_profile=args.selection_profile,
+                limit=args.limit,
+                max_pixels=args.max_pixels,
+                preselect_count=args.preselect_count,
+                recent_days=args.recent_days,
+                date_from=getattr(args, "date_from", None),
+                date_to=getattr(args, "date_to", None),
+                action_request_id=args.action_request_id,
+                automation_run_id=args.automation_run_id,
+                auto_confirm=args.auto_confirm,
+                reanalyze=bool(getattr(args, "reanalyze", False)),
+                resume_session_id=resume_session_id,
+                timeout_seconds=args.timeout_seconds,
+                progress_callback=track,
+                cancellation_check=bound_run_cancelled,
+            ),
+            timeout=max(1.0, float(args.timeout_seconds)),
         )
         model_metrics = _safe_model_metrics(assistant)
         completed = {
@@ -354,6 +459,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
             ),
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "model_metrics": model_metrics,
+            "browser_diagnostics": _safe_browser_diagnostics(assistant),
             "completed_at": datetime.now(UTC).isoformat(),
         }
         repository.upsert_browser_mission_run(completed)
@@ -370,6 +476,27 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
         )
         cancelled = isinstance(exc, (BrowserMissionCancelled, asyncio.CancelledError))
         completed_at = datetime.now(UTC).isoformat()
+        recovered: dict[str, object] = {}
+        session_id = str(observed.get("picker_session_id") or "")
+        recover = getattr(
+            getattr(runtime, "importer", None),
+            "recover_prepared_selection",
+            None,
+        )
+        if session_id and callable(recover):
+            try:
+                recovered = dict(recover(session_id) or {})
+            except Exception:
+                recovered = {}
+        if recovered:
+            observed["materialized_photo_count"] = max(
+                0,
+                int(recovered.get("materialized_photo_count") or 0),
+            )
+            observed["unfinished_photo_count"] = max(
+                0,
+                int(recovered.get("unfinished_photo_count") or 0),
+            )
         repository.upsert_browser_mission_run(
             {
                 **observed,
@@ -390,6 +517,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
             reason_code=reason_code,
             cancelled=cancelled,
             completed_at=completed_at,
+            unfinished_count=int(observed.get("unfinished_photo_count") or 0),
         )
         raise
     finally:
@@ -417,9 +545,24 @@ def main(argv: list[str] | None = None) -> int:
         help="Inclusive date window ending today for Picker photo selection",
     )
     parser.add_argument(
+        "--date-from",
+        type=date.fromisoformat,
+        help="Explicit inclusive capture-date start (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--date-to",
+        type=date.fromisoformat,
+        help="Explicit inclusive capture-date end (YYYY-MM-DD)",
+    )
+    parser.add_argument(
         "--auto-confirm",
         action=argparse.BooleanOptionalAction,
         default=True,
+    )
+    parser.add_argument(
+        "--reanalyze",
+        action="store_true",
+        help="Include Picker assets that were already analyzed in an earlier run",
     )
     parser.add_argument("--timeout-seconds", type=float, default=6 * 60 * 60)
     parser.add_argument("--action-request-id", default="")
@@ -446,7 +589,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--linux-prepare-timeout-seconds", type=float, default=600.0)
     parser.add_argument("--model-request-timeout-seconds", type=float, default=300.0)
-    parser.add_argument("--max-model-steps", type=int, default=24)
+    parser.add_argument(
+        "--model-mission-timeout-seconds",
+        type=float,
+        default=900.0,
+        help="Wall-clock limit for the full Qwen selection phase before deterministic fallback",
+    )
+    parser.add_argument(
+        "--max-model-steps",
+        type=int,
+        default=64,
+        help="Bounded Qwen tool turns; 64 permits paged selection up to 1000 photos",
+    )
     parser.add_argument("--browser-url", default="http://127.0.0.1:9333")
     parser.add_argument(
         "--chrome-executable",
@@ -471,8 +625,20 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--preselect-count must be between 1 and 1000")
     if not 1 <= args.recent_days <= 31:
         parser.error("--recent-days must be between 1 and 31")
+    if (args.date_from is None) != (args.date_to is None):
+        parser.error("--date-from and --date-to are required together")
+    if args.date_from and (
+        args.date_to < args.date_from
+        or (args.date_to - args.date_from).days > 30
+        or args.date_to > date.today()
+    ):
+        parser.error("explicit dates must be a non-future inclusive range of at most 31 days")
     if not 600 <= args.timeout_seconds <= 21600:
         parser.error("--timeout-seconds must be between 600 and 21600")
+    if not 4 <= args.max_model_steps <= 128:
+        parser.error("--max-model-steps must be between 4 and 128")
+    if not 30 <= args.model_mission_timeout_seconds <= 21600:
+        parser.error("--model-mission-timeout-seconds must be between 30 and 21600")
     for name in ("action_request_id", "automation_run_id", "parent_run_id"):
         value = str(getattr(args, name) or "")
         if value and not _BOUND_ID_RE.fullmatch(value):

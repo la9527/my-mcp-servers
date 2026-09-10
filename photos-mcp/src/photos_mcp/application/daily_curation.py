@@ -38,6 +38,7 @@ def complete_google_picker_action(
     excluded_video_count: int = 0,
     result: str = "",
     previously_processed_count: int = 0,
+    unfinished_count: int = 0,
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Close the latest outstanding Google Picker request after job handoff.
@@ -86,13 +87,14 @@ def complete_google_picker_action(
         completed_at = (now or _utcnow()).isoformat()
         completion = {
             **run,
-            "status": "completed",
+            "status": "partial" if result == "partial_download" else "completed",
             "terminal": True,
             "analysis_run_id": str(analysis_run_id),
             "picker_session_id": str(picker_session_id),
             "selected_photo_count": max(0, int(selected_photo_count)),
             "excluded_video_count": max(0, int(excluded_video_count)),
             "completed_at": completed_at,
+            "unfinished_count": max(0, int(unfinished_count)),
         }
         if result:
             completion["result"] = str(result)
@@ -172,6 +174,13 @@ async def start_daily_curation(
     timeout_seconds = max(600.0, min(float(options.get("timeout_seconds") or 21600.0), 21600.0))
     trigger = str(options.get("trigger") or "scheduled")
     parent_run_id = str(options.get("parent_run_id") or "")
+    scope_kind = str(options.get("scope_kind") or "date_added_incremental")
+    date_from = str(options.get("date_from") or "")
+    date_to = str(options.get("date_to") or "")
+    exact_capture_scope = scope_kind == "capture_date_bounded"
+    reanalyze = bool(options.get("reanalyze", False))
+    if exact_capture_scope and (not date_from or not date_to):
+        raise ValueError("capture-date curation requires date_from and date_to")
     if provider in {"google", "google_photos"}:
         observed_now = now or _utcnow()
         if observed_now.tzinfo is None:
@@ -187,15 +196,24 @@ async def start_daily_curation(
             )
         )
         scope_fingerprint = hashlib.sha256(
-            f"{lookback_days}:{requested_limit}".encode("utf-8")
+            (
+                f"capture:{date_from}:{date_to}:{requested_limit}"
+                if exact_capture_scope
+                else f"recent:{lookback_days}:{requested_limit}"
+            ).encode("utf-8")
         ).hexdigest()[:12]
+        picker_scope_text = (
+            f"촬영일 {date_from}부터 {date_to}까지"
+            if exact_capture_scope
+            else f"최근 {lookback_days}일 범위에서"
+        )
         event = UserActionRequiredEvent.create(
             request_id=request_id,
             request_type="google_picker_selection",
             reason_code="picker_selection_required",
             title="Google Photos 선택이 필요합니다",
             message=(
-                f"최근 {lookback_days}일 범위에서 최대 {requested_limit}장을 확인하고 "
+                f"{picker_scope_text} 최대 {requested_limit}장을 확인하고 "
                 "Picker 선택을 완료해 주세요."
             ),
             action_url=f"{base_url}/{request_id}",
@@ -209,6 +227,17 @@ async def start_daily_curation(
             ),
         )
         event_payload = event.as_payload()
+        if exact_capture_scope:
+            event_payload.update(
+                {
+                    "scope_kind": scope_kind,
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "timezone": str(options.get("timezone") or "Asia/Seoul"),
+                    "selection_limit": requested_limit,
+                    "operation_id": str(options.get("operation_id") or ""),
+                }
+            )
         if parent_run_id:
             # The attached Chrome/Qwen worker handles the normal Picker path.
             # Human-facing events are emitted separately only when that worker
@@ -247,6 +276,13 @@ async def start_daily_curation(
             "parent_run_id": parent_run_id,
             "lookback_days": lookback_days,
             "lookback_hours": float(lookback_days * 24),
+            "scope_kind": scope_kind,
+            "date_from": date_from,
+            "date_to": date_to,
+            "timezone": str(options.get("timezone") or "Asia/Seoul"),
+            "operation_id": str(options.get("operation_id") or ""),
+            "publication_policy": str(options.get("publication_policy") or "approved_groups"),
+            "reanalyze": reanalyze,
             "requested_limit": requested_limit,
             "timeout_seconds": timeout_seconds,
             "status": "completed" if action_is_terminal else "awaiting_user_action",
@@ -276,28 +312,42 @@ async def start_daily_curation(
         }
     source_id = str(options.get("source_id") or "system-library")
     automation_key = f"daily:{provider}:{source_id}"
-    checkpoint = repository.get_automation_checkpoint(automation_key) or {}
+    checkpoint = (
+        {}
+        if exact_capture_scope
+        else repository.get_automation_checkpoint(automation_key) or {}
+    )
     observed_now = now or _utcnow()
     if observed_now.tzinfo is None:
         observed_now = observed_now.replace(tzinfo=UTC)
-    window_start, window_end, cursor = _new_window(
-        checkpoint,
-        date_added_from=str(options.get("date_added_from") or ""),
-        date_added_to=str(options.get("date_added_to") or ""),
-        lookback_hours=float(options.get("lookback_hours") or lookback_days * 24.0),
-        overlap_hours=float(options.get("overlap_hours") or 6.0),
-        now=observed_now,
-    )
     port = source_port or VendorPhotoSourcePort()
-    page = await port.list_added_photos(
-        provider,
-        date_added_from=window_start,
-        date_added_to=window_end,
-        cursor=cursor,
-        limit=requested_limit,
-    )
-    discovered = list(page.get("items") or [])
-    next_cursor = str(page.get("next_cursor") or "")
+    if exact_capture_scope:
+        window_start, window_end, cursor = date_from, date_to, ""
+        discovered = await port.list_photos(
+            provider,
+            date_from=date_from,
+            date_to=date_to,
+            limit=requested_limit,
+        )
+        next_cursor = ""
+    else:
+        window_start, window_end, cursor = _new_window(
+            checkpoint,
+            date_added_from=str(options.get("date_added_from") or ""),
+            date_added_to=str(options.get("date_added_to") or ""),
+            lookback_hours=float(options.get("lookback_hours") or lookback_days * 24.0),
+            overlap_hours=float(options.get("overlap_hours") or 6.0),
+            now=observed_now,
+        )
+        page = await port.list_added_photos(
+            provider,
+            date_added_from=window_start,
+            date_added_to=window_end,
+            cursor=cursor,
+            limit=requested_limit,
+        )
+        discovered = list(page.get("items") or [])
+        next_cursor = str(page.get("next_cursor") or "")
     candidates: list[dict[str, Any]] = []
     candidate_ids: set[str] = set()
     for item in discovered:
@@ -307,14 +357,18 @@ async def start_daily_curation(
         if not asset_id:
             continue
         previous = repository.get_processed_photo_asset(provider, source_id, asset_id)
-        if previous and str(previous.get("status") or "") in _ALREADY_HANDLED_STATUSES:
+        if (
+            not reanalyze
+            and previous
+            and str(previous.get("status") or "") in _ALREADY_HANDLED_STATUSES
+        ):
             continue
         if asset_id in candidate_ids:
             continue
         candidates.append(item)
         candidate_ids.add(asset_id)
     newly_discovered_candidate_count = len(candidates)
-    failed_assets = repository.list_processed_photo_assets(
+    failed_assets = [] if exact_capture_scope else repository.list_processed_photo_assets(
         provider=provider,
         source_id=source_id,
         statuses={"failed", "carry_over"},
@@ -339,6 +393,13 @@ async def start_daily_curation(
         "trigger": trigger,
         "parent_run_id": parent_run_id,
         "lookback_days": lookback_days,
+        "scope_kind": scope_kind,
+        "date_from": date_from,
+        "date_to": date_to,
+        "timezone": str(options.get("timezone") or "Asia/Seoul"),
+        "operation_id": str(options.get("operation_id") or ""),
+        "publication_policy": str(options.get("publication_policy") or "approved_groups"),
+        "reanalyze": reanalyze,
         "requested_limit": requested_limit,
         "timeout_seconds": timeout_seconds,
         "window_started_at": window_start,
@@ -399,20 +460,21 @@ async def start_daily_curation(
         }
 
     repository.upsert_automation_run(result)
-    repository.save_automation_checkpoint(
-        automation_key,
-        {
-            "provider": provider,
-            "source_id": source_id,
-            "cursor": next_cursor,
-            "window_started_at": window_start,
-            "window_ended_at": window_end,
-            "overlap_started_at": window_start,
-            "last_successful_scan_at": (
-                str(checkpoint.get("last_successful_scan_at") or "") if next_cursor else window_end
-            ),
-        },
-    )
+    if not exact_capture_scope:
+        repository.save_automation_checkpoint(
+            automation_key,
+            {
+                "provider": provider,
+                "source_id": source_id,
+                "cursor": next_cursor,
+                "window_started_at": window_start,
+                "window_ended_at": window_end,
+                "overlap_started_at": window_start,
+                "last_successful_scan_at": (
+                    str(checkpoint.get("last_successful_scan_at") or "") if next_cursor else window_end
+                ),
+            },
+        )
     return result
 
 
@@ -431,7 +493,11 @@ def reconcile_daily_curation(
         terminal = False
         asset_status = "submitted"
     elif analysis_status == "completed":
-        next_status = "completed"
+        next_status = (
+            "partial"
+            if max(0, int(automation_run.get("unfinished_count") or 0))
+            else "completed"
+        )
         terminal = True
         asset_status = "completed"
     elif analysis_status in {"failed", "cancelled", "interrupted"}:

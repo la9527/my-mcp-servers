@@ -80,10 +80,15 @@ class JobHistoryDeletionReport:
     errors: tuple[str, ...] = ()
     files_deleted: int = 0
     bytes_reclaimed: int = 0
+    cross_client_records_deleted: int = 0
 
     @property
     def deleted_count(self) -> int:
         return len(self.deleted_job_ids)
+
+    @property
+    def total_deleted_count(self) -> int:
+        return self.deleted_count + self.cross_client_records_deleted
 
 
 class PhotosMcpDaemonController:
@@ -240,12 +245,18 @@ class PhotosMcpDaemonController:
         or files outside Photos MCP managed roots.
         """
         requested = self._history_job_ids(job_ids, statuses=statuses)
-        total = len(requested)
+        full_cleanup = job_ids is None and statuses is None
+        cross_client_pending = (
+            self._state_store.run_repository.terminal_curation_history_count()
+            if full_cleanup
+            else 0
+        )
+        total = len(requested) + cross_client_pending
         self._emit_history_deletion_progress(
             progress_callback,
             JobHistoryDeletionProgress("삭제 준비 중", 0, total),
         )
-        if not requested:
+        if not requested and cross_client_pending <= 0:
             return JobHistoryDeletionReport((), ())
 
         deleted_ids: list[str] = []
@@ -253,6 +264,7 @@ class PhotosMcpDaemonController:
         errors: list[str] = []
         files_deleted = 0
         bytes_reclaimed = 0
+        cross_client_deleted = 0
 
         try:
             job_store = PhotoRankerJobStore(load_vendor_server("photo-ranker"))
@@ -319,12 +331,24 @@ class PhotosMcpDaemonController:
                     ),
                 )
 
-            if job_ids is None and statuses is None:
+            if full_cleanup:
+                self._emit_history_deletion_progress(
+                    progress_callback,
+                    JobHistoryDeletionProgress(
+                        "Mac·Android 작업 내역 동기화 중",
+                        len(requested),
+                        total,
+                        files_deleted=files_deleted,
+                        bytes_reclaimed=bytes_reclaimed,
+                    ),
+                )
+                cross_client = self._state_store.run_repository.clear_terminal_curation_history()
+                cross_client_deleted = sum(int(value) for value in cross_client.values())
                 self._emit_history_deletion_progress(
                     progress_callback,
                     JobHistoryDeletionProgress(
                         "남은 결과 캐시 확인 중",
-                        total,
+                        len(requested) + cross_client_deleted,
                         total,
                         files_deleted=files_deleted,
                         bytes_reclaimed=bytes_reclaimed,
@@ -342,11 +366,13 @@ class PhotosMcpDaemonController:
                 tuple(errors),
                 files_deleted,
                 bytes_reclaimed,
+                cross_client_deleted,
             )
             logger.info(
-                "history cleanup completed requested=%d deleted=%d skipped=%d files=%d bytes=%d errors=%d",
+                "history cleanup completed requested=%d deleted=%d cross_client=%d skipped=%d files=%d bytes=%d errors=%d",
                 total,
                 report.deleted_count,
+                report.cross_client_records_deleted,
                 len(report.skipped_job_ids),
                 report.files_deleted,
                 report.bytes_reclaimed,
@@ -374,7 +400,11 @@ class PhotosMcpDaemonController:
                 tuple(errors or ("기록 정리를 시작하지 못했습니다.",)),
                 files_deleted,
                 bytes_reclaimed,
+                cross_client_deleted,
             )
+
+    def terminal_curation_history_count(self) -> int:
+        return self._state_store.run_repository.terminal_curation_history_count()
 
     def clear_job_history(self, statuses: tuple[str, ...] | None = None) -> list[str]:
         """Compatibility wrapper for callers that only require deleted IDs."""

@@ -12,7 +12,10 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from photos_mcp.application.cloud_selection_service import CloudSelectionService
+from photos_mcp.application.cloud_selection_service import (
+    CloudSelectionService,
+    PickerItemCountMismatch,
+)
 from photos_mcp.application.google_photos_import_service import (
     GooglePhotosImportService,
     start_google_materialized_classification,
@@ -34,6 +37,79 @@ from photos_mcp.infrastructure.sources.google_photos.session_repository import (
     PickerSessionRepository,
 )
 from photos_mcp.infrastructure.vendor_adapter.loader import prepare_vendor_runtime
+
+
+@pytest.mark.asyncio
+async def test_picker_consume_fails_closed_when_committed_count_never_matches_ui(
+    tmp_path: Path,
+) -> None:
+    source = descriptor_from_legacy_source("google", account_id="account")
+    picker = FakeGooglePhotosPickerAdapter()
+    sessions = PickerSessionRepository(tmp_path / "picker.db")
+    selection = CloudSelectionService(picker, sessions)
+    started = await selection.start(source, max_item_count=10)
+    picker.complete_with_assets(
+        started.session_id,
+        (fake_google_asset(source.source_id, "photo-1", filename="photo.jpg"),),
+    )
+    await selection.poll(started.session_id)
+
+    with pytest.raises(PickerItemCountMismatch) as raised:
+        await selection.consume(
+            started.session_id,
+            expected_item_count=10,
+            settle_attempts=1,
+        )
+
+    assert raised.value.expected_count == 10
+    assert raised.value.actual_count == 1
+    failed = sessions.get(started.session_id)
+    assert failed is not None
+    assert failed.state.value == "failed"
+    assert failed.item_count == 1
+    assert failed.error_code == "picker_item_count_mismatch"
+    sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_picker_consume_waits_for_committed_count_to_settle(tmp_path: Path) -> None:
+    class SettlingPicker(FakeGooglePhotosPickerAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.list_calls = 0
+
+        async def list_picked_assets(self, session, *, cursor="", page_size=100):
+            page = await super().list_picked_assets(
+                session, cursor=cursor, page_size=page_size
+            )
+            self.list_calls += 1
+            if self.list_calls == 1:
+                return type(page)(items=page.items[:1], next_cursor="")
+            return page
+
+    source = descriptor_from_legacy_source("google", account_id="account")
+    picker = SettlingPicker()
+    sessions = PickerSessionRepository(tmp_path / "picker.db")
+    selection = CloudSelectionService(picker, sessions)
+    started = await selection.start(source, max_item_count=10)
+    assets = (
+        fake_google_asset(source.source_id, "photo-1", filename="one.jpg"),
+        fake_google_asset(source.source_id, "photo-2", filename="two.jpg"),
+    )
+    picker.complete_with_assets(started.session_id, assets)
+    await selection.poll(started.session_id)
+
+    consumed = await selection.consume(
+        started.session_id,
+        expected_item_count=2,
+        settle_attempts=2,
+        settle_interval_seconds=0.1,
+    )
+
+    assert consumed == assets
+    assert picker.list_calls == 2
+    assert sessions.get(started.session_id).state.value == "consumed"
+    sessions.close()
 
 
 @pytest.mark.asyncio
@@ -426,6 +502,67 @@ async def test_google_import_reports_monotonic_download_progress(tmp_path: Path)
     assert progress[-1]["excluded_video_count"] == 1
     assert progress[-1]["progress_percent"] == 100.0
     assert result["total_photo_count"] == 3
+    leases.close()
+    sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_google_import_preserves_successful_downloads_when_later_download_fails(
+    tmp_path: Path,
+) -> None:
+    source = descriptor_from_legacy_source("google", account_id="account")
+    picker = FakeGooglePhotosPickerAdapter()
+    sessions = PickerSessionRepository(tmp_path / "picker.db")
+    selection = CloudSelectionService(picker, sessions)
+    started = await selection.start(source, max_item_count=10)
+    photos = tuple(
+        fake_google_asset(source.source_id, f"photo-{index}", filename=f"photo-{index}.jpg")
+        for index in range(3)
+    )
+    picker.complete_with_assets(started.session_id, photos)
+    await selection.poll(started.session_id)
+
+    async def resolve_url(asset_id: str, _max_pixels: int | None):
+        if asset_id == "photo-1":
+            raise OSError("temporary download failure")
+        return (
+            f"https://content.example/{asset_id}",
+            "image/jpeg",
+            datetime.now(timezone.utc) + timedelta(minutes=10),
+        )
+
+    async def fetch_bytes(_url: str, _limit: int):
+        return b"image"
+
+    progress: list[dict] = []
+    leases = GoogleImportLeaseRepository(tmp_path / "imports.db")
+    service = GooglePhotosImportService(
+        selection=selection,
+        content_adapter=GooglePickedContentAdapter(
+            resolve_url=resolve_url,
+            fetch_bytes=fetch_bytes,
+            cache_root=tmp_path / "cache",
+        ),
+        leases=leases,
+        classification_starter=lambda *_args: None,
+        max_concurrent_downloads=1,
+    )
+
+    prepared = await service.prepare_ready_selection(
+        source,
+        started.session_id,
+        progress_callback=lambda payload: progress.append(dict(payload)),
+    )
+
+    assert prepared["status"] == "prepared_partial"
+    assert prepared["materialized_photo_count"] == 2
+    assert prepared["unfinished_photo_count"] == 1
+    assert prepared["download_error_type"] == "OSError"
+    assert progress[-1]["state"] == "partial"
+    lease = leases.list_session(started.session_id)[0]
+    assert lease.state == "materialized"
+    assert Path(lease.local_path).is_file()
+    assert Path(lease.sidecar_path).is_file()
     leases.close()
     sessions.close()
 

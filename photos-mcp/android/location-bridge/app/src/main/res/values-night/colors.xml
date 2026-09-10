@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="photos_background">#101411</color>
+    <color name="photos_surface">#181D1A</color>
+    <color name="photos_surface_raised">#202622</color>
+    <color name="photos_text_primary">#EFF3EE</color>
+    <color name="photos_text_secondary">#AFB8B1</color>
+    <color name="photos_primary">#82CFB4</color>
+    <color name="photos_on_primary">#0B352A</color>
+    <color name="photos_primary_container">#214D40</color>
+    <color name="photos_outline">#3C4741</color>
+    <color name="photos_success">#91D5B1</color>
+    <color name="photos_warning">#E0C47B</color>
+    <color name="photos_error">#FFB4AB</color>
+    <color name="photos_info">#A9CAE4</color>
+    <color name="photos_launcher_background">#1D6552</color>
+</resources>

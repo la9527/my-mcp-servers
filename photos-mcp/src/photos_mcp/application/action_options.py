@@ -285,17 +285,24 @@ _register(ActionSpec(
     action="daily_curate",
     allowed=_set(
         "source", "source_id", "date_added_from", "date_added_to", "lookback_days", "lookback_hours",
-        "overlap_hours", "limit", "selection_profile", "exclude_screenshots", "mode",
-        "action_base_url", "timeout_seconds", "trigger", "parent_run_id",
+        "overlap_hours", "limit", "selection_mode", "selection_profile", "exclude_screenshots", "mode",
+        "action_base_url", "timeout_seconds", "trigger", "parent_run_id", "scope_kind", "date_from",
+        "date_to", "timezone", "operation_id", "publication_policy", "reanalyze",
     ),
     defaults={
         "source": "apple", "source_id": "system-library", "date_added_from": "",
         "date_added_to": "", "lookback_days": 2, "lookback_hours": 48.0, "overlap_hours": 6.0,
-        "limit": 50, "selection_profile": "general", "exclude_screenshots": True,
+        "limit": 50, "selection_mode": "balanced", "selection_profile": "general", "exclude_screenshots": True,
         "mode": "review_only", "action_base_url": "", "timeout_seconds": 21600.0,
-        "trigger": "scheduled", "parent_run_id": "",
+        "trigger": "scheduled", "parent_run_id": "", "scope_kind": "date_added_incremental",
+        "date_from": "", "date_to": "", "timezone": "Asia/Seoul", "operation_id": "",
+        "publication_policy": "approved_groups", "reanalyze": False,
     },
-    usage_hint="Discover newly added Apple Photos assets and submit read-only ranking; album writes remain separate and approval-gated.",
+    usage_hint=(
+        "Discover Apple or Google Photos assets and submit read-only ranking. "
+        "Use scope_kind=capture_date_bounded with date_from/date_to for an exact manual date range; "
+        "album writes remain separate and approval-gated."
+    ),
 ))
 _register(ActionSpec(
     tool="photos_workflow",

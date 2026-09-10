@@ -1152,16 +1152,19 @@ class PhotosMcpMenuController(NSObject):
             str(job.get("status") or "") in _HISTORICAL_JOB_STATUSES
             for job in snapshot.recent_jobs
         )
-        if historical_count <= 0:
+        cross_client_count = self._daemon_controller.terminal_curation_history_count()
+        total_count = historical_count + cross_client_count
+        if total_count <= 0:
             return
         alert = NSAlert.alloc().init()
-        alert.setMessageText_(f"전체 작업 기록 {historical_count}건을 삭제할까요?")
+        alert.setMessageText_(f"완료된 작업 목록 {total_count}건을 비울까요?")
         alert.setInformativeText_(
-            "완료·실패·취소·중단·재개 확인 필요 기록과 Photos MCP가 만든 결과·미리보기·임시 Google 다운로드를 모두 삭제합니다. "
-            "진행 중인 작업과 원본 사진은 삭제하지 않습니다."
+            "Mac과 Android에 표시되는 완료·실패·취소·중단 작업 기록, 알림, 작업용 결과·미리보기와 임시 Google 다운로드를 삭제합니다. "
+            "진행 중인 작업, 원본 사진, 추천 보관소, Story, 사진별 기존 분석 여부와 인물 관리 정보는 유지됩니다. "
+            "같은 기간을 처음부터 분석하려면 Android 날짜 실행에서 ‘해당 기간 전체 다시 분석’을 선택하세요."
         )
         alert.setAlertStyle_(NSAlertStyleCritical)
-        alert.addButtonWithTitle_("전체 기록 삭제")
+        alert.addButtonWithTitle_("작업 목록 비우기")
         alert.addButtonWithTitle_("취소")
         NSApp.activateIgnoringOtherApps_(True)
         if alert.runModal() != NSAlertFirstButtonReturn:
@@ -1250,12 +1253,12 @@ class PhotosMcpMenuController(NSObject):
                 f"삭제 {report.deleted_count}건 · 남은 항목 {len(report.skipped_job_ids)}건\n{detail}"
             )
             alert.setAlertStyle_(NSAlertStyleWarning)
-        elif report.deleted_count == 0:
+        elif report.total_deleted_count == 0:
             alert.setMessageText_("삭제할 과거 작업 기록이 없습니다")
             alert.setInformativeText_("진행 중인 작업은 보호되어 삭제하지 않았습니다.")
             alert.setAlertStyle_(NSAlertStyleInformational)
         else:
-            alert.setMessageText_(f"작업 기록 {report.deleted_count}건을 삭제했습니다")
+            alert.setMessageText_(f"작업 기록 {report.total_deleted_count}건을 삭제했습니다")
             reclaimed_mb = report.bytes_reclaimed / (1024 * 1024)
             alert.setInformativeText_(
                 f"결과·미리보기·임시 파일 {report.files_deleted:,}개를 정리했고 {reclaimed_mb:.1f}MB를 확보했습니다."
@@ -1274,7 +1277,7 @@ class PhotosMcpMenuController(NSObject):
                 NSBackingStoreBuffered,
                 False,
             )
-            window.setTitle_("작업 기록 삭제")
+            window.setTitle_("작업 목록 비우기")
             window.setReleasedWhenClosed_(False)
             root = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 420.0, 156.0))
             self._history_deletion_title = NSTextField.labelWithString_("삭제 준비 중")

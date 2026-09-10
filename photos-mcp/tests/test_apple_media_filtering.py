@@ -79,6 +79,36 @@ def test_apple_photo_source_list_photos_filters_videos_before_limit() -> None:
     assert all(photo.media_type == "photo" for photo in photos)
 
 
+def test_apple_photo_source_excludes_photos_mcp_folder_before_limit() -> None:
+    prepare_vendor_runtime("photo-source")
+    module = importlib.import_module("photos_mcp_vendor_photo_source.sources.apple_photos")
+    source = module.ApplePhotosSource()
+    managed = _apple_photo(
+        photo_id="managed-copy",
+        filename="managed.jpg",
+        isphoto=True,
+        ismovie=False,
+        uti="public.jpeg",
+    )
+    managed.album_info = [
+        SimpleNamespace(title="2026-09 추천", folder_names=["Photos MCP"])
+    ]
+    original = _apple_photo(
+        photo_id="camera-original",
+        filename="original.heic",
+        isphoto=True,
+        ismovie=False,
+        uti="public.heic",
+    )
+    source._db = SimpleNamespace(photos=lambda: [managed, original])
+
+    listed = source.list_photos(limit=1)
+    added = source.list_added_photos(limit=1)
+
+    assert [photo.id for photo in listed] == ["camera-original"]
+    assert [photo.id for photo in added["items"]] == ["camera-original"]
+
+
 def test_apple_photo_source_lists_added_photos_with_stable_cursor() -> None:
     prepare_vendor_runtime("photo-source")
     module = importlib.import_module("photos_mcp_vendor_photo_source.sources.apple_photos")
@@ -242,3 +272,88 @@ def test_photo_ranker_load_apple_processes_only_explicit_uuid_selection(monkeypa
     )
 
     assert [item["photo_id"] for item in selected] == ["photo-c", "photo-a"]
+
+
+def test_photo_ranker_rejects_explicit_photos_mcp_album_copy(monkeypatch) -> None:
+    prepare_vendor_runtime("photo-ranker")
+    module = importlib.import_module("photos_mcp_vendor_photo_ranker.sources")
+    managed = _apple_photo(
+        photo_id="managed-copy",
+        filename="managed.jpg",
+        isphoto=True,
+        ismovie=False,
+        uti="public.jpeg",
+        path="/tmp/managed.jpg",
+    )
+    managed.album_info = [
+        SimpleNamespace(title="2026-09 추천", folder_names=["Photos MCP"])
+    ]
+    original = _apple_photo(
+        photo_id="camera-original",
+        filename="original.jpg",
+        isphoto=True,
+        ismovie=False,
+        uti="public.jpeg",
+        path="/tmp/original.jpg",
+    )
+    monkeypatch.setattr(
+        module,
+        "_get_apple_db",
+        lambda: SimpleNamespace(photos=lambda: [managed, original]),
+    )
+    monkeypatch.setattr(
+        module,
+        "_resolve_apple_photo_path",
+        lambda photo, download_missing: photo.path,
+    )
+    monkeypatch.setattr(module, "_image_to_b64", lambda _img, max_size: f"b64-{max_size}")
+    monkeypatch.setattr(Image, "open", lambda _path: object())
+
+    selected = module.load_photos(
+        "apple",
+        "",
+        limit=2,
+        selected_photo_ids=["managed-copy", "camera-original"],
+    )
+
+    assert [item["photo_id"] for item in selected] == ["camera-original"]
+
+
+def test_photo_ranker_excludes_apple_native_screenshot_before_limit(monkeypatch) -> None:
+    prepare_vendor_runtime("photo-ranker")
+    module = importlib.import_module("photos_mcp_vendor_photo_ranker.sources")
+    screenshot = _apple_photo(
+        photo_id="capture",
+        filename="IMG_0001.PNG",
+        isphoto=True,
+        ismovie=False,
+        uti="public.png",
+        path="/tmp/capture.png",
+    )
+    screenshot.screenshot = True
+    camera = _apple_photo(
+        photo_id="camera",
+        filename="IMG_0002.HEIC",
+        isphoto=True,
+        ismovie=False,
+        uti="public.heic",
+        path="/tmp/camera.heic",
+    )
+    camera.screenshot = False
+    monkeypatch.setattr(
+        module,
+        "_get_apple_db",
+        lambda: SimpleNamespace(photos=lambda: [screenshot, camera]),
+    )
+    monkeypatch.setattr(module, "_resolve_apple_photo_path", lambda photo, download_missing: photo.path)
+    monkeypatch.setattr(module, "_image_to_b64", lambda _img, max_size: f"b64-{max_size}")
+    monkeypatch.setattr(Image, "open", lambda _path: object())
+
+    photos = module.load_photos(
+        "apple",
+        "",
+        limit=1,
+        exclude_screenshots=True,
+    )
+
+    assert [item["photo_id"] for item in photos] == ["camera"]

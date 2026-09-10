@@ -21,7 +21,12 @@ from apple_terminal_helper import run_in_terminal
 from photos_mcp.infrastructure.vendor_adapter.compat import preferred_analysis_path, preferred_original_path
 from photos_mcp.infrastructure.vendor_adapter.compat import get_apple_photos_db
 from photos_mcp.infrastructure.vendor_adapter.compat import RAW_IMAGE_EXTENSIONS, raw_preview_jpeg_bytes
-from photos_mcp.infrastructure.vendor_adapter.compat import default_terminal_python
+from photos_mcp.infrastructure.vendor_adapter.compat import (
+    apple_photo_is_managed_output,
+    default_terminal_python,
+)
+
+from .screen_capture import is_screen_capture_asset
 
 try:
     from pillow_heif import register_heif_opener
@@ -139,6 +144,7 @@ def load_photos(
     limit: int = 100,
     max_size: int = DEFAULT_ANALYSIS_MAX_SIZE,
     selected_photo_ids: list[str] | None = None,
+    exclude_screenshots: bool = False,
 ) -> list[dict]:
     """Load photos from the given source as pipeline-ready dicts.
 
@@ -151,6 +157,7 @@ def load_photos(
             limit=limit,
             max_size=max_size,
             selected_photo_ids=selected_photo_ids,
+            exclude_screenshots=exclude_screenshots,
         )
     if source == "apple":
         return _load_apple(
@@ -161,6 +168,7 @@ def load_photos(
             limit=limit,
             max_size=max_size,
             selected_photo_ids=selected_photo_ids,
+            exclude_screenshots=exclude_screenshots,
         )
     if source == "gcs":
         return _load_gcs(
@@ -169,6 +177,7 @@ def load_photos(
             date_to=date_to,
             limit=limit,
             max_size=max_size,
+            exclude_screenshots=exclude_screenshots,
         )
     raise ValueError(f"Unsupported source: {source!r}")
 
@@ -182,6 +191,7 @@ def _load_local(
     limit: int = 100,
     max_size: int = DEFAULT_ANALYSIS_MAX_SIZE,
     selected_photo_ids: list[str] | None = None,
+    exclude_screenshots: bool = False,
 ) -> list[dict]:
     """Load images from a local directory."""
     from PIL import Image
@@ -220,8 +230,7 @@ def _load_local(
             else:
                 b64 = _image_to_b64(Image.open(path), max_size)
             provider_metadata = _load_photos_mcp_sidecar(path)
-            results.append(
-                {
+            asset = {
                     "photo_id": str(path),
                     "image_b64": b64,
                     "source_photo_path": str(path),
@@ -231,7 +240,10 @@ def _load_local(
                     ),
                     "provider_metadata": provider_metadata,
                 }
-            )
+            if exclude_screenshots and is_screen_capture_asset(asset):
+                logger.info("Skipped a local screen capture before analysis")
+                continue
+            results.append(asset)
         except Exception:
             logger.warning("Failed to load a local image")
             continue
@@ -252,8 +264,12 @@ def _load_photos_mcp_sidecar(path: Path) -> dict[str, str]:
         return {}
     metadata = payload.get("picker_metadata") if isinstance(payload, dict) else None
     if not isinstance(metadata, dict):
-        return {}
-    return {str(key): str(value) for key, value in metadata.items() if value is not None}
+        metadata = {}
+    result = {str(key): str(value) for key, value in metadata.items() if value is not None}
+    file_payload = payload.get("file") if isinstance(payload, dict) else None
+    if isinstance(file_payload, dict) and file_payload.get("filename"):
+        result["original_filename"] = str(file_payload["filename"])
+    return result
 
 
 # ── Google Cloud Storage ───────────────────────────────
@@ -276,6 +292,7 @@ def _load_gcs(
     date_to: str = "",
     limit: int = 100,
     max_size: int = DEFAULT_ANALYSIS_MAX_SIZE,
+    exclude_screenshots: bool = False,
 ) -> list[dict]:
     """Load GCS image objects without saving source bytes to the local filesystem."""
     try:
@@ -293,6 +310,11 @@ def _load_gcs(
 
     for blob in bucket.list_blobs(prefix=prefix):
         if Path(str(blob.name)).suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        if exclude_screenshots and is_screen_capture_asset(
+            {"photo_id": str(blob.name), "filename": str(blob.name)}
+        ):
+            logger.info("Skipped a GCS screen capture before analysis")
             continue
         created_at = getattr(blob, "time_created", None)
         if created_at is not None and not _matches_date_filters(
@@ -347,6 +369,7 @@ def _load_apple(
     limit: int = 100,
     max_size: int = DEFAULT_ANALYSIS_MAX_SIZE,
     selected_photo_ids: list[str] | None = None,
+    exclude_screenshots: bool = False,
 ) -> list[dict]:
     """Load images from Apple Photos via osxphotos."""
     try:
@@ -362,6 +385,12 @@ def _load_apple(
     db = _get_apple_db()
     photos = db.photos()
     logger.info("Apple Photos DB: %d total photos", len(photos))
+    photos = [
+        photo
+        for photo in photos
+        if _is_supported_apple_photo(photo)
+        and not apple_photo_is_managed_output(photo)
+    ]
 
     explicit_selection = bool(selected_photo_ids)
     if explicit_selection:
@@ -369,6 +398,7 @@ def _load_apple(
             str(getattr(photo, "uuid", "") or ""): photo
             for photo in photos
             if _is_supported_apple_photo(photo)
+            and not apple_photo_is_managed_output(photo)
         }
         seen: set[str] = set()
         photos = []
@@ -413,7 +443,24 @@ def _load_apple(
             )
         ]
 
-    photos = [p for p in photos if _is_supported_apple_photo(p)]
+    photos = [
+        p
+        for p in photos
+        if _is_supported_apple_photo(p) and not apple_photo_is_managed_output(p)
+    ]
+    if exclude_screenshots:
+        photos = [
+            p
+            for p in photos
+            if not is_screen_capture_asset(
+                {
+                    "photo_id": str(getattr(p, "uuid", "") or ""),
+                    "original_filename": _preferred_apple_filename(p) or "",
+                    "is_screenshot": bool(getattr(p, "screenshot", False)),
+                    "is_screen_recording": bool(getattr(p, "screen_recording", False)),
+                }
+            )
+        ]
 
     # Preserve the caller's explicit UUID order; otherwise keep newest first.
     if not explicit_selection:
@@ -448,6 +495,11 @@ def _load_apple(
                         if person.name
                     ],
                     "burst_group_id": _apple_burst_group_id(p),
+                    "provider_metadata": {
+                        "original_filename": _preferred_apple_filename(p) or "",
+                        "is_screenshot": bool(getattr(p, "screenshot", False)),
+                        "is_screen_recording": bool(getattr(p, "screen_recording", False)),
+                    },
                 }
             )
         except Exception:

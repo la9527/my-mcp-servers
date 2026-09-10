@@ -13,7 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 import uuid
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from photos_mcp.application.face_identity_review import (
     create_review_face_crop,
@@ -22,6 +22,12 @@ from photos_mcp.application.face_identity_review import (
 )
 from photos_mcp.application.person_scene_shadow import cosine_similarity
 from photos_mcp.infrastructure.runtime.paths import photos_mcp_home
+
+if TYPE_CHECKING:
+    from photos_mcp.application.person_identity_repository import (
+        PersonIdentityRepository,
+        RegistryMigrationReport,
+    )
 
 
 REGISTRY_SCHEMA_VERSION = 3
@@ -34,6 +40,28 @@ def _utcnow_iso() -> str:
 
 def person_identity_registry_path(*, root: Path | None = None) -> Path:
     return (root or photos_mcp_home() / "people") / "people-private.json"
+
+
+def migrate_person_identity_registry(
+    repository: "PersonIdentityRepository",
+    *,
+    registry_path: Path | None = None,
+    dry_run: bool = True,
+    legacy_known_faces: Mapping[str, int] | Iterable[str] = (),
+) -> "RegistryMigrationReport":
+    """Plan or apply the schema-v3 transition into the stable private store.
+
+    This is intentionally an explicit operation rather than an automatic side
+    effect of opening the existing AppKit registry.  A caller can inspect the
+    count-only dry-run report before the atomic apply, and the legacy JSON stays
+    untouched for rollback.
+    """
+
+    return repository.migrate_v3_registry(
+        registry_path or person_identity_registry_path(),
+        dry_run=dry_run,
+        legacy_known_faces=legacy_known_faces,
+    )
 
 
 def _catalog_face_id(job_id: str, photo_id: str, face_index: int) -> str:

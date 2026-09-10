@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,6 +46,41 @@ def test_browser_mission_error_has_stable_worker_exit_code(error, exit_code) -> 
 def test_unknown_browser_mission_reason_fails_closed() -> None:
     error = BrowserMissionUserActionRequired("unexpected_reason")
     assert MODULE.mission_exit_code(error) == 25
+
+
+def test_recovery_session_must_match_scope_limit_and_reanalysis_policy() -> None:
+    class Repository:
+        def list_browser_mission_runs(self, *, limit):
+            assert limit == 100
+            return [
+                {
+                    "mission_run_id": "older-mission",
+                    "status": "failed",
+                    "picker_session_id": "picker-partial",
+                    "date_from": "2026-09-01",
+                    "date_to": "2026-09-08",
+                    "selection_limit": 250,
+                    "reanalyze": False,
+                }
+            ]
+
+    class Importer:
+        def recover_prepared_selection(self, session_id):
+            assert session_id == "picker-partial"
+            return {"materialized_photo_count": 32}
+
+    session_id = MODULE.find_recoverable_session(
+        Repository(),
+        Importer(),
+        current_mission_run_id="current-mission",
+        date_from=date(2026, 9, 1),
+        date_to=date(2026, 9, 8),
+        recent_days=8,
+        selection_limit=250,
+        reanalyze=False,
+    )
+
+    assert session_id == "picker-partial"
 
 
 def test_browser_diagnostics_allow_only_privacy_safe_aggregate_fields() -> None:
@@ -96,7 +132,11 @@ def test_ensure_dedicated_chrome_opens_page_when_endpoint_has_no_target(
         if "/json/new?" in actual_url:
             launched = True
             return Response(b'{"type":"page"}')
-        return Response(b'[{"type":"page"}]' if launched else b'[]')
+        return Response(
+            b'[{"type":"page","url":"https://photos.google.com/"}]'
+            if launched
+            else b'[{"type":"page","url":"chrome://newtab/"}]'
+        )
 
     def fake_popen(*_args, **_kwargs):
         raise AssertionError("Chrome process must not be relaunched when CDP is ready")
@@ -190,6 +230,7 @@ async def test_run_persists_aggregate_model_metrics_without_page_content(monkeyp
         linux_prepare_command=Path("/tmp/prepare"),
         linux_prepare_timeout_seconds=600,
         model_request_timeout_seconds=300,
+        model_mission_timeout_seconds=300,
         max_model_steps=24,
         selection_profile="general",
         limit=100,

@@ -1,5 +1,7 @@
 # Tailscale 추천 사진 생성형 Story Album·Swiper 리포트 계획
 
+> **2026-09-09 위치 표시 정책 변경:** 이 문서의 좌표 비공개, 도시 단위 `○○ 일대`, `(추정)` 사용자 표시는 본인·가족 전용 운영 결정에 따라 폐기한다. 상세 GPS·명확한 장소명·Google 지도 표시와 캡처 이미지 전 구간 제외는 [상세 장소·Google 지도·캡처 제외 전환 계획](12-detailed-place-map-and-screenshot-exclusion-plan-2026-09-09.md)을 우선 적용한다. 내부 provenance와 confidence는 정확성 검증을 위해 계속 보존한다.
+
 ## 문서 상태
 
 - 작성일: 2026-09-06

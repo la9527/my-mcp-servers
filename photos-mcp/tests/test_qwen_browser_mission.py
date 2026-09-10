@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import asyncio
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -45,7 +47,12 @@ class FakeChromeSession:
         return SimpleNamespace(
             tools=[
                 SimpleNamespace(name=name)
-                for name in ("navigate_page", "take_snapshot", "click", "press_key")
+                for name in (
+                    "navigate_page",
+                    "take_snapshot",
+                    "click",
+                    "evaluate_script",
+                )
             ]
         )
 
@@ -106,6 +113,22 @@ class FakeModelClient:
         return self.replies.pop(0)
 
 
+class StalledModelClient(FakeModelClient):
+    async def complete(self, messages, tools):
+        self.calls.append((deepcopy(messages), deepcopy(tools)))
+        await asyncio.sleep(60)
+        raise AssertionError("unreachable")
+
+
+class PartialThenStalledModelClient(FakeModelClient):
+    async def complete(self, messages, tools):
+        self.calls.append((deepcopy(messages), deepcopy(tools)))
+        if self.replies:
+            return self.replies.pop(0)
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
 def build_assistant(tmp_path, replies, *, chrome=None):
     chrome = chrome or FakeChromeSession()
     context = FakeContext((object(), object()))
@@ -146,6 +169,39 @@ async def test_qwen_agent_observes_before_each_click_and_confirms(tmp_path) -> N
         "user",
     ]
     assert all(message.get("role") != "tool" for message in model.calls[2][0])
+    await assistant.close()
+
+
+@pytest.mark.asyncio
+async def test_qwen_timeout_falls_back_to_bounded_deterministic_selection(tmp_path) -> None:
+    chrome = FakeChromeSession()
+    model = StalledModelClient([])
+    context = FakeContext((object(), object()))
+    assistant = QwenChromeDevToolsMcpAssistant(
+        model_client=model,
+        model_step_timeout_seconds=0.01,
+        profile_dir=tmp_path / "profile",
+        client_factory=lambda _params, **_kwargs: context,
+        session_factory=lambda *_streams: chrome,
+    )
+
+    await assistant.open_picker("https://photos.google.com/picker/session-token")
+    selected = await assistant.preselect_date_range(
+        1,
+        date_from=date.today(),
+        date_to=date.today(),
+    )
+    confirmed = await assistant.confirm_date_range(
+        max_selected_count=1,
+        date_from=date.today(),
+        date_to=date.today(),
+    )
+
+    assert selected["control_policy"] == "deterministic_fallback"
+    assert selected["fallback_reason"] == "browser_mission_timeout"
+    assert confirmed["final_confirmation_clicked"] is True
+    assert chrome.selected is True
+    assert chrome.confirmed is True
     await assistant.close()
 
 
@@ -200,9 +256,34 @@ class LargeGridChromeSession(FakeChromeSession):
             else:
                 self.selected_uids.add(uid)
             return SimpleNamespace(isError=False, content=[])
-        if name == "press_key":
+        if name == "evaluate_script":
             return SimpleNamespace(isError=False, content=[])
         return SimpleNamespace(isError=False, content=[])
+
+
+class VirtualizedFallbackChromeSession(LargeGridChromeSession):
+    def __init__(self) -> None:
+        super().__init__(total=300)
+
+    def snapshot(self) -> str:
+        # Qwen can initially see the full list. After 127 successful clicks,
+        # only 25 of those checked rows remain in the virtualized tree, while
+        # Picker's dialog continues to expose the authoritative global total.
+        visible = range(1, 301) if len(self.selected_uids) < 127 else range(103, 301)
+        lines = [
+            f'uid=9_0 dialog "{len(self.selected_uids)}장 선택함 항목 최대 250개 선택" modal',
+            'uid=9_1 StaticText "오늘"',
+        ]
+        for index in visible:
+            uid = f"1_{index}"
+            checked = " checked" if uid in self.selected_uids else ""
+            lines.extend((
+                f'uid={uid} checkbox "사진 선택"{checked}',
+                f'uid=2_{index} button "사진 미리보기" description="사진 세부정보"',
+            ))
+        disabled = " disabled" if not 1 <= len(self.selected_uids) <= 250 else ""
+        lines.append(f'uid=8_1 button "완료"{disabled}')
+        return "\n".join(lines)
 
 
 class PagedGridChromeSession(LargeGridChromeSession):
@@ -231,8 +312,8 @@ class PagedGridChromeSession(LargeGridChromeSession):
         return "\n".join(lines)
 
     async def call_tool(self, name, arguments):
-        if name == "press_key":
-            assert arguments["key"] == "PageDown"
+        if name == "evaluate_script":
+            assert "scrollBy" in arguments["function"]
             self.page = 1
             return SimpleNamespace(isError=False, content=[])
         return await super().call_tool(name, arguments)
@@ -269,6 +350,71 @@ async def test_qwen_agent_confirms_bounded_100_when_101_recent_photos_are_visibl
         tool_names = {tool["function"]["name"] for tool in tools}
         assert "select_recent_photos" not in tool_names
         assert "scroll_picker" not in tool_names
+    await assistant.close()
+
+
+@pytest.mark.asyncio
+async def test_qwen_timeout_fallback_preserves_global_250_selection_budget(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(
+        "photos_mcp.infrastructure.browser_assist.qwen_browser_mission.asyncio.sleep",
+        no_sleep,
+    )
+    monkeypatch.setattr(
+        "photos_mcp.infrastructure.browser_assist.chrome_devtools_mcp.asyncio.sleep",
+        no_sleep,
+    )
+    chrome = VirtualizedFallbackChromeSession()
+    model = PartialThenStalledModelClient([
+        tool_call("take_snapshot", {}, "s1"),
+        tool_call(
+            "select_recent_photos",
+            {"uids": [f"1_{index}" for index in range(1, 101)]},
+            "c1",
+        ),
+        tool_call("take_snapshot", {}, "s2"),
+        tool_call(
+            "select_recent_photos",
+            {"uids": [f"1_{index}" for index in range(101, 128)]},
+            "c2",
+        ),
+    ])
+    context = FakeContext((object(), object()))
+    assistant = QwenChromeDevToolsMcpAssistant(
+        model_client=model,
+        model_step_timeout_seconds=0.01,
+        profile_dir=tmp_path / "profile",
+        client_factory=lambda _params, **_kwargs: context,
+        session_factory=lambda *_streams: chrome,
+    )
+    await assistant.open_picker("https://photos.google.com/picker/session-token")
+
+    selected = await assistant.preselect_date_range(
+        250,
+        date_from=date.today(),
+        date_to=date.today(),
+    )
+    confirmed = await assistant.confirm_date_range(
+        max_selected_count=250,
+        date_from=date.today(),
+        date_to=date.today(),
+    )
+
+    assert selected["control_policy"] == "deterministic_fallback"
+    assert selected["fallback_reason"] == "browser_mission_timeout"
+    assert selected["qwen_clicked_count"] == 127
+    assert selected["fallback_clicked_count"] == 123
+    assert selected["clicked_count"] == 250
+    assert selected["selected_after"] == 250
+    assert len(chrome.selected_uids) == 250
+    assert confirmed["selected_count"] == 250
+    assert confirmed["final_confirmation_clicked"] is True
+    assert chrome.confirmed is True
     await assistant.close()
 
 
@@ -516,6 +662,36 @@ async def test_qwen_agent_classifies_snapshot_transport_failure(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_qwen_agent_retries_transient_chrome_mcp_open_failure(tmp_path) -> None:
+    class FlakyOpenChrome(FakeChromeSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.navigate_calls = 0
+
+        async def call_tool(self, name, arguments):
+            if name == "navigate_page":
+                self.navigate_calls += 1
+                return SimpleNamespace(
+                    isError=self.navigate_calls == 1,
+                    content=[],
+                )
+            return await super().call_tool(name, arguments)
+
+    chrome = FlakyOpenChrome()
+    assistant, model, _chrome = build_assistant(tmp_path, [], chrome=chrome)
+    assistant.chrome_connect_retry_seconds = 0
+
+    opened = await assistant.open_picker(
+        "https://photos.google.com/picker/session-token"
+    )
+
+    assert opened["status"] == "awaiting_user_confirmation"
+    assert chrome.navigate_calls == 2
+    assert model.prepared is True
+    await assistant.close()
+
+
+@pytest.mark.asyncio
 async def test_router_client_tracks_safe_aggregate_usage(monkeypatch) -> None:
     client = QwenRouterMissionClient()
     client._route_key = "decision"
@@ -577,6 +753,7 @@ async def test_qwen_agent_stops_at_bounded_model_step_limit(tmp_path) -> None:
     prose = {"role": "assistant", "content": "waiting", "tool_calls": []}
     assistant, _model, chrome = build_assistant(tmp_path, [prose, prose, prose, prose])
     assistant.max_model_steps = 4
+    assistant.deterministic_fallback = False
     await assistant.open_picker("https://photos.google.com/picker/session-token")
     with pytest.raises(BrowserMissionTimeout) as captured:
         await assistant.preselect_recent(10, recent_days=10)

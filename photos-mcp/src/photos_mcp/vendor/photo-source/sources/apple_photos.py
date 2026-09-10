@@ -16,7 +16,10 @@ from .image_utils import open_image_path, thumbnail_to_base64
 from apple_terminal_helper import run_in_terminal
 from photos_mcp.infrastructure.vendor_adapter.compat import preferred_analysis_path
 from photos_mcp.infrastructure.vendor_adapter.compat import get_apple_photos_db
-from photos_mcp.infrastructure.vendor_adapter.compat import default_terminal_python
+from photos_mcp.infrastructure.vendor_adapter.compat import (
+    apple_photo_is_managed_output,
+    default_terminal_python,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +200,7 @@ class ApplePhotosSource:
             photo
             for photo in self._db.photos()
             if _is_supported_photo_asset(photo)
+            and not apple_photo_is_managed_output(photo)
             and getattr(photo, "date_added", None) is not None
             and _matches_date_filters(
                 getattr(photo, "date_added", None),
@@ -502,6 +506,11 @@ class ApplePhotosSource:
         person: str | None,
         limit: int,
     ):
+        photos = [
+            p
+            for p in photos
+            if _is_supported_photo_asset(p) and not apple_photo_is_managed_output(p)
+        ]
         if date_from or date_to:
             photos = [
                 p
@@ -529,7 +538,6 @@ class ApplePhotosSource:
                 if any(person_lower in pn.name.lower() for pn in p.person_info if pn.name)
             ]
 
-        photos = [p for p in photos if _is_supported_photo_asset(p)]
         return photos[:limit]
 
     def _matching_source_photos(
@@ -546,7 +554,12 @@ class ApplePhotosSource:
         if photo_ids:
             wanted_ids = {photo_id for photo_id in photo_ids if photo_id}
             photos = [photo for photo in photos if photo.uuid in wanted_ids]
-            photos = [photo for photo in photos if _is_supported_photo_asset(photo)]
+            photos = [
+                photo
+                for photo in photos
+                if _is_supported_photo_asset(photo)
+                and not apple_photo_is_managed_output(photo)
+            ]
             return photos[:limit]
 
         return self._filter_source_photos(

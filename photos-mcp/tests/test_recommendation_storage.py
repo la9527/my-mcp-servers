@@ -89,6 +89,28 @@ def test_materializes_only_exact_recommendations_by_capture_date(tmp_path) -> No
     assert group["policy_state"] == "draft"
 
 
+def test_manual_materialization_stays_out_of_publish_groups(tmp_path) -> None:
+    repo = RunRepository(tmp_path / "jobs.db")
+    source = tmp_path / "manual.jpg"
+    source.write_bytes(b"manual-private-story")
+
+    result = RecommendationStorageService(
+        repository=repo,
+        root=tmp_path / "recommendations",
+    ).materialize(
+        analysis_run_id="manual-analysis",
+        automation_run_id="manual-run",
+        provider="apple_photos",
+        source_id="system-library",
+        items=[_item(source, photo_id="manual-photo")],
+        enroll_in_publish_groups=False,
+    )
+
+    assert result["materialized_count"] == 1
+    assert result["groups"] == []
+    assert repo.list_recommendation_groups() == []
+
+
 def test_same_content_from_google_and_apple_uses_one_local_file(tmp_path) -> None:
     repo = RunRepository(tmp_path / "jobs.db")
     apple = tmp_path / "apple.heic"
@@ -300,6 +322,7 @@ async def test_completed_vendor_run_materializes_recommendations(tmp_path) -> No
                 "status": "completed",
                 "source": "local",
                 "request_options": {"origin_provider": "google_photos"},
+                "result_summary": {"excluded_screen_capture_count": 3},
             }
         if function == "get_recommended_items":
             return [_item(source, photo_id=str(source))]
@@ -316,6 +339,48 @@ async def test_completed_vendor_run_materializes_recommendations(tmp_path) -> No
 
     assert result["status"] == "completed"
     assert result["materialized_count"] == 1
+    assert result["excluded_screen_capture_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_manual_run_policy_does_not_enroll_materialized_assets_for_album_publish(
+    tmp_path,
+) -> None:
+    repo = RunRepository(tmp_path / "jobs.db")
+    source = tmp_path / "manual-google.jpg"
+    source.write_bytes(b"manual-google-photo")
+    repo.upsert_automation_run(
+        {
+            "automation_run_id": "manual-google-run",
+            "analysis_run_id": "manual-google-job",
+            "provider": "google_photos",
+            "status": "running",
+            "publication_policy": "none",
+        }
+    )
+
+    async def vendor(_server, function, *_args, **_kwargs):
+        if function == "get_job_summary":
+            return {
+                "status": "completed",
+                "request_options": {"origin_provider": "google_photos"},
+            }
+        if function == "get_recommended_items":
+            return [_item(source, photo_id=str(source))]
+        raise AssertionError(function)
+
+    result = await materialize_recommendations_for_run(
+        repository=repo,
+        analysis_run_id="manual-google-job",
+        automation_run_id="manual-google-run",
+        source_id="default-account",
+        root=tmp_path / "store",
+        call_vendor_fn=vendor,
+    )
+
+    assert result["materialized_count"] == 1
+    assert result["groups"] == []
+    assert repo.list_recommendation_groups() == []
 
 
 @pytest.mark.asyncio
@@ -356,6 +421,90 @@ async def test_reconcile_updates_automation_and_queues_redacted_summary(tmp_path
     assert len(notifications) == 1
     assert "apple.jpg" not in json.dumps(notifications, ensure_ascii=False)
     assert "추천 1장" in notifications[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_threads_identity_repository_into_story_refresh(
+    tmp_path, monkeypatch
+) -> None:
+    import photos_mcp.application.recommendation_storage as storage_module
+
+    repo = RunRepository(tmp_path / "jobs.db")
+    source = tmp_path / "apple.jpg"
+    source.write_bytes(b"apple-photo")
+    repo.upsert_automation_run(
+        {
+            "automation_run_id": "daily-identity-refresh",
+            "analysis_run_id": "analysis-identity-refresh",
+            "provider": "apple",
+            "source_id": "system-library",
+            "status": "pending",
+        }
+    )
+    identity_repository = object()
+    observed = []
+
+    async def fake_refresh(repository, *, identity_repository=None, **_kwargs):
+        observed.append((repository, identity_repository))
+        return {"generation": {"source": "deterministic_fallback"}}
+
+    async def vendor(_server, function, *_args, **_kwargs):
+        if function == "get_job_summary":
+            return {"status": "completed", "source": "apple", "request_options": {}}
+        if function == "get_recommended_items":
+            return [_item(source, photo_id="apple-identity-refresh")]
+        raise AssertionError(function)
+
+    monkeypatch.setattr(storage_module, "refresh_recommendation_story", fake_refresh)
+    await reconcile_pending_recommendations(
+        repository=repo,
+        root=tmp_path / "store",
+        call_vendor_fn=vendor,
+        identity_repository=identity_repository,  # type: ignore[arg-type]
+    )
+
+    assert observed == [(repo, identity_repository)]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_is_noop_for_fully_stored_terminal_run(tmp_path) -> None:
+    repo = RunRepository(tmp_path / "jobs.db")
+    source = tmp_path / "already-stored.jpg"
+    source.write_bytes(b"already-stored")
+    storage = RecommendationStorageService(
+        repository=repo,
+        root=tmp_path / "store",
+    ).materialize(
+        analysis_run_id="analysis-terminal",
+        automation_run_id="daily-terminal",
+        provider="apple_photos",
+        source_id="system-library",
+        items=[_item(source, photo_id="apple-terminal")],
+    )
+    repo.upsert_automation_run(
+        {
+            "automation_run_id": "daily-terminal",
+            "analysis_run_id": "analysis-terminal",
+            "provider": "apple_photos",
+            "status": "completed",
+            "terminal": True,
+            "recommendation_storage": storage,
+        }
+    )
+
+    async def vendor(*_args, **_kwargs):
+        raise AssertionError("a durable terminal run must not call the vendor")
+
+    result = await reconcile_pending_recommendations(
+        repository=repo,
+        root=tmp_path / "store",
+        call_vendor_fn=vendor,
+    )
+
+    assert result["status"] == "completed"
+    assert result["inspected_run_count"] == 0
+    assert result["story_refresh_count"] == 0
+    assert result["album_published_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -495,9 +644,10 @@ def test_materialization_extracts_gps_to_private_ledger_and_returns_safe_project
     safe = repo.get_recommendation_asset_location(member["local_asset_id"])
     assert result["located_count"] == 1
     assert safe is not None
-    assert safe["label"] == "서울 일대"
+    assert safe["label"] == "서울"
     assert safe["status"] == "confirmed_gps"
-    assert "latitude" not in safe and "longitude" not in safe
+    assert safe["latitude"] == pytest.approx(37.55165, abs=0.001)
+    assert safe["longitude"] == pytest.approx(126.9678, abs=0.001)
     assert "37.56" not in json.dumps(repo.list_local_recommendation_assets())
 
 
@@ -538,5 +688,5 @@ def test_materialization_infers_matching_scene_after_all_assets_are_saved(tmp_pa
     assert result["located_count"] == 1
     assert result["inferred_location_count"] == 1
     assert inferred is not None
-    assert inferred["label"] == "서울 일대 (추정)"
+    assert inferred["label"] == "서울"
     assert inferred["status"] == "contextual_estimate"

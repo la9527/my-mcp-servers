@@ -5,6 +5,9 @@ provider implementation paths directly. This compatibility seam can later be
 replaced with explicit constructor injection without another vendor-wide move.
 """
 
+import os
+from typing import Any
+
 from photos_mcp.app.logging import ToolLogContext, log_context
 from photos_mcp.app.runtime_bootstrap import default_terminal_python
 from photos_mcp.infrastructure.runtime.paths import (
@@ -25,9 +28,33 @@ from photos_mcp.infrastructure.sources.local_files.raw_image import (
 from photos_mcp.infrastructure.vision.broker_client import default_runtime_broker_client
 from photos_mcp.infrastructure.vision.runtime import resolve_vision_runtime_settings
 
+
+def _normalized_container_name(value: object) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def apple_photo_is_managed_output(photo: Any) -> bool:
+    """Keep app-managed Apple album copies outside vendor analysis inputs."""
+
+    configured = os.getenv("PHOTOS_MCP_RECOMMENDATION_APPLE_FOLDER", "Photos MCP")
+    managed = {
+        _normalized_container_name("Photos MCP"),
+        _normalized_container_name(configured),
+    }
+    for album in list(getattr(photo, "album_info", []) or []):
+        if _normalized_container_name(getattr(album, "title", "")) in managed:
+            return True
+        if any(
+            _normalized_container_name(folder) in managed
+            for folder in list(getattr(album, "folder_names", []) or [])
+        ):
+            return True
+    return False
+
 __all__ = [
     "RAW_IMAGE_EXTENSIONS",
     "ToolLogContext",
+    "apple_photo_is_managed_output",
     "default_runtime_broker_client",
     "default_terminal_python",
     "get_apple_photos_db",

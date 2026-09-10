@@ -29,8 +29,9 @@ from AppKit import (
     NSWindowStyleMaskMiniaturizable,
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
+    NSWorkspace,
 )
-from Foundation import NSMakePoint, NSMakeSize
+from Foundation import NSURL, NSURLRequest, NSMakePoint, NSMakeSize
 
 from photos_mcp.interfaces.appkit.menu.presentation import (
     EnvironmentViewModel,
@@ -65,6 +66,7 @@ _SYSTEM_SYMBOLS = {
     "jobs": "clock.arrow.circlepath",
     "environment": "checkmark.shield",
     "people": "person.2",
+    "story": "book.closed",
     "device-mac-mini": "macmini",
     "device-workstation": "desktopcomputer",
     "model-chip": "cpu",
@@ -120,6 +122,7 @@ class PhotosMcpMainWindowController(NSWindowController):
         self._render_signature = None
         self._direct_view = None
         self._people_manager = None
+        self._story_web_view = None
         self._icons: dict[tuple[str, float, bool], Any] = {}
         self._runtime_snapshot = vision_runtime_summary(check_ready=False)
         self._is_runtime_checking = False
@@ -142,7 +145,7 @@ class PhotosMcpMainWindowController(NSWindowController):
     def refreshWithSnapshot_(self, snapshot: Any) -> None:
         self._snapshot = snapshot
         if (
-            self._selected_tab != "classification"
+            self._selected_tab not in {"classification", "story"}
             and self._view_signature(snapshot) != self._render_signature
         ):
             self.rebuild()
@@ -153,7 +156,7 @@ class PhotosMcpMainWindowController(NSWindowController):
 
     @objc.python_method
     def showTab_(self, tab: str) -> None:
-        if tab not in {"home", "classification", "jobs", "environment", "people"}:
+        if tab not in {"home", "classification", "story", "jobs", "environment", "people"}:
             tab = "home"
         if self._selected_tab == "jobs" and tab != "jobs":
             self._remember_job_scroll_position()
@@ -197,6 +200,7 @@ class PhotosMcpMainWindowController(NSWindowController):
             {
                 "home": self._build_home,
                 "classification": self._build_classification,
+                "story": self._build_story,
                 "jobs": self._build_jobs,
                 "environment": self._build_environment,
                 "people": self._build_people,
@@ -238,6 +242,7 @@ class PhotosMcpMainWindowController(NSWindowController):
         items = (
             ("home", "홈"),
             ("classification", "사진 분류"),
+            ("story", "Story"),
             ("jobs", "작업 기록"),
             ("environment", "환경 및 권한"),
             ("people", "인물 관리"),
@@ -400,6 +405,91 @@ class PhotosMcpMainWindowController(NSWindowController):
         direct.window().close()
 
     @objc.python_method
+    def _story_url(self) -> str:
+        return f"http://127.0.0.1:{int(self._menu_controller._config.port)}/photos"
+
+    @objc.python_method
+    def _load_story_portal(self) -> None:
+        if self._story_web_view is None:
+            return
+        request = NSURLRequest.requestWithURL_(NSURL.URLWithString_(self._story_url()))
+        self._story_web_view.loadRequest_(request)
+
+    @objc.python_method
+    def _build_story(self, parent: Any, width: float, height: float) -> None:
+        # PyObjC's optional ``pyobjc-framework-WebKit`` wrapper is not part of
+        # the standalone bundle. Load Apple's system framework through the
+        # Objective-C runtime so the Story tab works in both source and bundled
+        # builds without adding another packaged Python dependency.
+        try:
+            WKWebView = objc.lookUpClass("WKWebView")
+            WKWebViewConfiguration = objc.lookUpClass("WKWebViewConfiguration")
+        except objc.nosuchclass_error:
+            objc.loadBundle(
+                "WebKit",
+                globals(),
+                bundle_path=objc.pathForFramework(
+                    "/System/Library/Frameworks/WebKit.framework"
+                ),
+            )
+            WKWebView = objc.lookUpClass("WKWebView")
+            WKWebViewConfiguration = objc.lookUpClass("WKWebViewConfiguration")
+
+        margin = 20.0
+        toolbar_height = 92.0
+        self._label(parent, margin, height - 42.0, width - 350.0, 30.0, "Story", bold=True, size=24.0)
+        self._label(
+            parent,
+            margin,
+            height - 65.0,
+            width - 350.0,
+            18.0,
+            "날짜를 선택해 Story를 만들고 Mac과 Android에서 같은 결과를 봅니다.",
+            secondary=True,
+            size=10.5,
+        )
+        self._button(
+            parent,
+            width - 300.0,
+            height - 58.0,
+            132.0,
+            34.0,
+            "새로고침",
+            self,
+            "reloadStoryPortal:",
+            symbol="refresh",
+        )
+        self._button(
+            parent,
+            width - 158.0,
+            height - 58.0,
+            138.0,
+            34.0,
+            "브라우저에서 열기",
+            self,
+            "openStoryPortalInBrowser:",
+        )
+        frame = NSMakeRect(
+            margin,
+            margin,
+            width - (margin * 2.0),
+            max(200.0, height - toolbar_height - margin),
+        )
+        configuration = WKWebViewConfiguration.alloc().init()
+        web_view = WKWebView.alloc().initWithFrame_configuration_(frame, configuration)
+        web_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        web_view.setAccessibilityLabel_("PhotosMcp Story 만들기 및 보기")
+        parent.addSubview_(web_view)
+        self._story_web_view = web_view
+        self._load_story_portal()
+
+    def reloadStoryPortal_(self, _sender) -> None:
+        self._load_story_portal()
+
+    def openStoryPortalInBrowser_(self, _sender) -> None:
+        NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(self._story_url()))
+
+    @objc.python_method
     def _build_jobs(self, parent: Any, width: float, height: float) -> None:
         margin = _CONTENT_MARGIN
         usable = width - (margin * 2)
@@ -415,12 +505,13 @@ class PhotosMcpMainWindowController(NSWindowController):
             top - 54.0,
             132.0,
             38.0,
-            "전체 기록 삭제",
+            "작업 목록 비우기",
             self._menu_controller,
             "clearJobHistoryWithConfirmation:",
         )
         clear_button.setEnabled_(
             any(job.status in _HISTORICAL_JOB_STATUSES for job in jobs)
+            or self._menu_controller._daemon_controller.terminal_curation_history_count() > 0
         )
         server = self._card(parent, margin + usable - 148.0, top - 54.0, 148.0, 38.0, "neutral")
         self._status_dot(server, 16.0, 19.0, "success", "서버 실행 중")

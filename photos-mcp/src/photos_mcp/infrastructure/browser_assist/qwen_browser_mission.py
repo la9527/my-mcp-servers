@@ -23,9 +23,12 @@ from urllib.request import Request, urlopen
 import uuid
 
 from photos_mcp.infrastructure.browser_assist.chrome_devtools_mcp import (
+    _BOUNDED_SCROLL_SCRIPT,
     ChromeDevToolsMcpAssistant,
+    PickerSelectionLimitExceeded,
     _completion_buttons,
     _photo_entries,
+    _selection_summary,
     _snapshot_text,
 )
 
@@ -466,22 +469,50 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
         model_client: MissionModelClient | None = None,
         max_model_steps: int = 24,
         max_snapshot_chars: int = 120_000,
+        model_step_timeout_seconds: float | None = None,
+        model_mission_timeout_seconds: float = 300.0,
+        deterministic_fallback: bool = True,
         cancellation_check: Callable[[], bool] | None = None,
+        chrome_connect_attempts: int = 3,
+        chrome_connect_retry_seconds: float = 0.75,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.model_client = model_client or QwenRouterMissionClient()
         self.max_model_steps = max(4, int(max_model_steps))
         self.max_snapshot_chars = max(4_000, int(max_snapshot_chars))
+        configured_timeout = getattr(self.model_client, "request_timeout_seconds", 300.0)
+        self.model_step_timeout_seconds = max(
+            1.0,
+            float(model_step_timeout_seconds or configured_timeout),
+        )
+        self.model_mission_timeout_seconds = max(
+            1.0,
+            float(model_mission_timeout_seconds),
+        )
+        self.deterministic_fallback = bool(deterministic_fallback)
+        self._deterministic_fallback_active = False
+        self._fallback_reason = ""
         self._cancellation_check = cancellation_check
+        self.chrome_connect_attempts = max(1, min(int(chrome_connect_attempts), 5))
+        self.chrome_connect_retry_seconds = max(
+            0.0,
+            min(float(chrome_connect_retry_seconds), 5.0),
+        )
         self._messages: list[dict[str, Any]] = []
         self._last_snapshot = ""
         self._selection_clicks = 0
         self._selected_count = 0
+        self._selection_baseline: int | None = None
+        self._reported_selected_count: int | None = None
+        self._picker_maximum_count: int | None = None
         self._confirmation_clicked = False
         self._denied_clicks = 0
         self._recent_days = 10
         self._reference_date = date.today()
+        self._marker_date = self._reference_date
+        self._date_from = self._reference_date - timedelta(days=9)
+        self._date_to = self._reference_date
         self._selection_limit = 100
         self._system_message: dict[str, Any] = {}
         self._mission_instruction = ""
@@ -500,6 +531,12 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
         return {
             "selection_clicks": max(0, self._selection_clicks),
             "selected_count": max(0, self._selected_count),
+            "reported_selected_count": max(
+                0, int(self._reported_selected_count or 0)
+            ),
+            "picker_maximum_count": max(
+                0, int(self._picker_maximum_count or 0)
+            ),
             "scroll_count": max(0, self._scroll_count),
             "denied_action_count": max(0, self._denied_clicks),
             "unverified_terminal_reports": max(
@@ -512,17 +549,72 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
             "reached_cutoff": bool(self._reached_cutoff),
             "confirmation_clicked": bool(self._confirmation_clicked),
             "last_guard_code": self._last_guard_code[:48],
+            "deterministic_fallback_active": bool(
+                self._deterministic_fallback_active
+            ),
+            "fallback_reason": self._fallback_reason[:48],
         }
+
+    def _activate_deterministic_fallback(self, exc: BaseException) -> None:
+        if not self.deterministic_fallback:
+            raise exc
+        self._deterministic_fallback_active = True
+        self._fallback_reason = str(
+            getattr(exc, "reason_code", "") or type(exc).__name__
+        )[:48]
 
     def _record_guard_denial(self, code: str) -> None:
         self._last_guard_code = code[:48]
         self._denied_clicks += 1
 
+    def _effective_selection_limit(self) -> int:
+        if self._picker_maximum_count is None:
+            return self._selection_limit
+        return min(self._selection_limit, self._picker_maximum_count)
+
+    def _current_selection_count(self) -> int:
+        predicted = max(0, int(self._selection_baseline or 0)) + max(
+            0, self._selection_clicks
+        )
+        return max(predicted, max(0, int(self._reported_selected_count or 0)))
+
+    def _observe_selection_summary(self, snapshot: str) -> None:
+        summary = _selection_summary(snapshot)
+        if summary is None:
+            return
+        selected = max(0, int(summary["selected_count"]))
+        maximum = max(1, int(summary["maximum_count"]))
+        if self._selection_baseline is None:
+            # If the first readable dialog total appears after one or more
+            # clicks, subtract our successful clicks to retain any preexisting
+            # user selection as the baseline.
+            self._selection_baseline = max(0, selected - self._selection_clicks)
+        self._reported_selected_count = selected
+        self._picker_maximum_count = maximum
+        effective_limit = self._effective_selection_limit()
+        if selected > effective_limit:
+            raise PickerSelectionLimitExceeded(
+                "Google Picker global selection exceeds the bounded limit "
+                f"(selected={selected}, limit={effective_limit})"
+            )
+
+    def _selection_entries(self, snapshot: str) -> list[dict[str, Any]]:
+        return _photo_entries(snapshot, today=self._marker_date)
+
+    def _eligible_entries(self, snapshot: str) -> list[dict[str, Any]]:
+        return [
+            entry
+            for entry in self._selection_entries(snapshot)
+            if self._date_from <= entry["date"] <= self._date_to
+        ]
+
     def _tools_for_phase(self, phase: str) -> list[dict[str, Any]]:
         tools = _mission_tools(phase)
         if phase != "selection":
             return tools
-        remaining = max(0, self._selection_limit - self._selection_clicks)
+        remaining = max(
+            0, self._effective_selection_limit() - self._current_selection_count()
+        )
         if remaining == 0:
             allowed = {
                 "take_snapshot",
@@ -558,12 +650,12 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
             if self._stable_ready_observations >= 2:
                 result = await self._tool_result(
                     "confirm_picker_selection",
-                    {"selected_count": self._selection_clicks},
+                    {"selected_count": self._current_selection_count()},
                     phase="selection",
                 )
                 parsed = json.loads(result)
                 if parsed.get("status") == "success":
-                    self._selected_count = self._selection_clicks
+                    self._selected_count = self._current_selection_count()
                     return {
                         "status": "success",
                         "selected_count": self._selected_count,
@@ -583,13 +675,30 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
 
     async def open_picker(self, picker_uri: str) -> dict[str, object]:
         self._check_cancelled()
-        await self.model_client.prepare()
-        try:
-            opened = await super().open_picker(picker_uri)
-        except (OSError, RuntimeError, TimeoutError) as exc:
+        opened: dict[str, object] | None = None
+        last_error: BaseException | None = None
+        for attempt in range(self.chrome_connect_attempts):
+            self._check_cancelled()
+            try:
+                opened = await super().open_picker(picker_uri)
+                break
+            except (OSError, RuntimeError, TimeoutError, ExceptionGroup) as exc:
+                last_error = exc
+                if attempt + 1 >= self.chrome_connect_attempts:
+                    break
+                await asyncio.sleep(self.chrome_connect_retry_seconds)
+        if opened is None:
             raise BrowserMissionChromeUnavailable(
                 "Chrome DevTools MCP could not open Google Picker"
-            ) from exc
+            ) from last_error
+        # Open the bounded Picker target before waking or preparing the remote
+        # workstation. Preparation can legitimately take several minutes; if
+        # it ran first, Chrome could lose its last permitted page and MCP would
+        # later fail with "No page selected" before fallback was possible.
+        try:
+            await self.model_client.prepare()
+        except (BrowserMissionModelUnavailable, BrowserMissionTimeout) as exc:
+            self._activate_deterministic_fallback(exc)
         self._system_message = {
             "role": "system",
             "content": (
@@ -603,7 +712,15 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
             ),
         }
         self._messages = [self._system_message]
-        return {**opened, "control_policy": "qwen_browser_mission"}
+        return {
+            **opened,
+            "control_policy": (
+                "deterministic_fallback"
+                if self._deterministic_fallback_active
+                else "qwen_browser_mission"
+            ),
+            "fallback_reason": self._fallback_reason,
+        }
 
     def _compact_after_action(self) -> None:
         """Discard expired snapshots and tool history after a successful click."""
@@ -648,16 +765,16 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                 raise BrowserMissionUserActionRequired(blocking_reason)
             self._last_snapshot = snapshot
             if phase == "selection":
-                cutoff = self._reference_date - timedelta(days=self._recent_days - 1)
-                eligible = [
-                    entry
-                    for entry in _photo_entries(snapshot, today=self._reference_date)
-                    if cutoff <= entry["date"] <= self._reference_date
-                ]
+                self._observe_selection_summary(snapshot)
+                eligible = self._eligible_entries(snapshot)
                 visible_unselected = [entry for entry in eligible if not bool(entry["checked"])]
-                at_limit = self._selection_clicks >= self._selection_limit
+                at_limit = (
+                    self._current_selection_count()
+                    >= self._effective_selection_limit()
+                )
                 self._reached_cutoff = self._reached_cutoff or any(
-                    entry["date"] < cutoff for entry in _photo_entries(snapshot, today=self._reference_date)
+                    entry["date"] < self._date_from
+                    for entry in self._selection_entries(snapshot)
                 )
                 if self._scroll_pending_signature:
                     current_signature = json.dumps(
@@ -671,7 +788,7 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                     )
                     self._scroll_pending_signature = ""
                 exhausted = self._reached_cutoff or self._stable_end_observations >= 2
-                ready_for_confirmation = bool(self._selection_clicks) and (
+                ready_for_confirmation = bool(self._current_selection_count()) and (
                     at_limit or (not visible_unselected and exhausted)
                 )
                 signature = json.dumps(
@@ -696,19 +813,16 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
         if name == "scroll_picker":
             if phase != "selection" or not self._last_snapshot:
                 raise BrowserMissionError("Qwen requested Picker scrolling without a fresh snapshot")
-            if "press_key" not in self._discovered_tools:
+            if "evaluate_script" not in self._discovered_tools:
                 raise BrowserMissionChromeUnavailable(
-                    "Chrome DevTools MCP does not expose the bounded PageDown tool"
+                    "Chrome DevTools MCP does not expose the bounded scroll tool"
                 )
-            cutoff = self._reference_date - timedelta(days=self._recent_days - 1)
-            entries = _photo_entries(self._last_snapshot, today=self._reference_date)
-            eligible = [
-                entry for entry in entries if cutoff <= entry["date"] <= self._reference_date
-            ]
+            eligible = self._eligible_entries(self._last_snapshot)
             visible_unselected = [entry for entry in eligible if not bool(entry["checked"])]
             if (
                 visible_unselected
-                or self._selection_clicks >= self._selection_limit
+                or self._current_selection_count()
+                >= self._effective_selection_limit()
                 or self._reached_cutoff
             ):
                 self._record_guard_denial("unsafe_scroll_request")
@@ -727,15 +841,20 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
             )
             try:
                 result = await self._session.call_tool(
-                    "press_key",
-                    {"key": "PageDown", "includeSnapshot": False},
+                    "evaluate_script",
+                    {
+                        "function": _BOUNDED_SCROLL_SCRIPT,
+                        "waitForStableDom": True,
+                    },
                 )
             except (OSError, RuntimeError, TimeoutError) as exc:
                 raise BrowserMissionChromeUnavailable(
-                    "Chrome DevTools MCP PageDown failed"
+                    "Chrome DevTools MCP bounded scroll failed"
                 ) from exc
             if bool(getattr(result, "isError", False)):
-                raise BrowserMissionChromeUnavailable("Chrome DevTools MCP PageDown failed")
+                raise BrowserMissionChromeUnavailable(
+                    "Chrome DevTools MCP bounded scroll failed"
+                )
             self._scroll_count += 1
             self._last_snapshot = ""
             self._snapshot_signature = ""
@@ -753,19 +872,15 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                 requested_count = int(arguments.get("selected_count") or 0)
             except (TypeError, ValueError) as exc:
                 raise BrowserMissionError("Qwen returned an invalid selection count") from exc
-            cutoff = self._reference_date - timedelta(days=self._recent_days - 1)
-            eligible = [
-                entry
-                for entry in _photo_entries(self._last_snapshot, today=self._reference_date)
-                if cutoff <= entry["date"] <= self._reference_date
-            ]
+            eligible = self._eligible_entries(self._last_snapshot)
             visible_unselected = [entry for entry in eligible if not bool(entry["checked"])]
-            at_limit = self._selection_clicks >= self._selection_limit
+            current_selected = self._current_selection_count()
+            at_limit = current_selected >= self._effective_selection_limit()
             exhausted = self._reached_cutoff or self._stable_end_observations >= 2
             buttons = _completion_buttons(self._last_snapshot)
             if (
                 self._confirmation_clicked
-                or requested_count != self._selection_clicks
+                or requested_count != current_selected
                 or (visible_unselected and not at_limit)
                 or (not at_limit and not exhausted)
                 or self._stable_ready_observations < 2
@@ -833,17 +948,17 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
         if phase == "selection":
             entries = {
                 str(entry["uid"]): entry
-                for entry in _photo_entries(self._last_snapshot, today=self._reference_date)
+                for entry in self._selection_entries(self._last_snapshot)
             }
-            cutoff = self._reference_date - timedelta(days=self._recent_days - 1)
             requested_entries = [entries.get(uid) for uid in requested_uids]
             if (
                 name != "select_recent_photos"
-                or len(requested_uids) > self._selection_limit - self._selection_clicks
+                or len(requested_uids)
+                > self._effective_selection_limit() - self._current_selection_count()
                 or any(
                     entry is None
                     or bool(entry["checked"])
-                    or not cutoff <= entry["date"] <= self._reference_date
+                    or not self._date_from <= entry["date"] <= self._date_to
                     for entry in requested_entries
                 )
             ):
@@ -906,7 +1021,15 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
         for _step in range(self.max_model_steps):
             self._check_cancelled()
             tools = self._tools_for_phase(phase)
-            message = await self.model_client.complete(self._messages, tools)
+            try:
+                message = await asyncio.wait_for(
+                    self.model_client.complete(self._messages, tools),
+                    timeout=self.model_step_timeout_seconds,
+                )
+            except TimeoutError as exc:
+                raise BrowserMissionTimeout(
+                    "Qwen browser mission model step timed out"
+                ) from exc
             self._check_cancelled()
             calls = message.get("tool_calls")
             if not isinstance(calls, list) or len(calls) != 1:
@@ -933,20 +1056,13 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                 except (TypeError, ValueError) as exc:
                     raise BrowserMissionError("Qwen returned an invalid terminal count") from exc
                 if phase == "selection" and status == "no_recent_photos":
-                    cutoff = self._reference_date - timedelta(days=self._recent_days - 1)
                     eligible = (
-                        [
-                            entry
-                            for entry in _photo_entries(
-                                self._last_snapshot, today=self._reference_date
-                            )
-                            if cutoff <= entry["date"] <= self._reference_date
-                        ]
+                        self._eligible_entries(self._last_snapshot)
                         if self._last_snapshot
                         else []
                     )
                     if (
-                        self._selection_clicks
+                        self._current_selection_count()
                         or selected_count
                         or not self._last_snapshot
                         or eligible
@@ -1013,7 +1129,7 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                 "content": result,
             })
             if name == "confirm_picker_selection" and self._confirmation_clicked:
-                self._selected_count = self._selection_clicks
+                self._selected_count = self._current_selection_count()
                 return {
                     "status": "success",
                     "selected_count": self._selected_count,
@@ -1021,7 +1137,10 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                 }
             if name == "select_recent_photos" and result.startswith('{"status":"clicked"'):
                 self._compact_after_action()
-                if self._selection_clicks >= self._selection_limit:
+                if (
+                    self._current_selection_count()
+                    >= self._effective_selection_limit()
+                ):
                     return await self._confirm_reached_selection_limit()
             elif name == "scroll_picker" and result.startswith('{"status":"scrolled"'):
                 self._compact_after_action()
@@ -1035,17 +1154,85 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
         today: date | None = None,
         **_kwargs: Any,
     ) -> dict[str, object]:
+        reference = today or date.today()
+        bounded_days = max(1, min(int(recent_days), 31))
+        return await self._preselect_date_window(
+            count,
+            date_from=reference - timedelta(days=bounded_days - 1),
+            date_to=reference,
+            marker_date=reference,
+        )
+
+    async def preselect_date_range(
+        self,
+        count: int,
+        *,
+        date_from: date,
+        date_to: date,
+        **_kwargs: Any,
+    ) -> dict[str, object]:
+        if date_to < date_from or (date_to - date_from).days > 30:
+            raise ValueError("Google Picker date range is invalid")
+        return await self._preselect_date_window(
+            count,
+            date_from=date_from,
+            date_to=date_to,
+            marker_date=date.today(),
+        )
+
+    async def _run_deterministic_selection_fallback(
+        self,
+        count: int,
+        *,
+        date_from: date,
+        date_to: date,
+        marker_date: date,
+    ) -> dict[str, object]:
+        qwen_clicked_count = self._selection_clicks
+        deterministic = await ChromeDevToolsMcpAssistant._preselect_date_window(
+            self,
+            count,
+            earliest=date_from,
+            latest=date_to,
+            marker_date=marker_date,
+            wait_attempts=80,
+            wait_interval_seconds=0.25,
+        )
+        fallback_clicked_count = max(
+            0, int(deterministic.get("clicked_count") or 0)
+        )
+        self._selected_count = max(
+            0, int(deterministic.get("selected_after") or 0)
+        )
+        return {
+            **deterministic,
+            "clicked_count": qwen_clicked_count + fallback_clicked_count,
+            "qwen_clicked_count": qwen_clicked_count,
+            "fallback_clicked_count": fallback_clicked_count,
+            "control_policy": "deterministic_fallback",
+            "fallback_reason": self._fallback_reason,
+        }
+
+    async def _preselect_date_window(
+        self,
+        count: int,
+        *,
+        date_from: date,
+        date_to: date,
+        marker_date: date,
+    ) -> dict[str, object]:
         self._selection_limit = max(1, min(int(count), 1000))
-        self._recent_days = max(1, min(int(recent_days), 31))
-        self._reference_date = today or date.today()
-        cutoff = self._reference_date - timedelta(days=self._recent_days - 1)
-        result = await self._run_phase(
-            "selection",
-            (
+        self._recent_days = (date_to - date_from).days + 1
+        self._reference_date = date_to
+        self._marker_date = marker_date
+        self._date_from = date_from
+        self._date_to = date_to
+        cutoff = date_from
+        instruction = (
                 f"Select individual photos dated from {cutoff.isoformat()} through "
-                f"{self._reference_date.isoformat()} inclusive, up to {self._selection_limit}. "
-                f"The Today/오늘 marker means {self._reference_date.isoformat()} and the Yesterday/어제 marker means "
-                f"{(self._reference_date - timedelta(days=1)).isoformat()}; treat these mappings as authoritative. "
+                f"{self._date_to.isoformat()} inclusive, up to {self._selection_limit}. "
+                f"The Today/오늘 marker means {self._marker_date.isoformat()} and the Yesterday/어제 marker means "
+                f"{(self._marker_date - timedelta(days=1)).isoformat()}; treat these mappings as authoritative. "
                 "Do not select videos, older photos, or date-group bulk controls. Inspect the current page first, "
                 "Do not open photo previews to infer dates. "
                 "Use select_recent_photos once with all eligible visible individual-photo UIDs, then re-observe. "
@@ -1056,8 +1243,39 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                 "snapshots and call confirm_picker_selection. If the requested safety limit is reached, leave all "
                 "additional photos unchecked and confirm the bounded selection after two stable snapshots. "
                 "Use report_browser_mission only for no recent photos, user action, retryable error, or unsafe state."
-            ),
         )
+        if self._deterministic_fallback_active:
+            return await self._run_deterministic_selection_fallback(
+                count,
+                date_from=date_from,
+                date_to=date_to,
+                marker_date=marker_date,
+            )
+        try:
+            result = await asyncio.wait_for(
+                self._run_phase("selection", instruction),
+                timeout=self.model_mission_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            timeout = BrowserMissionTimeout(
+                "Qwen browser mission phase timed out"
+            )
+            timeout.__cause__ = exc
+            self._activate_deterministic_fallback(timeout)
+            return await self._run_deterministic_selection_fallback(
+                count,
+                date_from=date_from,
+                date_to=date_to,
+                marker_date=marker_date,
+            )
+        except (BrowserMissionModelUnavailable, BrowserMissionTimeout) as exc:
+            self._activate_deterministic_fallback(exc)
+            return await self._run_deterministic_selection_fallback(
+                count,
+                date_from=date_from,
+                date_to=date_to,
+                marker_date=marker_date,
+            )
         if result["status"] == "no_recent_photos":
             return {
                 "status": "no_recent_photos",
@@ -1068,7 +1286,7 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
                 "requested_count": self._selection_limit,
                 "recent_days": self._recent_days,
                 "cutoff_date": cutoff.isoformat(),
-                "latest_date": self._reference_date.isoformat(),
+                "latest_date": self._date_to.isoformat(),
                 "older_selected_count": 0,
                 "final_confirmation_clicked": False,
                 "model_metrics": self._mission_metrics(),
@@ -1082,13 +1300,20 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
             "requested_count": self._selection_limit,
             "recent_days": self._recent_days,
             "cutoff_date": cutoff.isoformat(),
-            "latest_date": self._reference_date.isoformat(),
+            "latest_date": self._date_to.isoformat(),
             "older_selected_count": 0,
             "final_confirmation_clicked": True,
             "model_metrics": self._mission_metrics(),
         }
 
-    async def confirm_selection(self, **_kwargs: Any) -> dict[str, object]:
+    async def confirm_selection(self, **kwargs: Any) -> dict[str, object]:
+        if self._deterministic_fallback_active:
+            result = await ChromeDevToolsMcpAssistant.confirm_selection(self, **kwargs)
+            return {
+                **result,
+                "control_policy": "deterministic_fallback",
+                "fallback_reason": self._fallback_reason,
+            }
         if not self._confirmation_clicked or self._selected_count < 1:
             raise BrowserMissionError("Qwen browser mission did not confirm the Picker selection")
         return {
@@ -1099,3 +1324,13 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
             "control_policy": "qwen_browser_mission",
             "model_metrics": self._mission_metrics(),
         }
+
+    async def confirm_date_range(self, **kwargs: Any) -> dict[str, object]:
+        if self._deterministic_fallback_active:
+            result = await ChromeDevToolsMcpAssistant.confirm_date_range(self, **kwargs)
+            return {
+                **result,
+                "control_policy": "deterministic_fallback",
+                "fallback_reason": self._fallback_reason,
+            }
+        return await self.confirm_selection()

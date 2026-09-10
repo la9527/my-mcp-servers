@@ -35,7 +35,7 @@ def test_job_db_repairs_running_job_with_saved_results(tmp_path) -> None:
             "running",
             time.time() - 60,
             time.time() - 55,
-            None,
+            time.time() - 50,
             '{"total": 1, "completed": 1, "stage": "vlm", "current_file": "sample.jpeg", "errors": [], "percent": 100.0}',
             '{"ranked_count": 1, "total_s": 2.5}',
             None,
@@ -50,6 +50,43 @@ def test_job_db_repairs_running_job_with_saved_results(tmp_path) -> None:
     assert repaired.status.value == "completed"
     assert repaired.finished_at is not None
     assert repaired.error_message is None
+
+
+def test_job_db_does_not_complete_live_running_job_from_runtime_metadata(tmp_path) -> None:
+    db_path = tmp_path / "jobs.db"
+    JobDB = _load_job_db_class()
+    db = JobDB(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        INSERT INTO jobs (
+            id, source, source_path, request_json, status, created_at,
+            started_at, finished_at, progress_json, result_json, error_message
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "job-live-runtime",
+            "apple",
+            "",
+            "{}",
+            "running",
+            time.time(),
+            time.time(),
+            None,
+            '{"total": 69, "completed": 27, "stage": "vlm", "percent": 39.1}',
+            '{"vlm_runtime": {"status": "configured"}}',
+            None,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = JobDB(db_path).load_job("job-live-runtime")
+
+    assert reopened is not None
+    assert reopened.status.value == "running"
+    assert reopened.finished_at is None
 
 
 def test_job_db_migrates_legacy_restart_failure_to_interrupted(tmp_path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import date
 
 import pytest
 
@@ -14,6 +15,8 @@ from photos_mcp.domain.models.source import PickingSession, PickingSessionState
 class FakeImporter:
     def __init__(self) -> None:
         self.cancelled_session_id = ""
+        self.expected_item_count = None
+        self.expected_excluded_asset_keys: set[str] = set()
         self.session = PickingSession(
             session_id="picker-session-1",
             source_id="google-photos:default",
@@ -32,7 +35,8 @@ class FakeImporter:
 
     async def prepare_ready_selection(self, _source, session_id, **kwargs):
         assert session_id == self.session.session_id
-        assert kwargs["exclude_asset_keys"] == set()
+        assert kwargs["exclude_asset_keys"] == self.expected_excluded_asset_keys
+        self.expected_item_count = kwargs.get("expected_item_count")
         kwargs["progress_callback"]({"state": "completed", "completed_photo_count": 2})
         return {"materialized_photo_count": 2, "excluded_video_count": 1}
 
@@ -80,12 +84,16 @@ class FakeBrowser:
 class FakeRepository:
     def __init__(self) -> None:
         self.processed = []
+        self.destination_receipts = []
 
     def list_user_action_requests(self, **_kwargs):
         return []
 
     def list_processed_photo_assets(self, **_kwargs):
         return list(self.processed)
+
+    def list_recommendation_destination_receipts(self, **_kwargs):
+        return list(self.destination_receipts)
 
     def upsert_processed_photo_asset(self, payload):
         self.processed.append(payload)
@@ -121,6 +129,55 @@ async def test_assisted_workflow_waits_for_user_then_submits_analysis() -> None:
         "selection_prepared",
         "analysis_submitted",
     ]
+
+
+@pytest.mark.asyncio
+async def test_reanalysis_does_not_exclude_processed_google_assets() -> None:
+    repository = FakeRepository()
+    repository.processed.append(
+        {"provider_asset_id": "google-existing", "status": "completed"}
+    )
+
+    result = await run_google_picker_assisted_workflow(
+        runtime=FakeRuntime(),
+        browser_assistant=FakeBrowser(),
+        repository=repository,
+        limit=20,
+        reanalyze=True,
+        sleep=lambda _seconds: _completed_sleep(),
+    )
+
+    assert result["status"] == "analysis_submitted"
+
+
+@pytest.mark.asyncio
+async def test_reanalysis_still_excludes_photos_mcp_google_album_copies() -> None:
+    repository = FakeRepository()
+    repository.processed.append(
+        {"provider_asset_id": "google-original", "status": "completed"}
+    )
+    repository.destination_receipts.append(
+        {
+            "destination_type": "google_album",
+            "state": "completed",
+            "provider_media_item_id": "google-managed-copy",
+        }
+    )
+    runtime = FakeRuntime()
+    runtime.importer.expected_excluded_asset_keys = {
+        "google-photos:default:google-managed-copy"
+    }
+
+    result = await run_google_picker_assisted_workflow(
+        runtime=runtime,
+        browser_assistant=FakeBrowser(),
+        repository=repository,
+        limit=20,
+        reanalyze=True,
+        sleep=lambda _seconds: _completed_sleep(),
+    )
+
+    assert result["status"] == "analysis_submitted"
 
 
 async def _completed_sleep() -> None:
@@ -172,10 +229,11 @@ async def test_assisted_workflow_cancels_picker_when_bound_parent_is_stopped() -
 @pytest.mark.asyncio
 async def test_assisted_workflow_can_preselect_and_confirm_before_polling() -> None:
     browser = FakeBrowser()
+    runtime = FakeRuntime()
     progress = []
 
     result = await run_google_picker_assisted_workflow(
-        runtime=FakeRuntime(),
+        runtime=runtime,
         browser_assistant=browser,
         repository=FakeRepository(),
         limit=20,
@@ -188,12 +246,50 @@ async def test_assisted_workflow_can_preselect_and_confirm_before_polling() -> N
     assert result["status"] == "analysis_submitted"
     assert browser.preselected == 5
     assert browser.confirmed is True
+    assert result["selected_photo_count"] == 2
+    assert runtime.importer.expected_item_count == 5
     assert [stage for stage, _ in progress][:4] == [
         "picker_session_created",
         "awaiting_user_confirmation",
         "recent_photos_preselected",
         "selection_confirmed",
     ]
+
+
+@pytest.mark.asyncio
+async def test_assisted_workflow_uses_explicit_capture_dates_for_manual_story() -> None:
+    class RangeBrowser(FakeBrowser):
+        async def preselect_date_range(self, count, *, date_from, date_to):
+            assert date_from == date(2026, 8, 17)
+            assert date_to == date(2026, 8, 18)
+            self.preselected = count
+            return {"clicked_count": count, "selected_before": 0, "requested_count": count}
+
+        async def confirm_date_range(self, *, max_selected_count, date_from, date_to):
+            assert max_selected_count == self.preselected
+            assert date_from == date(2026, 8, 17)
+            assert date_to == date(2026, 8, 18)
+            self.confirmed = True
+            return {"selected_count": self.preselected, "final_confirmation_clicked": True}
+
+        async def preselect_recent(self, *_args, **_kwargs):
+            raise AssertionError("manual date Story must not use the recent-day shortcut")
+
+    browser = RangeBrowser()
+    result = await run_google_picker_assisted_workflow(
+        runtime=FakeRuntime(),
+        browser_assistant=browser,
+        repository=FakeRepository(),
+        limit=20,
+        preselect_count=5,
+        date_from=date(2026, 8, 17),
+        date_to=date(2026, 8, 18),
+        auto_confirm=True,
+        sleep=lambda _seconds: _completed_sleep(),
+    )
+    assert result["status"] == "analysis_submitted"
+    assert browser.preselected == 5
+    assert browser.confirmed is True
 
 
 @pytest.mark.asyncio
@@ -301,3 +397,60 @@ async def test_assisted_workflow_skips_assets_already_completed_in_prior_runs() 
     assert result["result"] == "no_new_photos"
     assert result["previously_processed_count"] == 1
     assert progress[-1][0] == "no_new_photos"
+
+
+@pytest.mark.asyncio
+async def test_assisted_workflow_resumes_exact_prepared_session_without_reopening_picker() -> None:
+    runtime = FakeRuntime()
+    repository = FakeRepository()
+
+    def recover(session_id):
+        assert session_id == "picker-recovered"
+        return {
+            "status": "prepared_partial",
+            "session_id": session_id,
+            "materialized_photo_count": 2,
+            "unfinished_photo_count": 3,
+            "excluded_video_count": 0,
+            "asset_refs": (
+                {
+                    "source_id": runtime.source.source_id,
+                    "provider_asset_id": "recovered-1",
+                },
+                {
+                    "source_id": runtime.source.source_id,
+                    "provider_asset_id": "recovered-2",
+                },
+            ),
+        }
+
+    runtime.importer.recover_prepared_selection = recover
+
+    async def classify_recovered(session_id, **_kwargs):
+        assert session_id == "picker-recovered"
+        return {"status": "completed", "job_id": "job-recovered"}
+
+    runtime.importer.classify_prepared_selection = classify_recovered
+
+    class BrowserMustNotOpen:
+        async def open_picker(self, _uri):
+            raise AssertionError("a durable prepared session must resume before Picker")
+
+    progress = []
+    result = await run_google_picker_assisted_workflow(
+        runtime=runtime,
+        browser_assistant=BrowserMustNotOpen(),
+        repository=repository,
+        limit=20,
+        resume_session_id="picker-recovered",
+        progress_callback=lambda stage, payload: progress.append((stage, payload)),
+    )
+
+    assert result["status"] == "partial"
+    assert result["selected_photo_count"] == 2
+    assert result["unfinished_photo_count"] == 3
+    assert progress[0][0] == "selection_recovered"
+    assert {item["provider_asset_id"] for item in repository.processed} == {
+        "recovered-1",
+        "recovered-2",
+    }
