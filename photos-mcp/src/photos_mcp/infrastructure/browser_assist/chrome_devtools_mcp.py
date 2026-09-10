@@ -60,6 +60,14 @@ _SELECTION_SUMMARY_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+_SEARCH_BOX_RE = re.compile(
+    r'uid=(?P<uid>[0-9_]+)\s+combobox\s+"(?:사진 및 앨범 검색|Search photos and albums)"',
+    re.IGNORECASE,
+)
+_SEARCH_TRIGGER_RE = re.compile(
+    r'uid=(?P<uid>[0-9_]+)\s+button\s+"(?:사진 및 앨범 검색|Search photos and albums)"',
+    re.IGNORECASE,
+)
 _ENGLISH_DATE_RE = re.compile(
     r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:,\s*(20\d{2}))?",
     re.IGNORECASE,
@@ -184,14 +192,108 @@ def _photo_entries(snapshot: str, *, today: date) -> list[dict[str, object]]:
                 break
         if not individual_photo:
             continue
+        label_match = re.search(r'\bcheckbox\s+"([^"]*)"', line)
         entries.append(
             {
                 "uid": uid.group(1),
                 "date": current_date,
+                "label": label_match.group(1) if label_match else "",
                 "checked": bool(re.search(r"\bchecked\b", line, re.IGNORECASE)),
             }
         )
     return entries
+
+
+def _bounded_photo_checkbox_script(
+    label: str,
+    *,
+    earliest: date,
+    latest: date,
+) -> str:
+    """Build a fixed-purpose DOM click for one exact Picker photo label.
+
+    Chrome DevTools' accessibility-UID click can acknowledge a Google Picker
+    checkbox without changing its React state.  This macro is intentionally
+    narrower than arbitrary page scripting: it can only click the first
+    unchecked checkbox whose accessible label exactly matches an entry that
+    the bounded date parser has already accepted as an individual photo.
+    """
+
+    encoded_label = json.dumps(str(label), ensure_ascii=False)
+    allowed_dates: list[str] = []
+    current = earliest
+    while current <= latest:
+        allowed_dates.extend(
+            (
+                f"{current.year}. {current.month}. {current.day}.",
+                f"{current.year}년 {current.month}월 {current.day}일",
+                current.strftime("%B %-d, %Y"),
+            )
+        )
+        current += timedelta(days=1)
+    encoded_dates = json.dumps(allowed_dates, ensure_ascii=False)
+    return f"""() => {{
+  const expectedLabel = {encoded_label};
+  const allowedDateFragments = {encoded_dates};
+  const candidates = [...document.querySelectorAll('[role="checkbox"],input[type="checkbox"]')]
+    .filter((element) => {{
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      const label = element.getAttribute('aria-label') || '';
+      return (label.startsWith('사진 -') || label.startsWith('Photo -'))
+        && allowedDateFragments.some((fragment) => label.includes(fragment))
+        && element.getAttribute('aria-checked') !== 'true'
+        && element.checked !== true
+        && rect.width > 0
+        && rect.height > 0
+        && rect.bottom > 0
+        && rect.top < window.innerHeight
+        && style.display !== 'none'
+        && style.visibility !== 'hidden';
+    }});
+  const target = candidates.find(
+    (element) => element.getAttribute('aria-label') === expectedLabel
+  ) || candidates[0];
+  if (!target) return {{clicked: false}};
+  target.click();
+  return {{clicked: true}};
+}}"""
+
+
+_BOUNDED_COMPLETION_SCRIPT = """() => {
+  const labels = new Set(['완료', 'Done', '추가', 'Add']);
+  const candidates = [...document.querySelectorAll('button,[role="button"]')]
+    .filter((element) => {
+      const label = (element.getAttribute('aria-label') || element.innerText || '').trim();
+      return labels.has(label)
+        && element.disabled !== true
+        && element.getAttribute('aria-disabled') !== 'true';
+    });
+  if (candidates.length !== 1) return {clicked: false, candidateCount: candidates.length};
+  candidates[0].click();
+  return {clicked: true, candidateCount: 1};
+}"""
+
+
+_BOUNDED_SEARCH_TRIGGER_SCRIPT = """() => {
+  const labels = new Set(['사진 및 앨범 검색', 'Search photos and albums']);
+  const candidates = [...document.querySelectorAll('button,[role="button"]')]
+    .filter((element) => {
+      const label = (element.getAttribute('aria-label') || element.innerText || '').trim();
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return labels.has(label)
+        && element.disabled !== true
+        && element.getAttribute('aria-disabled') !== 'true'
+        && rect.width > 0
+        && rect.height > 0
+        && style.display !== 'none'
+        && style.visibility !== 'hidden';
+    });
+  if (candidates.length !== 1) return {clicked: false, candidateCount: candidates.length};
+  candidates[0].click();
+  return {clicked: true, candidateCount: 1};
+}"""
 
 
 def _completion_buttons(snapshot: str) -> list[dict[str, object]]:
@@ -348,6 +450,15 @@ class ChromeDevToolsMcpAssistant:
         """Select individual photos dated within the inclusive recent-day window."""
         reference_date = today or date.today()
         bounded_days = max(1, min(int(recent_days), 31))
+        if {"fill", "press_key"} <= self._discovered_tools:
+            return await self._preselect_searched_date_range(
+                count,
+                date_from=reference_date - timedelta(days=bounded_days - 1),
+                date_to=reference_date,
+                marker_date=reference_date,
+                wait_attempts=wait_attempts,
+                wait_interval_seconds=wait_interval_seconds,
+            )
         return await self._preselect_date_window(
             count,
             earliest=reference_date - timedelta(days=bounded_days - 1),
@@ -369,6 +480,15 @@ class ChromeDevToolsMcpAssistant:
         """Select only photos inside an explicit inclusive capture-date range."""
         if date_to < date_from or (date_to - date_from).days > 30:
             raise ValueError("Google Picker date range is invalid")
+        if {"fill", "press_key"} <= self._discovered_tools:
+            return await self._preselect_searched_date_range(
+                count,
+                date_from=date_from,
+                date_to=date_to,
+                marker_date=date.today(),
+                wait_attempts=wait_attempts,
+                wait_interval_seconds=wait_interval_seconds,
+            )
         return await self._preselect_date_window(
             count,
             earliest=date_from,
@@ -377,6 +497,411 @@ class ChromeDevToolsMcpAssistant:
             wait_attempts=wait_attempts,
             wait_interval_seconds=wait_interval_seconds,
         )
+
+    async def _search_picker_date(
+        self,
+        target_date: date,
+        *,
+        marker_date: date,
+        wait_attempts: int,
+        wait_interval_seconds: float,
+    ) -> bool:
+        """Narrow Picker through its documented date search UI."""
+
+        if self._session is None:
+            raise RuntimeError("Chrome DevTools MCP assistant is not connected")
+        search_box_uid = await self._wait_for_picker_search_box(
+            wait_attempts=wait_attempts,
+            wait_interval_seconds=wait_interval_seconds,
+        )
+        query = f"{target_date.year}년 {target_date.month}월 {target_date.day}일"
+        filled = await self._session.call_tool(
+            "fill", {"uid": search_box_uid, "value": query}
+        )
+        if bool(getattr(filled, "isError", False)):
+            raise RuntimeError("Google Picker date search input failed")
+        submitted = await self._session.call_tool("press_key", {"key": "Enter"})
+        if bool(getattr(submitted, "isError", False)):
+            raise RuntimeError("Google Picker date search submission failed")
+
+        query_visible = False
+        for attempt in range(max(3, int(wait_attempts))):
+            await asyncio.sleep(max(0.05, min(float(wait_interval_seconds), 0.5)))
+            result = await self._session.call_tool("take_snapshot", {"verbose": False})
+            if bool(getattr(result, "isError", False)):
+                raise RuntimeError("Chrome DevTools MCP could not inspect date search results")
+            current = _snapshot_text(result)
+            entries = _photo_entries(current, today=marker_date)
+            if any(entry["date"] == target_date for entry in entries):
+                return True
+            query_visible = query in current
+            if attempt + 1 >= max(3, int(wait_attempts)):
+                break
+        if query_visible:
+            return False
+        raise RuntimeError("Google Picker date search results did not stabilize")
+
+    async def _wait_for_picker_search_box(
+        self,
+        *,
+        wait_attempts: int,
+        wait_interval_seconds: float,
+    ) -> str:
+        if self._session is None:
+            raise RuntimeError("Chrome DevTools MCP assistant is not connected")
+        trigger_attempts = 0
+        for attempt in range(max(3, int(wait_attempts))):
+            snapshot_result = await self._session.call_tool(
+                "take_snapshot", {"verbose": False}
+            )
+            if bool(getattr(snapshot_result, "isError", False)):
+                raise RuntimeError("Chrome DevTools MCP could not inspect Picker search")
+            search_box = _SEARCH_BOX_RE.search(_snapshot_text(snapshot_result))
+            if search_box is not None:
+                return search_box.group("uid")
+            if trigger_attempts < 2:
+                search_trigger = _SEARCH_TRIGGER_RE.search(
+                    _snapshot_text(snapshot_result)
+                )
+                if search_trigger is not None:
+                    if trigger_attempts == 0:
+                        opened = await self._session.call_tool(
+                            "click",
+                            {
+                                "uid": search_trigger.group("uid"),
+                                "includeSnapshot": True,
+                            },
+                        )
+                    elif "evaluate_script" in self._discovered_tools:
+                        opened = await self._session.call_tool(
+                            "evaluate_script",
+                            {
+                                "function": _BOUNDED_SEARCH_TRIGGER_SCRIPT,
+                                "waitForStableDom": True,
+                            },
+                        )
+                    else:
+                        opened = None
+                    if opened is None:
+                        trigger_attempts = 2
+                    elif bool(getattr(opened, "isError", False)):
+                        raise RuntimeError(
+                            "Chrome DevTools MCP could not open Picker search"
+                        )
+                    else:
+                        trigger_attempts += 1
+            if attempt + 1 < max(3, int(wait_attempts)):
+                await asyncio.sleep(
+                    max(0.05, min(float(wait_interval_seconds), 0.5))
+                )
+        raise RuntimeError("Google Picker date search box is unavailable")
+
+    async def _search_picker_range(
+        self,
+        date_from: date,
+        date_to: date,
+        *,
+        marker_date: date,
+        wait_attempts: int,
+        wait_interval_seconds: float,
+    ) -> bool:
+        """Probe one bounded natural-language range and verify returned dates."""
+
+        if self._session is None:
+            raise RuntimeError("Chrome DevTools MCP assistant is not connected")
+        search_box_uid = await self._wait_for_picker_search_box(
+            wait_attempts=wait_attempts,
+            wait_interval_seconds=wait_interval_seconds,
+        )
+        query = (
+            f"{date_from.year}년 {date_from.month}월 {date_from.day}일부터 "
+            f"{date_to.year}년 {date_to.month}월 {date_to.day}일까지"
+        )
+        filled = await self._session.call_tool(
+            "fill", {"uid": search_box_uid, "value": query}
+        )
+        if bool(getattr(filled, "isError", False)):
+            raise RuntimeError("Google Picker range search input failed")
+        submitted = await self._session.call_tool("press_key", {"key": "Enter"})
+        if bool(getattr(submitted, "isError", False)):
+            raise RuntimeError("Google Picker range search submission failed")
+
+        query_visible = False
+        for attempt in range(max(3, int(wait_attempts))):
+            await asyncio.sleep(max(0.05, min(float(wait_interval_seconds), 0.5)))
+            result = await self._session.call_tool("take_snapshot", {"verbose": False})
+            if bool(getattr(result, "isError", False)):
+                raise RuntimeError("Chrome DevTools MCP could not inspect range search results")
+            current = _snapshot_text(result)
+            entries = _photo_entries(current, today=marker_date)
+            if entries:
+                return all(date_from <= entry["date"] <= date_to for entry in entries)
+            query_visible = query in current
+            if attempt + 1 >= max(3, int(wait_attempts)):
+                break
+        if query_visible:
+            return False
+        raise RuntimeError("Google Picker range search results did not stabilize")
+
+    async def _inspect_date_window(
+        self,
+        *,
+        earliest: date,
+        latest: date,
+        marker_date: date,
+        wait_attempts: int,
+        wait_interval_seconds: float,
+        candidate_limit: int = 101,
+        per_day_limit: int = 50,
+    ) -> dict[str, object]:
+        """Count a five-day search window without changing any selection state."""
+
+        if self._session is None:
+            raise RuntimeError("Chrome DevTools MCP assistant is not connected")
+        discovered: set[tuple[str, str]] = set()
+        previous_signature = ""
+        stable_snapshots = 0
+        scroll_count = 0
+        scope_exhausted = False
+        range_valid = True
+        for _step in range(max(8, min(256, int(wait_attempts) * 8))):
+            result = await self._session.call_tool("take_snapshot", {"verbose": False})
+            if bool(getattr(result, "isError", False)):
+                raise RuntimeError("Chrome DevTools MCP could not inspect range candidates")
+            entries = _photo_entries(_snapshot_text(result), today=marker_date)
+            if any(not earliest <= entry["date"] <= latest for entry in entries):
+                range_valid = False
+                break
+            discovered.update(
+                (str(entry["date"]), str(entry["uid"])) for entry in entries
+            )
+            counts: dict[str, int] = {}
+            for capture_date, _uid in discovered:
+                counts[capture_date] = counts.get(capture_date, 0) + 1
+            if len(discovered) >= max(1, int(candidate_limit)) or any(
+                count >= max(1, int(per_day_limit)) for count in counts.values()
+            ):
+                break
+            signature = json.dumps(
+                sorted(discovered), ensure_ascii=False, separators=(",", ":")
+            )
+            stable_snapshots = stable_snapshots + 1 if signature == previous_signature else 0
+            previous_signature = signature
+            if stable_snapshots >= 2:
+                scope_exhausted = True
+                break
+            if "evaluate_script" not in self._discovered_tools:
+                break
+            scrolled = await self._session.call_tool(
+                "evaluate_script",
+                {"function": _BOUNDED_SCROLL_SCRIPT, "waitForStableDom": True},
+            )
+            if bool(getattr(scrolled, "isError", False)):
+                raise RuntimeError("Chrome DevTools MCP bounded range scan failed")
+            scroll_count += 1
+            await asyncio.sleep(max(0.05, min(float(wait_interval_seconds), 0.5)))
+        counts: dict[str, int] = {}
+        for capture_date, _uid in discovered:
+            counts[capture_date] = counts.get(capture_date, 0) + 1
+        return {
+            "candidate_count": len(discovered),
+            "candidate_counts_by_date": counts,
+            "scope_exhausted": scope_exhausted,
+            "range_valid": range_valid,
+            "scroll_count": scroll_count,
+            "dense": (
+                len(discovered) >= max(1, int(candidate_limit))
+                or any(
+                    count >= max(1, int(per_day_limit))
+                    for count in counts.values()
+                )
+            ),
+        }
+
+    async def _preselect_searched_date_range(
+        self,
+        count: int,
+        *,
+        date_from: date,
+        date_to: date,
+        marker_date: date,
+        wait_attempts: int,
+        wait_interval_seconds: float,
+    ) -> dict[str, object]:
+        """Select newest-first using adaptive five-day probes and daily fallback."""
+
+        bounded_count = max(1, min(int(count), 1000))
+        total_clicked = 0
+        total_scrolls = 0
+        total_discovered = 0
+        initial_selected: int | None = None
+        selected_after = 0
+        searched_days = 0
+        search_query_count = 0
+        days_with_photos = 0
+        candidate_counts_by_date: dict[str, int] = {}
+        selection_strategy_by_window: list[dict[str, object]] = []
+        reached_limit = False
+        search_buckets: list[tuple[date, date]] = []
+        bucket_to = date_to
+        while bucket_to >= date_from:
+            bucket_from = max(date_from, bucket_to - timedelta(days=4))
+            search_buckets.append((bucket_from, bucket_to))
+            bucket_to = bucket_from - timedelta(days=1)
+
+        processed_bucket_count = 0
+        for bucket_from, bucket_to in search_buckets:
+            use_range = (
+                bucket_from != bucket_to
+                and "evaluate_script" in self._discovered_tools
+            )
+            probe: dict[str, object] = {}
+            range_found = False
+            if use_range:
+                range_found = await self._search_picker_range(
+                    bucket_from,
+                    bucket_to,
+                    marker_date=marker_date,
+                    wait_attempts=wait_attempts,
+                    wait_interval_seconds=wait_interval_seconds,
+                )
+                search_query_count += 1
+                if range_found:
+                    probe = await self._inspect_date_window(
+                        earliest=bucket_from,
+                        latest=bucket_to,
+                        marker_date=marker_date,
+                        wait_attempts=wait_attempts,
+                        wait_interval_seconds=wait_interval_seconds,
+                        candidate_limit=101,
+                        per_day_limit=50,
+                    )
+            dense = bool(probe.get("dense")) or not bool(
+                probe.get("range_valid", range_found)
+            )
+            if range_found and not dense:
+                # Reset the range search to the newest result after the probe.
+                found = await self._search_picker_range(
+                    bucket_from,
+                    bucket_to,
+                    marker_date=marker_date,
+                    wait_attempts=wait_attempts,
+                    wait_interval_seconds=wait_interval_seconds,
+                )
+                search_query_count += 1
+                query_windows = [(bucket_from, bucket_to, found)]
+                strategy = "five_day_range"
+            else:
+                query_windows = []
+                current_date = bucket_to
+                while current_date >= bucket_from:
+                    query_windows.append((current_date, current_date, None))
+                    current_date -= timedelta(days=1)
+                strategy = "daily_dense" if dense else "daily_fallback"
+            selection_strategy_by_window.append(
+                {
+                    "date_from": bucket_from.isoformat(),
+                    "date_to": bucket_to.isoformat(),
+                    "strategy": strategy,
+                    "probe_candidate_count": int(
+                        probe.get("candidate_count") or 0
+                    ),
+                    "probe_counts_by_date": dict(
+                        probe.get("candidate_counts_by_date") or {}
+                    ),
+                }
+            )
+            processed_bucket_count += 1
+            searched_days += (bucket_to - bucket_from).days + 1
+            for selection_from, selection_to, found in query_windows:
+                if found is None:
+                    found = await self._search_picker_date(
+                        selection_from,
+                        marker_date=marker_date,
+                        wait_attempts=wait_attempts,
+                        wait_interval_seconds=wait_interval_seconds,
+                    )
+                    search_query_count += 1
+                if not found:
+                    continue
+                result = await ChromeDevToolsMcpAssistant._preselect_date_window(
+                    self,
+                    bounded_count,
+                    earliest=selection_from,
+                    latest=selection_to,
+                    marker_date=marker_date,
+                    wait_attempts=wait_attempts,
+                    wait_interval_seconds=wait_interval_seconds,
+                )
+                per_date = dict(result.get("candidate_counts_by_date") or {})
+                days_with_photos += len(per_date)
+                for capture_date, candidate_count in per_date.items():
+                    candidate_counts_by_date[str(capture_date)] = (
+                        candidate_counts_by_date.get(str(capture_date), 0)
+                        + int(candidate_count)
+                    )
+                if initial_selected is None:
+                    initial_selected = int(result.get("selected_before") or 0)
+                selected_after = int(result.get("selected_after") or 0)
+                total_clicked += int(result.get("clicked_count") or 0)
+                total_scrolls += int(result.get("scroll_count") or 0)
+                total_discovered += max(
+                    0,
+                    int(result.get("available_candidate_count") or 0)
+                    - int(result.get("selected_before") or 0),
+                )
+                reached_limit = bool(result.get("reached_selection_limit", False))
+                if reached_limit:
+                    break
+            if reached_limit:
+                break
+
+        if initial_selected is None:
+            initial_selected = 0
+        if days_with_photos == 0 and selected_after == 0:
+            return {
+                "status": "no_recent_photos",
+                "available_candidate_count": 0,
+                "selected_before": 0,
+                "clicked_count": 0,
+                "selected_after": 0,
+                "requested_count": bounded_count,
+                "recent_days": (date_to - date_from).days + 1,
+                "cutoff_date": date_from.isoformat(),
+                "latest_date": date_to.isoformat(),
+                "older_selected_count": 0,
+                "scroll_count": total_scrolls,
+                "searched_day_count": searched_days,
+                "search_query_count": search_query_count,
+                "candidate_counts_by_date": {},
+                "selection_strategy_by_window": selection_strategy_by_window,
+                "scope_exhausted": True,
+                "reached_selection_limit": False,
+                "final_confirmation_clicked": False,
+            }
+        return {
+            "status": "preselected",
+            "available_candidate_count": max(total_discovered, selected_after),
+            "selected_before": initial_selected,
+            "clicked_count": total_clicked,
+            "selected_after": selected_after,
+            "requested_count": bounded_count,
+            "recent_days": (date_to - date_from).days + 1,
+            "cutoff_date": date_from.isoformat(),
+            "latest_date": date_to.isoformat(),
+            "older_selected_count": 0,
+            "scroll_count": total_scrolls,
+            "searched_day_count": searched_days,
+            "search_query_count": search_query_count,
+            "candidate_counts_by_date": candidate_counts_by_date,
+            "selection_strategy_by_window": selection_strategy_by_window,
+            "scope_exhausted": (
+                not reached_limit
+                and processed_bucket_count == len(search_buckets)
+            ),
+            "reached_selection_limit": reached_limit,
+            "final_confirmation_clicked": False,
+        }
 
     async def _preselect_date_window(
         self,
@@ -391,41 +916,248 @@ class ChromeDevToolsMcpAssistant:
         if self._session is None:
             raise RuntimeError("Chrome DevTools MCP assistant is not connected")
         bounded_count = max(1, min(int(count), 1000))
-        initial_selected = 0
-        available = 0
+        initial_selected: int | None = None
+        selected_after = 0
         clicked_count = 0
         scroll_count = 0
         previous_signature = ""
         stable_snapshots = 0
-        picker_summary: dict[str, int] | None = None
-        for attempt in range(max(1, int(wait_attempts))):
+        empty_snapshots = 0
+        no_progress_clicks = 0
+        scope_exhausted = False
+        reached_selection_limit = False
+        discovered_candidates: set[tuple[str, str]] = set()
+        scan_steps = max(max(1, int(wait_attempts)), min(4096, bounded_count * 4))
+        max_scrolls = max(64, min(2048, bounded_count * 2))
+
+        for _scan_step in range(scan_steps):
             result = await self._session.call_tool("take_snapshot", {"verbose": False})
             if bool(getattr(result, "isError", False)):
                 raise RuntimeError("Chrome DevTools MCP could not inspect Google Picker")
             snapshot = _snapshot_text(result)
             picker_summary = _selection_summary(snapshot)
             entries = _photo_entries(snapshot, today=marker_date)
-            eligible = [entry for entry in entries if earliest <= entry["date"] <= latest]
-            older_selected = [entry for entry in entries if not earliest <= entry["date"] <= latest and entry["checked"]]
+            eligible = [
+                entry for entry in entries if earliest <= entry["date"] <= latest
+            ]
+            discovered_candidates.update(
+                (str(entry["date"]), str(entry["uid"])) for entry in eligible
+            )
+            older_selected = [
+                entry
+                for entry in entries
+                if not earliest <= entry["date"] <= latest and entry["checked"]
+            ]
             if older_selected:
                 raise RuntimeError("Google Picker contains selected photos outside the recent window")
-            if eligible:
+
+            visible_selected = sum(bool(entry["checked"]) for entry in eligible)
+            if initial_selected is None:
+                initial_selected = (
+                    int(picker_summary["selected_count"])
+                    if picker_summary is not None
+                    else visible_selected
+                )
+            picker_maximum = (
+                int(picker_summary["maximum_count"])
+                if picker_summary is not None
+                else bounded_count
+            )
+            effective_limit = min(bounded_count, picker_maximum)
+            selected_after = (
+                int(picker_summary["selected_count"])
+                if picker_summary is not None
+                else visible_selected
+            )
+            if selected_after > effective_limit:
+                raise PickerSelectionLimitExceeded(
+                    "Google Picker global selection exceeds the bounded limit "
+                    f"(selected={selected_after}, limit={effective_limit})"
+                )
+            if selected_after >= effective_limit:
+                reached_selection_limit = True
                 break
+
+            visible_unselected = [entry for entry in eligible if not entry["checked"]]
+            candidates = visible_unselected[: max(0, effective_limit - selected_after)]
+            if candidates:
+                dom_checkbox_mode = {
+                    "evaluate_script",
+                    "fill",
+                    "press_key",
+                } <= self._discovered_tools
+                # In the real Picker the AX UID click can report success while
+                # leaving a React checkbox unchanged.  Search mode therefore
+                # uses one exact-label DOM click followed by a fresh snapshot.
+                # One-at-a-time selection prevents a delayed UI update from
+                # toggling the same checkbox twice.
+                click_candidates = candidates[:1] if dom_checkbox_mode else candidates
+                selected_before_click = selected_after
+                dom_target_outside_viewport = False
+                for candidate_index, candidate in enumerate(click_candidates):
+                    if dom_checkbox_mode:
+                        clicked = await self._session.call_tool(
+                            "evaluate_script",
+                            {
+                                "function": _bounded_photo_checkbox_script(
+                                    str(candidate.get("label") or ""),
+                                    earliest=earliest,
+                                    latest=latest,
+                                ),
+                                "waitForStableDom": True,
+                            },
+                        )
+                    else:
+                        clicked = await self._session.call_tool(
+                            "click",
+                            {
+                                "uid": candidate["uid"],
+                                "includeSnapshot": candidate_index
+                                == len(click_candidates) - 1,
+                            },
+                        )
+                    if bool(getattr(clicked, "isError", False)):
+                        raise RuntimeError(
+                            "Chrome DevTools MCP could not click a recent photo"
+                        )
+                    if dom_checkbox_mode and not re.search(
+                        r'"clicked"\s*:\s*true',
+                        _snapshot_text(clicked),
+                        re.IGNORECASE,
+                    ):
+                        # The AX tree can retain an unchecked row just outside
+                        # the real DOM viewport.  Retrying that stale label does
+                        # not advance selection. Move the bounded photo grid
+                        # first, then acquire a fresh snapshot/UID set.
+                        dom_target_outside_viewport = True
+                        break
+                    clicked_count += 1
+                    await asyncio.sleep(
+                        max(0.05, min(float(wait_interval_seconds), 0.5))
+                    )
+                if dom_target_outside_viewport:
+                    if (
+                        "evaluate_script" not in self._discovered_tools
+                        or scroll_count >= max_scrolls
+                    ):
+                        no_progress_clicks += 1
+                    else:
+                        scrolled = await self._session.call_tool(
+                            "evaluate_script",
+                            {
+                                "function": _BOUNDED_SCROLL_SCRIPT,
+                                "waitForStableDom": True,
+                            },
+                        )
+                        if bool(getattr(scrolled, "isError", False)):
+                            raise RuntimeError(
+                                "Chrome DevTools MCP bounded scroll failed"
+                            )
+                        if re.search(
+                            r'"scrolled"\s*:\s*true',
+                            _snapshot_text(scrolled),
+                            re.IGNORECASE,
+                        ):
+                            scroll_count += 1
+                            no_progress_clicks = 0
+                        else:
+                            no_progress_clicks += 1
+                    if no_progress_clicks >= 3:
+                        raise RuntimeError(
+                            "Google Picker photo viewport did not advance"
+                        )
+                    previous_signature = ""
+                    stable_snapshots = 0
+                    await asyncio.sleep(
+                        max(0.05, min(float(wait_interval_seconds), 0.5))
+                    )
+                    continue
+                barrier_result = await self._session.call_tool(
+                    "take_snapshot", {"verbose": False}
+                )
+                if bool(getattr(barrier_result, "isError", False)):
+                    raise RuntimeError(
+                        "Chrome DevTools MCP could not verify a recent photo click"
+                    )
+                barrier_snapshot = _snapshot_text(barrier_result)
+                if barrier_snapshot:
+                    barrier_entries = _photo_entries(
+                        barrier_snapshot, today=marker_date
+                    )
+                    if any(
+                        bool(entry["checked"])
+                        and not earliest <= entry["date"] <= latest
+                        for entry in barrier_entries
+                    ):
+                        raise RuntimeError(
+                            "Google Picker contains selected photos outside the recent window"
+                        )
+                    barrier_summary = _selection_summary(barrier_snapshot)
+                    barrier_selected = (
+                        int(barrier_summary["selected_count"])
+                        if barrier_summary is not None
+                        else sum(
+                            bool(entry["checked"])
+                            for entry in barrier_entries
+                            if earliest <= entry["date"] <= latest
+                        )
+                    )
+                    if barrier_selected > effective_limit:
+                        raise PickerSelectionLimitExceeded(
+                            "Google Picker global selection exceeds the bounded limit "
+                            f"(selected={barrier_selected}, limit={effective_limit})"
+                        )
+                    if barrier_selected > selected_before_click:
+                        no_progress_clicks = 0
+                    elif dom_checkbox_mode:
+                        no_progress_clicks += 1
+                        if no_progress_clicks >= 3:
+                            raise RuntimeError(
+                                "Google Picker photo checkbox did not change selection state"
+                            )
+                    if barrier_selected >= effective_limit:
+                        selected_after = barrier_selected
+                        reached_selection_limit = True
+                        break
+                # Never reuse accessibility UIDs after a click. A fresh
+                # snapshot is also the authoritative check for dropped clicks.
+                previous_signature = ""
+                stable_snapshots = 0
+                continue
+
             observed_dates = [entry["date"] for entry in entries]
             if observed_dates and min(observed_dates) < earliest:
+                scope_exhausted = True
                 break
             signature = json.dumps(
-                [[str(entry["uid"]), str(entry["date"])] for entry in entries],
+                [
+                    selected_after,
+                    [
+                        [str(entry["uid"]), str(entry["date"]), bool(entry["checked"])]
+                        for entry in entries
+                    ],
+                ],
                 separators=(",", ":"),
             )
             stable_snapshots = stable_snapshots + 1 if signature == previous_signature else 0
             previous_signature = signature
+
+            if not entries:
+                empty_snapshots += 1
+                if empty_snapshots >= max(1, int(wait_attempts)):
+                    break
+                await asyncio.sleep(max(0.05, float(wait_interval_seconds)))
+                continue
+            empty_snapshots = 0
             can_scroll = (
-                bool(entries)
-                and "evaluate_script" in self._discovered_tools
+                "evaluate_script" in self._discovered_tools
                 and stable_snapshots < 2
-                and scroll_count < 64
+                and scroll_count < max_scrolls
             )
+            if can_scroll and picker_summary is None and clicked_count:
+                # A virtualized Picker can hide earlier checked rows. Without
+                # the dialog-level total, continuing could exceed the cap.
+                break
             if can_scroll:
                 scrolled = await self._session.call_tool(
                     "evaluate_script",
@@ -439,100 +1171,22 @@ class ChromeDevToolsMcpAssistant:
                 scroll_count += 1
                 await asyncio.sleep(max(0.05, min(float(wait_interval_seconds), 0.5)))
                 continue
-            if attempt + 1 < max(1, int(wait_attempts)):
-                await asyncio.sleep(max(0.05, float(wait_interval_seconds)))
-        else:
-            eligible = []
-        if not eligible:
+            scope_exhausted = stable_snapshots >= 2
+            break
+
+        if initial_selected is None or (not discovered_candidates and selected_after == 0):
             raise RuntimeError("Google Picker has no photos in the recent date window")
-        visible_selected = sum(bool(entry["checked"]) for entry in eligible)
-        visible_unselected = [entry for entry in eligible if not entry["checked"]]
-        picker_maximum = (
-            int(picker_summary["maximum_count"]) if picker_summary is not None else bounded_count
-        )
-        effective_limit = min(bounded_count, picker_maximum)
-        initial_selected = (
-            int(picker_summary["selected_count"])
-            if picker_summary is not None
-            else visible_selected
-        )
-        if initial_selected > effective_limit:
-            raise PickerSelectionLimitExceeded(
-                "Google Picker global selection exceeds the bounded limit "
-                f"(selected={initial_selected}, limit={effective_limit})"
-            )
-        # Picker virtualizes older rows. The dialog-level total is authoritative;
-        # visible checked rows are only a subset after Qwen has scrolled.
-        available = initial_selected + len(visible_unselected)
-        target_count = min(effective_limit, available)
-        candidates = visible_unselected[: max(0, target_count - initial_selected)]
-        for candidate in candidates:
-            clicked = await self._session.call_tool(
-                "click",
-                {"uid": candidate["uid"], "includeSnapshot": False},
-            )
-            if bool(getattr(clicked, "isError", False)):
-                raise RuntimeError("Chrome DevTools MCP could not click a recent photo")
-            clicked_count += 1
-            await asyncio.sleep(max(0.05, min(float(wait_interval_seconds), 0.5)))
-        selected_after = 0
-        older_selected = 0
-        # Picker virtualizes its grid and can occasionally drop a trusted
-        # click while rebinding a checkbox. Re-snapshot and retry only a
-        # currently unchecked, in-range item; never replay a stale uid.
-        for recovery_attempt in range(max(3, target_count * 2) + 1):
-            verification = await self._session.call_tool("take_snapshot", {"verbose": False})
-            verification_snapshot = _snapshot_text(verification)
-            verification_summary = _selection_summary(verification_snapshot)
-            verified_entries = _photo_entries(verification_snapshot, today=marker_date)
-            verified_eligible = [
-                entry for entry in verified_entries if earliest <= entry["date"] <= latest
-            ]
-            visible_selected_after = sum(
-                bool(entry["checked"]) for entry in verified_eligible
-            )
-            selected_after = (
-                int(verification_summary["selected_count"])
-                if verification_summary is not None
-                else visible_selected_after
-            )
-            verified_maximum = (
-                int(verification_summary["maximum_count"])
-                if verification_summary is not None
-                else effective_limit
-            )
-            verified_limit = min(effective_limit, verified_maximum)
-            if selected_after > verified_limit:
-                raise PickerSelectionLimitExceeded(
-                    "Google Picker global selection exceeds the bounded limit "
-                    f"(selected={selected_after}, limit={verified_limit})"
-                )
-            older_selected = sum(
-                bool(entry["checked"])
-                for entry in verified_entries
-                if not earliest <= entry["date"] <= latest
-            )
-            if selected_after == target_count or older_selected or selected_after > target_count:
-                break
-            remaining = [entry for entry in verified_eligible if not entry["checked"]]
-            if not remaining or recovery_attempt >= max(3, target_count * 2):
-                break
-            retried = await self._session.call_tool(
-                "click",
-                {"uid": remaining[0]["uid"], "includeSnapshot": False},
-            )
-            if bool(getattr(retried, "isError", False)):
-                raise RuntimeError("Chrome DevTools MCP could not retry a recent photo")
-            clicked_count += 1
-            await asyncio.sleep(max(0.05, min(float(wait_interval_seconds), 0.5)))
-        if selected_after != target_count or older_selected:
-            raise RuntimeError(
-                "Google Picker did not preserve the bounded recent-date selection "
-                f"(expected={target_count}, observed={selected_after}, outside={older_selected})"
+
+        candidate_counts_by_date: dict[str, int] = {}
+        for capture_date, _uid in discovered_candidates:
+            candidate_counts_by_date[capture_date] = (
+                candidate_counts_by_date.get(capture_date, 0) + 1
             )
         return {
             "status": "preselected",
-            "available_candidate_count": available,
+            "available_candidate_count": max(
+                len(discovered_candidates), selected_after
+            ),
             "selected_before": initial_selected,
             "clicked_count": clicked_count,
             "selected_after": selected_after,
@@ -540,8 +1194,11 @@ class ChromeDevToolsMcpAssistant:
             "recent_days": (latest - earliest).days + 1,
             "cutoff_date": earliest.isoformat(),
             "latest_date": latest.isoformat(),
-            "older_selected_count": older_selected,
+            "older_selected_count": 0,
             "scroll_count": scroll_count,
+            "candidate_counts_by_date": candidate_counts_by_date,
+            "scope_exhausted": scope_exhausted,
+            "reached_selection_limit": reached_selection_limit,
             "final_confirmation_clicked": False,
         }
 
@@ -634,10 +1291,26 @@ class ChromeDevToolsMcpAssistant:
                 await asyncio.sleep(max(0.05, float(wait_interval_seconds)))
         else:
             raise RuntimeError("Google Picker completion button did not become safely available")
-        confirmed = await self._session.call_tool(
-            "click",
-            {"uid": buttons[0]["uid"], "includeSnapshot": False},
-        )
+        if {"evaluate_script", "fill", "press_key"} <= self._discovered_tools:
+            confirmed = await self._session.call_tool(
+                "evaluate_script",
+                {
+                    "function": _BOUNDED_COMPLETION_SCRIPT,
+                    "waitForStableDom": True,
+                },
+            )
+            confirmation_response = _snapshot_text(confirmed)
+            if not re.search(
+                r'"clicked"\s*:\s*true', confirmation_response, re.IGNORECASE
+            ):
+                raise RuntimeError(
+                    "Google Picker did not expose one enabled completion button"
+                )
+        else:
+            confirmed = await self._session.call_tool(
+                "click",
+                {"uid": buttons[0]["uid"], "includeSnapshot": False},
+            )
         if bool(getattr(confirmed, "isError", False)):
             raise RuntimeError("Chrome DevTools MCP could not confirm Google Picker")
         return {

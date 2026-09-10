@@ -214,6 +214,40 @@ def find_recoverable_session(
     return ""
 
 
+def record_external_worker_failure(argv: list[str]) -> int:
+    """Persist a wrapper-detected exit that happened before mission startup."""
+
+    parser = argparse.ArgumentParser(description="Record a bound Picker worker failure")
+    parser.add_argument("--db", type=Path, required=True)
+    parser.add_argument("--reason-code", required=True)
+    parser.add_argument("--action-request-id", default="")
+    parser.add_argument("--automation-run-id", default="")
+    parser.add_argument("--parent-run-id", default="")
+    args = parser.parse_args(argv)
+    reason_code = str(args.reason_code or "picker_worker_failed")
+    if not re.fullmatch(r"[a-z0-9_]{1,48}", reason_code):
+        parser.error("--reason-code is invalid")
+    for name in ("action_request_id", "automation_run_id", "parent_run_id"):
+        value = str(getattr(args, name) or "")
+        if value and not _BOUND_ID_RE.fullmatch(value):
+            parser.error(f"--{name.replace('_', '-')} has an invalid identifier")
+    repository = RunRepository(args.db.expanduser())
+    try:
+        record_bound_mission_failure(
+            repository,
+            action_request_id=args.action_request_id,
+            automation_run_id=args.automation_run_id,
+            parent_run_id=args.parent_run_id,
+            mission_run_id="",
+            reason_code=reason_code,
+            cancelled=False,
+            completed_at=datetime.now(UTC).isoformat(),
+        )
+    finally:
+        repository.close()
+    return 0
+
+
 def ensure_dedicated_chrome(
     *,
     browser_url: str,
@@ -527,6 +561,9 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    if raw_argv[:1] == ["--record-worker-failure"]:
+        return record_external_worker_failure(raw_argv[1:])
     runtime_root = photos_mcp_runtime_root()
     parser = argparse.ArgumentParser(description="Run the assisted Google Photos Picker workflow")
     parser.add_argument("--selection-profile", default="general")
@@ -618,7 +655,7 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=runtime_root / "browser-assist" / "google-picker-worker.lock",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
     if not 1 <= args.limit <= 1000:
         parser.error("--limit must be between 1 and 1000")
     if not 1 <= args.preselect_count <= 1000:

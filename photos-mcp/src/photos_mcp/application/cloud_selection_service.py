@@ -77,6 +77,7 @@ class CloudSelectionService:
         expected_item_count: int | None = None,
         settle_attempts: int = 4,
         settle_interval_seconds: float | None = None,
+        retain_provider_session: bool = False,
     ) -> tuple[PhotoAssetRef, ...]:
         session = self._require(session_id)
         if session.state is not PickingSessionState.READY:
@@ -124,8 +125,51 @@ class CloudSelectionService:
             await asyncio.sleep(interval)
         consumed = replace(session, state=PickingSessionState.CONSUMED, item_count=len(assets))
         self._repository.save(consumed)
-        await self._picker.delete_session(session)
+        if not retain_provider_session:
+            await self._picker.delete_session(session)
         return tuple(assets)
+
+    async def refresh_consumed(
+        self,
+        session_id: str,
+        *,
+        page_size: int = 100,
+    ) -> tuple[PhotoAssetRef, ...]:
+        """Refresh transient content URLs while a retained session is usable."""
+
+        session = self._require(session_id)
+        if session.state is not PickingSessionState.CONSUMED:
+            raise RuntimeError("picker session is not retained for refresh")
+        if session.expires_at and session.expires_at <= _utc_now():
+            raise TimeoutError("picker session expired before download completed")
+        ready = replace(session, state=PickingSessionState.READY)
+        assets: list[PhotoAssetRef] = []
+        cursor = ""
+        while True:
+            page = await self._picker.list_picked_assets(
+                ready,
+                cursor=cursor,
+                page_size=page_size,
+            )
+            assets.extend(page.items)
+            cursor = page.next_cursor
+            if not cursor:
+                break
+        if len(assets) != session.item_count:
+            raise PickerItemCountMismatch(
+                expected_count=session.item_count,
+                actual_count=len(assets),
+            )
+        return tuple(assets)
+
+    async def finalize_consumed(self, session_id: str) -> PickingSession:
+        """Delete a retained remote session after selected bytes are durable."""
+
+        session = self._require(session_id)
+        if session.state is not PickingSessionState.CONSUMED:
+            raise RuntimeError("picker session is not ready for finalization")
+        await self._picker.delete_session(replace(session, state=PickingSessionState.READY))
+        return session
 
     async def cancel(self, session_id: str) -> PickingSession:
         session = self._require(session_id)

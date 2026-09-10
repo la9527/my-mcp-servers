@@ -21,6 +21,7 @@ from photos_mcp.application.google_photos_import_service import (
     start_google_materialized_classification,
 )
 from photos_mcp.application.source_registry import descriptor_from_legacy_source
+from photos_mcp.domain.models.source import PickingSessionState
 from photos_mcp.infrastructure.sources.google_photos.content import GooglePickedContentAdapter
 from photos_mcp.infrastructure.sources.google_photos.import_repository import (
     GoogleImportLeaseRepository,
@@ -245,6 +246,67 @@ async def test_google_import_can_prepare_without_starting_classification(tmp_pat
     assert result["job_id"] == "job-1"
     assert starts[0][1:] == ("landscape", "select_best", 1)
     assert leases.list_job("job-1")[0].state == "in_use"
+    leases.close()
+    sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_google_import_retains_picker_until_all_download_batches_are_durable(
+    tmp_path: Path,
+) -> None:
+    source = descriptor_from_legacy_source("google", account_id="account")
+    picker = FakeGooglePhotosPickerAdapter()
+    sessions = PickerSessionRepository(tmp_path / "picker.db")
+    selection = CloudSelectionService(picker, sessions)
+    started = await selection.start(source, max_item_count=205)
+    assets = tuple(
+        fake_google_asset(source.source_id, f"photo-{index}", filename=f"{index}.jpg")
+        for index in range(205)
+    )
+    picker.complete_with_assets(started.session_id, assets)
+    await selection.poll(started.session_id)
+
+    async def resolve_url(asset_id: str, _max_pixels: int | None):
+        # The provider session must still exist while every selected item is
+        # being materialized; deletion before download used to violate this.
+        assert picker._require(started.session_id).state is PickingSessionState.READY
+        return (
+            f"https://content.example/{asset_id}",
+            "image/jpeg",
+            datetime.now(timezone.utc) + timedelta(minutes=10),
+        )
+
+    async def fetch_bytes(_url: str, _limit: int):
+        return b"image"
+
+    progress: list[dict] = []
+    leases = GoogleImportLeaseRepository(tmp_path / "imports.db")
+    service = GooglePhotosImportService(
+        selection=selection,
+        content_adapter=GooglePickedContentAdapter(
+            resolve_url=resolve_url,
+            fetch_bytes=fetch_bytes,
+            cache_root=tmp_path / "cache",
+        ),
+        leases=leases,
+        classification_starter=lambda *_args: None,
+    )
+
+    prepared = await service.prepare_ready_selection(
+        source,
+        started.session_id,
+        progress_callback=progress.append,
+    )
+
+    assert prepared["materialized_photo_count"] == 205
+    assert [
+        item["completed_photo_count"]
+        for item in progress
+        if item["state"] == "batch_completed"
+    ] == [100, 200, 205]
+    with pytest.raises(LookupError):
+        picker._require(started.session_id)
+    assert sessions.get(started.session_id).state is PickingSessionState.CONSUMED
     leases.close()
     sessions.close()
 

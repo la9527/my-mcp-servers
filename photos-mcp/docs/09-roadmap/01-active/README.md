@@ -18,6 +18,7 @@
 - [상세 장소·Google 지도·캡처 제외 전환 계획](12-detailed-place-map-and-screenshot-exclusion-plan-2026-09-09.md): 본인·가족 사용에 맞춰 exact GPS와 명확한 POI를 Story·30일 공유에 표시하고, 애매하면 시·군·구로 내리는 정책으로 전환한다. Google Maps Embed, Place ID 중심 저장, API 키 분리와 Apple/Google 캡처의 분석 전 제외·기존 추천 정리까지 단계별로 검증한다.
 - [인물 중심 추천·동일인 확인·Story 인명 반영 계획](13-person-centric-curation-and-story-identity-plan-2026-09-09.md): 기존 person 점수·Apple 사람 필터·동일인 shadow·People UI를 하나의 private identity 흐름으로 연결한다. 자동 동일인은 검토 후보로만 사용하고, 소유자가 확인한 이름만 개인 Story에 결정적으로 표시하며 가족 공유는 인물별 별도 동의를 적용한다.
 - [삭제·재분석·추천 앨범 수명주기 재설계](14-deletion-reanalysis-and-recommendation-lifecycle-plan-2026-09-10.md): 작업 목록·Story·처리 원장·추천 archive·현재 추천·외부 앨범·인물·GPS의 삭제 경계를 분리한다. 수동 재분석은 exact collection Story와 로컬 결과를 먼저 만들고, 기존 앨범 추가와 새 버전 앨범 게시를 구분한 뒤 generation/current-head와 provider membership 정합화로 단계적으로 전환한다.
+- [Google Photos 검색·분할 수집 개선안](15-picker-search-and-batched-acquisition-plan-2026-09-11.md): Picker 날짜·앨범 검색과 다중 화면 매크로를 결합하고, 최대 1,000장을 100장 단위로 내구 다운로드·분석한 뒤 Google·Apple 추천과 Story를 하나로 통합한다. 여러 Picker 세션은 날짜 범위의 완전 소진 또는 안정적인 이어선택이 검증된 경우에만 사용한다.
 
 ## 선호 학습
 

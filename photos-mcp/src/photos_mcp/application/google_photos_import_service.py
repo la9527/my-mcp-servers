@@ -150,7 +150,9 @@ class GooglePhotosImportService:
         assets = await self._selection.consume(
             session_id,
             expected_item_count=expected_item_count,
+            retain_provider_session=True,
         )
+        content_urls_refreshed_at = time.monotonic()
         all_photos = tuple(asset for asset in assets if asset.media_type == "photo")
         excluded_keys = exclude_asset_keys or set()
         unprocessed_photos = tuple(
@@ -188,7 +190,6 @@ class GooglePhotosImportService:
                 return index, content
 
         report("downloading", 0)
-        tasks = [asyncio.create_task(materialize(index, asset)) for index, asset in enumerate(photos)]
         completed: dict[int, MaterializedPhotoContent] = {}
 
         def preserve(index: int, content: MaterializedPhotoContent) -> None:
@@ -243,25 +244,43 @@ class GooglePhotosImportService:
             return payload
 
         try:
-            for pending in asyncio.as_completed(tasks):
-                index, content = await pending
-                preserve(index, content)
-                report("downloading", len(completed))
-        except Exception as error:
-            for task in tasks:
-                task.cancel()
-            settled = await asyncio.gather(*tasks, return_exceptions=True)
-            for item in settled:
-                if not isinstance(item, tuple):
-                    continue
-                index, content = item
-                if index in completed:
-                    continue
+            for batch_start in range(0, len(photos), 100):
+                if time.monotonic() - content_urls_refreshed_at >= 45 * 60:
+                    # Picker base URLs live for about one hour. Re-listing the
+                    # retained session refreshes the adapter's transient URLs
+                    # before the next durable 100-photo batch begins.
+                    await self._selection.refresh_consumed(session_id)
+                    content_urls_refreshed_at = time.monotonic()
+                batch = photos[batch_start : batch_start + 100]
+                tasks = [
+                    asyncio.create_task(materialize(batch_start + offset, asset))
+                    for offset, asset in enumerate(batch)
+                ]
                 try:
-                    preserve(index, content)
+                    for pending in asyncio.as_completed(tasks):
+                        index, content = await pending
+                        preserve(index, content)
+                        report("downloading", len(completed))
+                    report("batch_completed", len(completed))
                 except Exception:
-                    await self._content.release(content)
-                    self._metadata_sidecar_path(content.local_path).unlink(missing_ok=True)
+                    for task in tasks:
+                        task.cancel()
+                    settled = await asyncio.gather(*tasks, return_exceptions=True)
+                    for item in settled:
+                        if not isinstance(item, tuple):
+                            continue
+                        index, content = item
+                        if index in completed:
+                            continue
+                        try:
+                            preserve(index, content)
+                        except Exception:
+                            await self._content.release(content)
+                            self._metadata_sidecar_path(content.local_path).unlink(
+                                missing_ok=True
+                            )
+                    raise
+        except Exception as error:
             if not completed:
                 report("failed", 0)
                 raise
@@ -275,6 +294,7 @@ class GooglePhotosImportService:
             )
             report("partial", len(completed))
             return prepared_payload(status="prepared_partial", error=error)
+        await self._selection.finalize_consumed(session_id)
         report("completed", len(completed))
         return prepared_payload(status="prepared")
 

@@ -691,6 +691,25 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
             raise BrowserMissionChromeUnavailable(
                 "Chrome DevTools MCP could not open Google Picker"
             ) from last_error
+        # Date-search capable Chrome MCP sessions can execute the bounded
+        # five-day probe and dense-day fallback without an LLM.  Do not wake
+        # or wait for the remote workstation before that first probe: the
+        # deterministic path is both faster and more tightly scoped.  Older
+        # Picker/MCP surfaces without search tools still use Qwen for screen
+        # adaptation and retain the deterministic fallback below.
+        if {"fill", "press_key"} <= self._discovered_tools:
+            self._deterministic_fallback_active = True
+            self._fallback_reason = "bounded_date_search_macro"
+            self._system_message = {
+                "role": "system",
+                "content": "Bounded Google Photos Picker date-search macro active.",
+            }
+            self._messages = [self._system_message]
+            return {
+                **opened,
+                "control_policy": "bounded_date_search_macro",
+                "fallback_reason": self._fallback_reason,
+            }
         # Open the bounded Picker target before waking or preparing the remote
         # workstation. Preparation can legitimately take several minutes; if
         # it ran first, Chrome could lose its last permitted page and MCP would
@@ -1156,6 +1175,22 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
     ) -> dict[str, object]:
         reference = today or date.today()
         bounded_days = max(1, min(int(recent_days), 31))
+        if {"fill", "press_key"} <= self._discovered_tools:
+            result = await ChromeDevToolsMcpAssistant.preselect_recent(
+                self,
+                count,
+                recent_days=bounded_days,
+                today=reference,
+                **_kwargs,
+            )
+            self._deterministic_fallback_active = True
+            self._fallback_reason = "bounded_date_search_macro"
+            self._selected_count = max(0, int(result.get("selected_after") or 0))
+            return {
+                **result,
+                "control_policy": "bounded_date_search_macro",
+                "fallback_reason": self._fallback_reason,
+            }
         return await self._preselect_date_window(
             count,
             date_from=reference - timedelta(days=bounded_days - 1),
@@ -1173,6 +1208,22 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
     ) -> dict[str, object]:
         if date_to < date_from or (date_to - date_from).days > 30:
             raise ValueError("Google Picker date range is invalid")
+        if {"fill", "press_key"} <= self._discovered_tools:
+            result = await ChromeDevToolsMcpAssistant.preselect_date_range(
+                self,
+                count,
+                date_from=date_from,
+                date_to=date_to,
+                **_kwargs,
+            )
+            self._deterministic_fallback_active = True
+            self._fallback_reason = "bounded_date_search_macro"
+            self._selected_count = max(0, int(result.get("selected_after") or 0))
+            return {
+                **result,
+                "control_policy": "bounded_date_search_macro",
+                "fallback_reason": self._fallback_reason,
+            }
         return await self._preselect_date_window(
             count,
             date_from=date_from,

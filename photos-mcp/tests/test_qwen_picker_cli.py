@@ -48,6 +48,69 @@ def test_unknown_browser_mission_reason_fails_closed() -> None:
     assert MODULE.mission_exit_code(error) == 25
 
 
+def test_external_worker_failure_marks_bound_child_and_parent_terminal(tmp_path) -> None:
+    database = tmp_path / "jobs.db"
+    repository = RunRepository(database)
+    repository.save_user_action_request(
+        {
+            "request_id": "action-startup",
+            "dedupe_key": "startup-failure",
+            "request_type": "google_picker_selection",
+            "provider": "google_photos",
+            "status": "pending",
+        }
+    )
+    repository.upsert_automation_run(
+        {
+            "automation_run_id": "google-startup-child",
+            "provider": "google_photos",
+            "parent_run_id": "combined-startup-parent",
+            "status": "awaiting_user_action",
+            "terminal": False,
+        }
+    )
+    repository.upsert_automation_run(
+        {
+            "automation_run_id": "combined-startup-parent",
+            "provider": "combined",
+            "source": "google",
+            "sources": ["google"],
+            "status": "running",
+            "terminal": False,
+            "notification_state": "pending",
+            "child_run_ids": {"google": "google-startup-child"},
+        }
+    )
+    repository.close()
+
+    assert MODULE.record_external_worker_failure(
+        [
+            "--db",
+            str(database),
+            "--reason-code",
+            "exit_2",
+            "--action-request-id",
+            "action-startup",
+            "--automation-run-id",
+            "google-startup-child",
+            "--parent-run-id",
+            "combined-startup-parent",
+        ]
+    ) == 0
+
+    repository = RunRepository(database)
+    try:
+        assert repository.get_user_action_request("action-startup")["status"] == "failed"
+        child = repository.get_automation_run("google-startup-child")
+        parent = repository.get_automation_run("combined-startup-parent")
+        assert child is not None and child["status"] == "failed"
+        assert child["error_code"] == "exit_2"
+        assert parent is not None and parent["status"] == "failed"
+        assert parent["terminal"] is True
+    finally:
+        repository.close()
+
+
 def test_recovery_session_must_match_scope_limit_and_reanalysis_policy() -> None:
     class Repository:
         def list_browser_mission_runs(self, *, limit):

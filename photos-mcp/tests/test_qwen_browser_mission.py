@@ -173,6 +173,42 @@ async def test_qwen_agent_observes_before_each_click_and_confirms(tmp_path) -> N
 
 
 @pytest.mark.asyncio
+async def test_qwen_agent_skips_remote_prepare_when_bounded_search_tools_exist(
+    tmp_path,
+) -> None:
+    class SearchCapableChromeSession(FakeChromeSession):
+        async def list_tools(self):
+            return SimpleNamespace(
+                tools=[
+                    SimpleNamespace(name=name)
+                    for name in (
+                        "navigate_page",
+                        "take_snapshot",
+                        "click",
+                        "evaluate_script",
+                        "fill",
+                        "press_key",
+                    )
+                ]
+            )
+
+    assistant, model, _chrome = build_assistant(
+        tmp_path,
+        [],
+        chrome=SearchCapableChromeSession(),
+    )
+
+    opened = await assistant.open_picker(
+        "https://photos.google.com/picker/session-token"
+    )
+
+    assert model.prepared is False
+    assert opened["control_policy"] == "bounded_date_search_macro"
+    assert opened["fallback_reason"] == "bounded_date_search_macro"
+    await assistant.close()
+
+
+@pytest.mark.asyncio
 async def test_qwen_timeout_falls_back_to_bounded_deterministic_selection(tmp_path) -> None:
     chrome = FakeChromeSession()
     model = StalledModelClient([])

@@ -1,6 +1,7 @@
 # 실행 검증 보고서
 
 - [2026-09-10 추천 버전·현재 결과와 읽기 전용 진단](43-recommendation-generation-and-readonly-audit-2026-09-10.md): 수동 전체 재분석의 복수 provider snapshot과 원자적 current 전환, 실패·증분·동시 실행 보호를 구현했다. 운영 로컬 파일 96개의 hash를 검증하고 과거 집계 차이 한 건을 자동 변경 없이 식별했다.
+- [2026-09-11 Google Picker 날짜 검색·분할 수집 실검증](44-google-picker-date-search-batch-validation-2026-09-11.md): 5일 범위 후보 probe 후 희소 창은 연속 선택하고 과밀 창은 하루로 좁히는 적응형 검색과 제한형 DOM 선택·완료 매크로를 구현했다. 실제 Google 계정에서 단일 날짜 10회와 5일 이동 창 10회를 각각 선택·API 조회·임시 다운로드까지 연속 검증했고, 100장 다운로드 묶음과 다운로드 완료 전 세션 보존 정책도 확인했다.
 
 실제 앱 또는 MCP 검증 결과를 날짜가 포함된 Markdown 파일로 추가한다.
 
