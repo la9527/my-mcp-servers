@@ -109,6 +109,12 @@ final class MediaScanner {
             throw new IllegalArgumentException("촬영 날짜 범위는 최대 31일입니다");
         }
         SharedPreferences prefs = context.getSharedPreferences("bridge", Context.MODE_PRIVATE);
+        prefs.edit()
+                .putString("last_manual_range_from", from.toString())
+                .putString("last_manual_range_to", to.toString())
+                .putInt("last_manual_range_scanned", 0)
+                .putInt("last_manual_range_with_gps", 0)
+                .commit();
         ContentResolver resolver = context.getContentResolver();
         Uri collection = Build.VERSION.SDK_INT >= 29
                 ? MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)

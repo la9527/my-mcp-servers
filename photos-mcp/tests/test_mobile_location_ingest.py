@@ -370,3 +370,38 @@ def test_device_batch_rate_limit_applies_after_authentication(tmp_path) -> None:
     assert responses[20].status_code == 429
     assert len(ledger.list_decrypted_manifests()) == 1
     ledger.close()
+
+
+def test_manifest_count_verifies_device_range_and_extractor_without_decryption(tmp_path) -> None:
+    ledger = MobileLocationLedger(
+        tmp_path / "mobile.sqlite3", encryption_key=b"v" * 32, now_fn=lambda: NOW
+    )
+    _private_key, public_pem = _key_pair()
+    token = ledger.create_enrollment_token()
+    device = ledger.enroll_device(token=token, public_key_pem=public_pem, label="test")
+    manifest = _manifest(
+        captured_at="2026-09-07T01:20:30Z",
+        extractor_version="android-bridge-2",
+    )
+    ledger.accept_batch(
+        device=device,
+        nonce="nonce_range_verification_0001",
+        idempotency_key="batch_range_verification_0001",
+        sequence=1,
+        body_sha256="d" * 64,
+        manifests=[manifest],
+    )
+
+    assert ledger.count_manifests_captured_between(
+        device_id=device.device_id,
+        captured_from=datetime(2026, 9, 6, 15, tzinfo=UTC),
+        captured_to=datetime(2026, 9, 7, 15, tzinfo=UTC),
+        extractor_version="android-bridge-2",
+    ) == 1
+    assert ledger.count_manifests_captured_between(
+        device_id=device.device_id,
+        captured_from=datetime(2026, 9, 7, 15, tzinfo=UTC),
+        captured_to=datetime(2026, 9, 8, 15, tzinfo=UTC),
+        extractor_version="android-bridge-2",
+    ) == 0
+    ledger.close()

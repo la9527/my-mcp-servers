@@ -12,7 +12,7 @@ import binascii
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 import hashlib
 import os
 from pathlib import Path
@@ -20,6 +20,7 @@ import re
 import secrets
 from threading import RLock
 from typing import Any, Awaitable, Callable, Literal
+from zoneinfo import ZoneInfo
 
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
@@ -85,7 +86,7 @@ from photos_mcp.interfaces.http.story_web import (
 API_PREFIX = "/mobile-client/v1"
 STORY_PREFIX = "/mobile-client/story"
 DOWNLOAD_PREFIX = "/mobile-client/download"
-ANDROID_APP_VERSION = "0.7.1"
+ANDROID_APP_VERSION = "0.7.2"
 MOBILE_SESSION_COOKIE = "photos_mobile_story_session"
 MAX_BODY_BYTES = 32 * 1024
 SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{8,160}$")
@@ -205,10 +206,27 @@ class WebExchangePayload(BaseModel):
         return value
 
 
+class LocationPrefetchPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    schema_version: Literal[1] = 1
+    status: Literal["completed"] = "completed"
+    date_from: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    date_to: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    timezone: Literal["Asia/Seoul"] = "Asia/Seoul"
+    scanned_count: int = Field(ge=0, le=1000)
+    gps_manifest_count: int = Field(ge=0, le=1000)
+    remaining_batches: Literal[0] = 0
+    extractor_version: Literal["android-bridge-2"] = "android-bridge-2"
+    client_version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    completed_at: datetime
+
+
 class StoryCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = Field(default=1, ge=1, le=1)
+    location_prefetch: LocationPrefetchPayload | None = None
 
 
 class PersonConsentPayload(BaseModel):
@@ -268,6 +286,7 @@ class ManualCurationPayload(BaseModel):
     reanalyze: bool = False
     publication_policy: str = Field(default="none", pattern=r"^none$")
     story_policy: str = Field(default="run_scoped", pattern=r"^run_scoped$")
+    location_prefetch: LocationPrefetchPayload | None = None
 
     @field_validator("sources")
     @classmethod
@@ -561,6 +580,49 @@ class MobileClientHttp:
         return self.client_repository.validate_session(
             authorization.removeprefix("Bearer ").strip(), scope=scope
         )
+
+    def _location_prefetch_error(
+        self,
+        *,
+        device: OwnerDevice,
+        prefetch: LocationPrefetchPayload | None,
+        date_from: str,
+        date_to: str,
+        required: bool,
+    ) -> str:
+        if not required:
+            return ""
+        if prefetch is None:
+            return "location_prefetch_required"
+        if prefetch.date_from != date_from or prefetch.date_to != date_to:
+            return "location_prefetch_scope_mismatch"
+        if prefetch.gps_manifest_count > prefetch.scanned_count:
+            return "location_prefetch_count_invalid"
+        completed_at = prefetch.completed_at
+        if completed_at.tzinfo is None:
+            return "location_prefetch_time_invalid"
+        age = datetime.now(UTC) - completed_at.astimezone(UTC)
+        if age < timedelta(minutes=-2) or age > timedelta(minutes=15):
+            return "location_prefetch_stale"
+        if prefetch.gps_manifest_count == 0:
+            return ""
+        try:
+            seoul = ZoneInfo("Asia/Seoul")
+            lower = datetime.combine(date.fromisoformat(date_from), time.min, seoul)
+            upper = datetime.combine(
+                date.fromisoformat(date_to) + timedelta(days=1), time.min, seoul
+            )
+            stored_count = self.location_ledger.count_manifests_captured_between(
+                device_id=device.device_id,
+                captured_from=lower,
+                captured_to=upper,
+                extractor_version=prefetch.extractor_version,
+            )
+        except (ValueError, TypeError):
+            return "location_prefetch_scope_invalid"
+        if stored_count < prefetch.gps_manifest_count:
+            return "location_prefetch_not_received"
+        return ""
 
     def _repository(self):
         return self.state_store.run_repository if self.state_store is not None else None
@@ -914,6 +976,15 @@ class MobileClientHttp:
                 return _json_error(409, "idempotency_key_conflict")
             projection = manual_operation_projection(repository, str(existing["operation_id"]))
             return JSONResponse(mobile_envelope(projection), status_code=202, headers=API_HEADERS)
+        prefetch_error = self._location_prefetch_error(
+            device=device,
+            prefetch=parsed.location_prefetch,
+            date_from=normalized["date_from"],
+            date_to=normalized["date_to"],
+            required="google" in normalized["sources"],
+        )
+        if prefetch_error:
+            return _json_error(428, prefetch_error)
         device_fingerprint = hashlib.sha256(device.device_id.encode("utf-8")).hexdigest()[:24]
         if not repository.consume_curation_command_nonce(
             device_fingerprint=device_fingerprint,
@@ -988,6 +1059,15 @@ class MobileClientHttp:
                 return _json_error(409, "idempotency_key_conflict")
             projection = manual_operation_projection(repository, str(existing["operation_id"]))
             return JSONResponse(mobile_envelope(projection), status_code=202, headers=API_HEADERS)
+        prefetch_error = self._location_prefetch_error(
+            device=device,
+            prefetch=parsed.location_prefetch,
+            date_from=normalized["date_from"],
+            date_to=normalized["date_to"],
+            required="google" in normalized["sources"],
+        )
+        if prefetch_error:
+            return _json_error(428, prefetch_error)
         device_fingerprint = hashlib.sha256(device.device_id.encode("utf-8")).hexdigest()[:24]
         if not repository.consume_curation_command_nonce(
             device_fingerprint=device_fingerprint,

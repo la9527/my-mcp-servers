@@ -2,6 +2,8 @@
 
 검증일: 2026-09-11
 
+후속 교정: Story 목록의 `같은 기간 전체 재분석`에도 동일 계약을 적용한 내용은 [Story 재분석 GPS 선동기화 계약 교정·검증](46-story-reanalysis-gps-prefetch-contract-2026-09-11.md)을 우선한다.
+
 ## 1. 결론
 
 Android 앱의 `날짜로 Story 만들기`는 이제 분석 작업을 먼저 등록하지 않는다. 사용자가 선택한 촬영 날짜 범위의 휴대폰 카메라 원본을 다시 조회하고, EXIF GPS와 매칭용 원본 SHA-256을 Mac mini의 암호화 위치 원장에 모두 전달한 뒤에만 Apple Photos·Google Photos 통합 분석을 등록한다.

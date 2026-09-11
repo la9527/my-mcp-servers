@@ -464,6 +464,35 @@ class MobileLocationLedger:
                 raise
         return ack_id, len(items), False
 
+    def count_manifests_captured_between(
+        self,
+        *,
+        device_id: str,
+        captured_from: datetime,
+        captured_to: datetime,
+        extractor_version: str = "",
+    ) -> int:
+        """Count private manifests for a device without decrypting or exposing GPS."""
+        if captured_from.tzinfo is None or captured_to.tzinfo is None:
+            raise ValueError("capture bounds must be timezone-aware")
+        if captured_from >= captured_to:
+            raise ValueError("capture bounds must be ordered")
+        query = """SELECT COUNT(*) FROM android_asset_manifests
+                   WHERE device_id = ?
+                     AND julianday(captured_at) >= julianday(?)
+                     AND julianday(captured_at) < julianday(?)"""
+        args: list[Any] = [
+            device_id,
+            captured_from.astimezone(UTC).isoformat(),
+            captured_to.astimezone(UTC).isoformat(),
+        ]
+        if extractor_version:
+            query += " AND extractor_version = ?"
+            args.append(extractor_version)
+        with self._lock:
+            row = self._conn.execute(query, tuple(args)).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def list_decrypted_manifests(self, *, device_id: str | None = None) -> list[dict[str, Any]]:
         """Private application API for the future Google Picker matcher."""
         query = "SELECT * FROM android_asset_manifests"

@@ -141,14 +141,14 @@ final class OwnerApiClient {
         return getJson(API + "/stories");
     }
 
-    JSONObject reanalyzeStory(String storyId) throws Exception {
+    JSONObject reanalyzeStory(String storyId, JSONObject locationPrefetch) throws Exception {
         requireSafeId(storyId);
-        return signedStoryCommand(storyId, "reanalyze", "reanalyze-");
+        return signedStoryCommand(storyId, "reanalyze", "reanalyze-", locationPrefetch);
     }
 
     JSONObject deleteStory(String storyId) throws Exception {
         requireSafeId(storyId);
-        return signedStoryCommand(storyId, "delete", "story-delete-");
+        return signedStoryCommand(storyId, "delete", "story-delete-", null);
     }
 
     JSONObject previewManualCuration(JSONObject payload) throws Exception {
@@ -194,10 +194,12 @@ final class OwnerApiClient {
     }
 
     private JSONObject signedStoryCommand(
-            String storyId, String action, String idempotencyPrefix) throws Exception {
+            String storyId, String action, String idempotencyPrefix,
+            JSONObject locationPrefetch) throws Exception {
         String path = API + "/stories/" + storyId + "/" + action;
         JSONObject payload = new JSONObject();
         payload.put("schema_version", 1);
+        if (locationPrefetch != null) payload.put("location_prefetch", locationPrefetch);
         String body = payload.toString();
         String bodyHash = BridgeKeys.hex(
                 MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8)));
@@ -512,6 +514,9 @@ final class OwnerApiClient {
     private static String friendlyFailure(int status) {
         if (status == 403) return "Tailscale 연결과 소유자 로그인을 확인해 주세요.";
         if (status == 401) return "이 기기의 소유자 인증을 갱신할 수 없습니다.";
+        if (status == 428) {
+            return "선택한 날짜의 GPS 동기화 확인이 필요합니다. 최신 앱에서 다시 실행해 주세요.";
+        }
         if (status >= 500) return "Mac의 PhotosMcp 서비스가 아직 준비되지 않았습니다.";
         return "PhotosMcp에 연결하지 못했습니다.";
     }

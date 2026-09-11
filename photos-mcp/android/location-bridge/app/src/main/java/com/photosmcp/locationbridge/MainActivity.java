@@ -869,8 +869,10 @@ public final class MainActivity extends Activity {
                     throw new IllegalStateException(
                             "GPS 전송 대기 배치 " + locationSync.remaining + "개가 남아 있습니다");
                 }
+                payload.put("location_prefetch", locationPrefetch(from, to, locationSync));
                 runOnUiThread(() -> status.setText(
-                        "원본 GPS " + locationSync.queued
+                        "카메라 원본 " + locationSync.scanned + "장 중 GPS "
+                                + locationSync.queued
                                 + "건 확인 완료 · Mac mini에 분석 작업을 등록하고 있어요…"));
                 JSONObject operation = new OwnerApiClient(this)
                         .startManualCuration(payload).getJSONObject("data");
@@ -892,6 +894,25 @@ public final class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+    private JSONObject locationPrefetch(
+            LocalDate from, LocalDate to, BridgeSync.Result locationSync) throws Exception {
+        JSONObject receipt = new JSONObject();
+        receipt.put("schema_version", 1);
+        receipt.put("status", "completed");
+        receipt.put("date_from", from.toString());
+        receipt.put("date_to", to.toString());
+        receipt.put("timezone", "Asia/Seoul");
+        receipt.put("scanned_count", Math.max(0, locationSync.scanned));
+        receipt.put("gps_manifest_count", Math.max(0, locationSync.queued));
+        receipt.put("remaining_batches", Math.max(0, locationSync.remaining));
+        receipt.put("extractor_version", "android-bridge-2");
+        String clientVersion = getPackageManager()
+                .getPackageInfo(getPackageName(), 0).versionName;
+        receipt.put("client_version", clientVersion == null ? "0.7.2" : clientVersion);
+        receipt.put("completed_at", Instant.now().toString());
+        return receipt;
     }
 
     private void showManualOperation(String operationId) {
@@ -1442,7 +1463,12 @@ public final class MainActivity extends Activity {
                             reanalyze.setContentDescription(
                                     title + "을 만든 날짜 범위의 원본 전체를 다시 분석");
                             reanalyze.setOnClickListener(v ->
-                                    confirmStoryReanalysis(storyId, title, displayRange));
+                                    confirmStoryReanalysis(
+                                            storyId,
+                                            title,
+                                            item.optString("date_from"),
+                                            item.optString("date_to"),
+                                            displayRange));
                             entry.addView(reanalyze, matchWrap());
                             entry.addView(space(dp(6)));
                         }
@@ -1463,21 +1489,43 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private void confirmStoryReanalysis(String storyId, String title, String range) {
+    private void confirmStoryReanalysis(
+            String storyId, String title, String dateFrom, String dateTo, String range) {
         new AlertDialog.Builder(this)
                 .setTitle("같은 기간의 원본 전체를 다시 분석할까요?")
                 .setMessage(title + "\n" + range + "\n\n"
                         + "변경: 처음 사용한 날짜·출처·사진 구성·최대 장수로 새 분석과 Story를 만듭니다. "
+                        + "선택 기간의 휴대폰 원본 GPS를 먼저 다시 동기화하며, "
                         + "Google Photos가 포함되면 Picker 선택을 다시 진행할 수 있습니다.\n\n"
                         + "유지: 기존 Story, 원본, 추천 보관소, 인물 이름·동의, GPS 정보와 추천 앨범은 유지됩니다.\n\n"
                         + "되돌리기: 새 작업이 실패하거나 취소되면 기존 Story는 그대로 남습니다.")
                 .setNegativeButton("취소", null)
                 .setPositiveButton("전체 재분석 시작", (dialog, which) -> {
+                    if (!hasMediaPermissions()) {
+                        requestMediaPermissions();
+                        showMessage(
+                                "사진 권한이 필요해요",
+                                "같은 기간의 원본 GPS를 먼저 동기화하려면 사진·원본 위치 권한을 "
+                                        + "모두 허용한 뒤 다시 실행해 주세요.");
+                        return;
+                    }
                     setLoading(true);
                     executor.execute(() -> {
                         try {
+                            LocalDate from = LocalDate.parse(dateFrom);
+                            LocalDate to = LocalDate.parse(
+                                    dateTo == null || dateTo.isBlank() ? dateFrom : dateTo);
+                            BridgeSync.Result locationSync = BridgeSync.runRange(this, from, to);
+                            if (locationSync.remaining != 0) {
+                                throw new IllegalStateException(
+                                        "GPS 전송 대기 배치 " + locationSync.remaining
+                                                + "개가 남아 있습니다");
+                            }
                             JSONObject operation = new OwnerApiClient(this)
-                                    .reanalyzeStory(storyId).getJSONObject("data");
+                                    .reanalyzeStory(
+                                            storyId,
+                                            locationPrefetch(from, to, locationSync))
+                                    .getJSONObject("data");
                             String operationId = operation.getString("operation_id");
                             runOnUiThread(() -> showManualOperation(operationId));
                         } catch (Exception error) {

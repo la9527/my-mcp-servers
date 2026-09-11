@@ -10,26 +10,32 @@ final class BridgeSync {
         final int queued;
         final int delivered;
         final int remaining;
-        Result(int queued, int delivered, int remaining) {
+        final int scanned;
+        Result(int queued, int delivered, int remaining, int scanned) {
             this.queued = queued;
             this.delivered = delivered;
             this.remaining = remaining;
+            this.scanned = scanned;
         }
     }
 
     private BridgeSync() {}
 
     static synchronized Result run(Context context) throws Exception {
-        return execute(context, outbox -> new MediaScanner(context).scanToOutbox(outbox));
+        return execute(context, outbox -> new MediaScanner(context).scanToOutbox(outbox), -1);
     }
 
     static synchronized Result runRange(Context context, LocalDate from, LocalDate to) throws Exception {
-        return execute(
+        Result result = execute(
                 context,
-                outbox -> new MediaScanner(context).scanRangeToOutbox(outbox, from, to));
+                outbox -> new MediaScanner(context).scanRangeToOutbox(outbox, from, to),
+                0);
+        int scanned = context.getSharedPreferences("bridge", Context.MODE_PRIVATE)
+                .getInt("last_manual_range_scanned", 0);
+        return new Result(result.queued, result.delivered, result.remaining, scanned);
     }
 
-    private static Result execute(Context context, ScanAction scan) throws Exception {
+    private static Result execute(Context context, ScanAction scan, int scanned) throws Exception {
         SharedPreferences prefs = context.getSharedPreferences("bridge", Context.MODE_PRIVATE);
         prefs.edit().putString("sync_state", "running").remove("last_error_class").commit();
         try {
@@ -52,7 +58,7 @@ final class BridgeSync {
                         .putInt("last_delivered_batches", delivered)
                         .putInt("last_remaining_batches", remaining)
                         .commit();
-                return new Result(queued, delivered, remaining);
+                return new Result(queued, delivered, remaining, scanned);
             } finally {
                 outbox.close();
             }

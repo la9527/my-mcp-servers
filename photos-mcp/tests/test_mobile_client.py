@@ -248,6 +248,22 @@ def _signed_command_headers(token, owner_key, *, path, body, prefix):
     }
 
 
+def _location_prefetch(*, date_from: str, date_to: str, scanned: int = 0, gps: int = 0):
+    return {
+        "schema_version": 1,
+        "status": "completed",
+        "date_from": date_from,
+        "date_to": date_to,
+        "timezone": "Asia/Seoul",
+        "scanned_count": scanned,
+        "gps_manifest_count": gps,
+        "remaining_batches": 0,
+        "extractor_version": "android-bridge-2",
+        "client_version": "0.7.2",
+        "completed_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def test_mobile_client_requires_tailnet_even_before_device_session(tmp_path, monkeypatch) -> None:
     _app, _ingest_device, _ingest_key, _repository = _fixture(tmp_path)
     monkeypatch.setenv("PHOTOS_MCP_OWNER_TAILSCALE_LOGINS", "owner@example.com")
@@ -407,8 +423,8 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         assert events.status_code == 200
         assert len(events.json()["data"]) == 1
         assert download_page.status_code == 200
-        assert "PhotosMcp 앨범 0.7.1" in download_page.text
-        assert 'download="PhotosMcp-Album-0.7.1.apk"' in download_page.text
+        assert "PhotosMcp 앨범 0.7.2" in download_page.text
+        assert 'download="PhotosMcp-Album-0.7.2.apk"' in download_page.text
         assert "Chrome으로 열기" in download_page.text
         assert download_apk.status_code == 200
         assert download_apk.content == b"signed-test-apk"
@@ -1338,6 +1354,87 @@ def test_manual_command_requires_owner_signature_and_is_idempotent(tmp_path) -> 
         assert unsigned.status_code == 400
 
 
+def test_google_manual_command_requires_completed_selected_date_location_prefetch(
+    tmp_path,
+) -> None:
+    async def starter(_request):
+        return {"automation_run_id": "combined-google-prefetch"}
+
+    app, ingest_device, ingest_key, _repository = _fixture(
+        tmp_path, controls_enabled=True, manual_starter=starter
+    )
+    with TestClient(app, base_url="https://photos.example") as client:
+        token, _owner_key_id, owner_key, _challenge = _owner_session(
+            client, ingest_device, ingest_key
+        )
+        path = "/mobile-client/v1/manual-curations"
+        payload = {
+            "schema_version": 1,
+            "date_from": "2026-09-01",
+            "date_to": "2026-09-07",
+            "timezone": "Asia/Seoul",
+            "sources": ["google"],
+            "limit": 20,
+            "provider_limits": {"google": 20},
+            "exclude_screenshots": True,
+            "timeout_seconds": 21600,
+            "reanalyze": True,
+            "publication_policy": "none",
+            "story_policy": "run_scoped",
+        }
+        missing_body = json.dumps(payload, separators=(",", ":"))
+        missing = client.post(
+            path,
+            content=missing_body,
+            headers=_signed_command_headers(
+                token, owner_key, path=path, body=missing_body, prefix="missing-prefetch"
+            ),
+        )
+        assert missing.status_code == 428
+        assert missing.json()["error"] == "location_prefetch_required"
+
+        unreceived_payload = {
+            **payload,
+            "location_prefetch": _location_prefetch(
+                date_from="2026-09-01", date_to="2026-09-07", scanned=14, gps=1
+            ),
+        }
+        unreceived_body = json.dumps(unreceived_payload, separators=(",", ":"))
+        unreceived = client.post(
+            path,
+            content=unreceived_body,
+            headers=_signed_command_headers(
+                token,
+                owner_key,
+                path=path,
+                body=unreceived_body,
+                prefix="unreceived-prefetch",
+            ),
+        )
+        assert unreceived.status_code == 428
+        assert unreceived.json()["error"] == "location_prefetch_not_received"
+
+        complete_payload = {
+            **payload,
+            "location_prefetch": _location_prefetch(
+                date_from="2026-09-01", date_to="2026-09-07", scanned=14, gps=0
+            ),
+        }
+        complete_body = json.dumps(complete_payload, separators=(",", ":"))
+        accepted = client.post(
+            path,
+            content=complete_body,
+            headers=_signed_command_headers(
+                token, owner_key, path=path, body=complete_body, prefix="valid-prefetch"
+            ),
+        )
+        assert accepted.status_code == 202, accepted.text
+        operation = app.state.run_repository.get_curation_operation(
+            accepted.json()["data"]["operation_id"]
+        )
+        assert "location_prefetch" not in operation["request"]
+
+
 def test_story_reanalysis_and_delete_require_signed_owner_commands(tmp_path) -> None:
     async def starter(_request):
         return {"automation_run_id": "combined-story-reanalysis"}
@@ -1350,9 +1447,9 @@ def test_story_reanalysis_and_delete_require_signed_owner_commands(tmp_path) -> 
         "date_from": "2026-09-01",
         "date_to": "2026-09-02",
         "timezone": "Asia/Seoul",
-        "sources": ["apple"],
+        "sources": ["google"],
         "limit": 20,
-        "provider_limits": {"apple": 20},
+        "provider_limits": {"google": 20},
         "timeout_seconds": 21600,
         "scope_kind": "capture_date_bounded",
         "publication_policy": "none",
@@ -1402,8 +1499,30 @@ def test_story_reanalysis_and_delete_require_signed_owner_commands(tmp_path) -> 
         token, _owner_key_id, owner_key, _challenge = _owner_session(
             client, ingest_device, ingest_key
         )
-        body = json.dumps({"schema_version": 1}, separators=(",", ":"))
         reanalyze_path = f"/mobile-client/v1/stories/{story_id}/reanalyze"
+        missing_body = json.dumps({"schema_version": 1}, separators=(",", ":"))
+        missing_prefetch = client.post(
+            reanalyze_path,
+            content=missing_body,
+            headers=_signed_command_headers(
+                token,
+                owner_key,
+                path=reanalyze_path,
+                body=missing_body,
+                prefix="reanalyze-missing-prefetch",
+            ),
+        )
+        assert missing_prefetch.status_code == 428
+        assert missing_prefetch.json()["error"] == "location_prefetch_required"
+        body = json.dumps(
+            {
+                "schema_version": 1,
+                "location_prefetch": _location_prefetch(
+                    date_from="2026-09-01", date_to="2026-09-02", scanned=8, gps=0
+                ),
+            },
+            separators=(",", ":"),
+        )
         reanalyze = client.post(
             reanalyze_path,
             content=body,
@@ -1419,11 +1538,16 @@ def test_story_reanalysis_and_delete_require_signed_owner_commands(tmp_path) -> 
         assert new_operation["request"]["date_from"] == "2026-09-01"
 
         delete_path = f"/mobile-client/v1/stories/{story_id}/delete"
+        delete_body = json.dumps({"schema_version": 1}, separators=(",", ":"))
         deleted = client.post(
             delete_path,
-            content=body,
+            content=delete_body,
             headers=_signed_command_headers(
-                token, owner_key, path=delete_path, body=body, prefix="delete-story"
+                token,
+                owner_key,
+                path=delete_path,
+                body=delete_body,
+                prefix="delete-story",
             ),
         )
         assert deleted.status_code == 200, deleted.text
