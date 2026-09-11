@@ -29,7 +29,14 @@ final class MediaDayCounter {
         long endMillis = to.plusDays(1).atStartOfDay(seoul).toInstant().toEpochMilli();
         String selection = MediaStore.Images.Media.DATE_TAKEN + " >= ? AND "
                 + MediaStore.Images.Media.DATE_TAKEN + " < ?";
-        String[] arguments = {String.valueOf(startMillis), String.valueOf(endMillis)};
+        String[] arguments;
+        if (Build.VERSION.SDK_INT >= 29) {
+            selection += " AND " + MediaStore.Images.Media.RELATIVE_PATH + " LIKE ?";
+            arguments = new String[]{
+                    String.valueOf(startMillis), String.valueOf(endMillis), "DCIM/Camera/%"};
+        } else {
+            arguments = new String[]{String.valueOf(startMillis), String.valueOf(endMillis)};
+        }
         int count = 0;
         try (Cursor cursor = context.getContentResolver().query(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,

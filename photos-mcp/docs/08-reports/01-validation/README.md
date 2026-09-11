@@ -2,6 +2,7 @@
 
 - [2026-09-10 추천 버전·현재 결과와 읽기 전용 진단](43-recommendation-generation-and-readonly-audit-2026-09-10.md): 수동 전체 재분석의 복수 provider snapshot과 원자적 current 전환, 실패·증분·동시 실행 보호를 구현했다. 운영 로컬 파일 96개의 hash를 검증하고 과거 집계 차이 한 건을 자동 변경 없이 식별했다.
 - [2026-09-11 Google Picker 날짜 검색·분할 수집 실검증](44-google-picker-date-search-batch-validation-2026-09-11.md): 5일 범위 후보 probe 후 희소 창은 연속 선택하고 과밀 창은 하루로 좁히는 적응형 검색과 제한형 DOM 선택·완료 매크로를 구현했다. 실제 Google 계정에서 단일 날짜 10회와 5일 이동 창 10회를 각각 선택·API 조회·임시 다운로드까지 연속 검증했고, 100장 다운로드 묶음과 다운로드 완료 전 세션 보존 정책도 확인했다.
+- [2026-09-11 Android 수동 날짜 GPS 선동기화 구현·검증](45-android-manual-date-gps-prefetch-2026-09-11.md): 선택한 KST 촬영 날짜의 휴대폰 카메라 원본 GPS를 과거 체크포인트와 무관하게 먼저 암호화 전송하고, outbox 잔여가 0일 때만 수동 분석을 등록하도록 Android 0.7.1을 배포했다.
 
 실제 앱 또는 MCP 검증 결과를 날짜가 포함된 Markdown 파일로 추가한다.
 
@@ -59,3 +60,4 @@ YYYY-MM-DD-<검증-대상>.md
 - [2026-09-10 삭제·재분석·추천 앨범 수명주기 Phase 0 검증](42-deletion-reanalysis-lifecycle-phase0-2026-09-10.md): 세 에이전트의 저장소·외부 앨범·복구 정책 감사를 통합했다. 수동 Story를 exact collection으로 제한하고, 추천 0장 실행이 과거 96장을 보여 주던 운영 Story를 원본·인물·GPS·앨범 삭제 없이 교정했으며 수동 결과의 월별 앨범 자동 편입과 외부 receipt 유실을 차단했다.
 - [2026-09-10 추천 generation과 비파괴 초기화 검증](43-recommendation-generation-and-readonly-audit-2026-09-10.md): 재분석 세대와 현재 추천 head를 분리하고 초기화·재생성 경계를 검증했으며 Android 0.6.3 배포 상태를 기록했다.
 - [2026-09-11 인물 연계 Story v4·Apple alias 수직 기능 검증](44-person-linked-story-v4-and-apple-alias-vertical-slice-2026-09-11.md): private identity DB v2, Apple 이름 후보의 소유자 확정 연결, Story-scoped 인물 필터·viewer 동기화, Android 검수 화면과 0.7.0 APK를 구현하고 1,000개 회귀를 통과했다.
+- [2026-09-11 Android 수동 날짜 GPS 선동기화 구현·검증](45-android-manual-date-gps-prefetch-2026-09-11.md): 수동 Story가 분석보다 먼저 정확한 날짜 범위의 Android 원본 GPS를 전송하도록 실행 순서를 교정하고, 권한·전송 실패 시 분석 등록을 차단하는 fail-closed 경계를 검증했다.

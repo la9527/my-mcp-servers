@@ -469,7 +469,8 @@ public final class MainActivity extends Activity {
         selectSection("runs");
         LinearLayout page = page(
                 "날짜로 Story 만들기",
-                "촬영일 기준으로 Apple Photos와 Google Photos를 찾아 하나의 이야기로 만듭니다.");
+                "선택한 촬영일의 휴대폰 원본 GPS를 먼저 동기화한 뒤, "
+                        + "Apple Photos와 Google Photos를 하나의 이야기로 만듭니다.");
 
         LinearLayout form = new LinearLayout(this);
         form.setOrientation(LinearLayout.VERTICAL);
@@ -629,11 +630,12 @@ public final class MainActivity extends Activity {
                     if (providers.has("google")) {
                         summary.append("Google Photos  ·  Picker 선택 후 확인\n\n");
                     }
-                    summary.append("이 휴대폰 원본  ·  ").append(local.count).append("장")
+                    summary.append("이 휴대폰 카메라 원본  ·  ").append(local.count).append("장")
                             .append("partial_permission".equals(local.status) ? " · 부분 조회"
                                     : "permission_required".equals(local.status)
                                     ? " · 사진 권한 필요" : "")
-                            .append("\nGPS 연결용 참고 수량이며 Apple·Google 수와 합산하지 않습니다.");
+                            .append("\n시작하면 이 날짜 범위를 다시 읽어 GPS를 먼저 동기화합니다. "
+                                    + "Apple·Google 수와 합산하지 않습니다.");
                     runOnUiThread(() -> {
                         if (requestGeneration != previewGeneration[0]) {
                             preview.setEnabled(true);
@@ -705,6 +707,7 @@ public final class MainActivity extends Activity {
                             + "사진 구성 " + selectionModeLabel(
                                     approvedPayload[0].optString("selection_mode")) + "\n"
                             + "최대 " + approvedPayload[0].optInt("limit") + "장 · 최대 6시간\n\n"
+                            + "분석 전 선택 날짜의 휴대폰 원본 GPS를 먼저 동기화합니다.\n\n"
                             + analysisPolicyText(
                                     approvedPayload[0].optBoolean("reanalyze", false)))
                     .setNegativeButton("취소", null)
@@ -848,18 +851,42 @@ public final class MainActivity extends Activity {
     }
 
     private void submitManualCuration(JSONObject payload, Button start, TextView status) {
+        if (!hasMediaPermissions()) {
+            requestMediaPermissions();
+            status.setText("선택한 날짜의 원본 GPS를 읽으려면 사진·원본 위치 권한이 필요합니다. "
+                    + "권한을 허용한 뒤 다시 시작해 주세요.");
+            return;
+        }
         start.setEnabled(false);
-        status.setText("Mac mini에 안전하게 작업을 등록하고 있어요…");
+        status.setText("선택한 날짜의 휴대폰 원본 GPS를 먼저 동기화하고 있어요…");
         setLoading(true);
         executor.execute(() -> {
             try {
+                LocalDate from = LocalDate.parse(payload.getString("date_from"));
+                LocalDate to = LocalDate.parse(payload.getString("date_to"));
+                BridgeSync.Result locationSync = BridgeSync.runRange(this, from, to);
+                if (locationSync.remaining != 0) {
+                    throw new IllegalStateException(
+                            "GPS 전송 대기 배치 " + locationSync.remaining + "개가 남아 있습니다");
+                }
+                runOnUiThread(() -> status.setText(
+                        "원본 GPS " + locationSync.queued
+                                + "건 확인 완료 · Mac mini에 분석 작업을 등록하고 있어요…"));
                 JSONObject operation = new OwnerApiClient(this)
                         .startManualCuration(payload).getJSONObject("data");
                 String operationId = operation.getString("operation_id");
                 runOnUiThread(() -> showManualOperation(operationId));
+            } catch (SecurityException denied) {
+                runOnUiThread(() -> {
+                    status.setText("선택한 날짜의 원본 GPS를 읽지 못해 분석을 시작하지 않았습니다. "
+                            + "설정에서 사진·원본 위치 권한을 허용해 주세요.");
+                    start.setEnabled(true);
+                    setLoading(false);
+                });
             } catch (Exception error) {
                 runOnUiThread(() -> {
-                    status.setText(connectionHelp(error));
+                    status.setText("GPS 동기화를 완료하지 못해 분석을 시작하지 않았습니다.\n"
+                            + connectionHelp(error));
                     start.setEnabled(true);
                     setLoading(false);
                 });

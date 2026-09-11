@@ -3,6 +3,8 @@ package com.photosmcp.locationbridge;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import java.time.LocalDate;
+
 final class BridgeSync {
     static final class Result {
         final int queued;
@@ -17,7 +19,17 @@ final class BridgeSync {
 
     private BridgeSync() {}
 
-    static Result run(Context context) throws Exception {
+    static synchronized Result run(Context context) throws Exception {
+        return execute(context, outbox -> new MediaScanner(context).scanToOutbox(outbox));
+    }
+
+    static synchronized Result runRange(Context context, LocalDate from, LocalDate to) throws Exception {
+        return execute(
+                context,
+                outbox -> new MediaScanner(context).scanRangeToOutbox(outbox, from, to));
+    }
+
+    private static Result execute(Context context, ScanAction scan) throws Exception {
         SharedPreferences prefs = context.getSharedPreferences("bridge", Context.MODE_PRIVATE);
         prefs.edit().putString("sync_state", "running").remove("last_error_class").commit();
         try {
@@ -25,7 +37,7 @@ final class BridgeSync {
             if (!api.isEnrolled()) throw new IllegalStateException("먼저 Mac 등록 정보를 붙여넣어 등록하세요");
             OutboxDb outbox = new OutboxDb(context);
             try {
-                int queued = new MediaScanner(context).scanToOutbox(outbox);
+                int queued = scan.run(outbox);
                 int delivered = 0;
                 for (OutboxDb.Batch batch : outbox.pending()) {
                     if (!api.send(batch)) break;
@@ -51,5 +63,9 @@ final class BridgeSync {
                     .commit();
             throw failure;
         }
+    }
+
+    private interface ScanAction {
+        int run(OutboxDb outbox) throws Exception;
     }
 }

@@ -407,8 +407,8 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         assert events.status_code == 200
         assert len(events.json()["data"]) == 1
         assert download_page.status_code == 200
-        assert "PhotosMcp 앨범 0.7.0" in download_page.text
-        assert 'download="PhotosMcp-Album-0.7.0.apk"' in download_page.text
+        assert "PhotosMcp 앨범 0.7.1" in download_page.text
+        assert 'download="PhotosMcp-Album-0.7.1.apk"' in download_page.text
         assert "Chrome으로 열기" in download_page.text
         assert download_apk.status_code == 200
         assert download_apk.content == b"signed-test-apk"

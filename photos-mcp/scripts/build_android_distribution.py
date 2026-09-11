@@ -14,7 +14,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT / "android" / "location-bridge"
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 ANDROID_HOME = Path(
     os.environ.get("ANDROID_HOME", "/opt/homebrew/share/android-commandlinetools")
 )
