@@ -230,7 +230,7 @@ def _mobile_confirmed_people(value: Any) -> list[dict[str, str]]:
 
 
 def _mobile_story_people_fields(source: dict[str, Any]) -> dict[str, Any]:
-    """Strip a Story v3 people block down to confirmed presentation fields."""
+    """Strip a server-derived people block down to confirmed presentation fields."""
 
     people = _mobile_confirmed_people(source.get("confirmed_people"))
     if not people:
@@ -238,16 +238,33 @@ def _mobile_story_people_fields(source: dict[str, Any]) -> dict[str, Any]:
     names = [item["display_name"] for item in people]
     # Rebuild rather than copying the caption so an identity ref, revision, or
     # other internal text can never hitch a ride in an otherwise safe field.
-    return {
+    fields: dict[str, Any] = {
         "confirmed_people": people,
         "people_caption": _text(f"함께한 사람: {', '.join(names)}", 400),
     }
+    handles = [
+        _text(value, 40)
+        for value in source.get("person_facets") or []
+        if _text(value, 40).startswith("pf_")
+    ]
+    if handles:
+        fields["person_facets"] = handles[:32]
+    for key in ("people_title", "people_intro"):
+        value = _text(source.get(key), 400).strip()
+        if value:
+            fields[key] = value
+    return fields
 
 
 def mobile_story_projection(story: dict[str, Any]) -> dict[str, Any]:
-    people_are_server_derived = (
-        str(story.get("schema_version") or "") == "recommendation-story-v3"
-    )
+    schema_version = str(story.get("schema_version") or "")
+    capabilities = {
+        str(value) for value in story.get("capabilities") or [] if str(value)
+    }
+    people_are_server_derived = schema_version in {
+        "recommendation-story-v3",
+        "recommendation-story-v4",
+    } or "people_summary" in capabilities
     photos = []
     for photo in story.get("photos") or []:
         if not isinstance(photo, dict):
@@ -318,12 +335,17 @@ def mobile_story_projection(story: dict[str, Any]) -> dict[str, Any]:
             display_name = _text(item.get("display_name"), 80).strip()
             if not display_name:
                 continue
-            people_overview.append(
-                {
-                    "display_name": display_name,
-                    "photo_count": _bounded_int(item.get("photo_count")),
-                }
-            )
+            projected_person: dict[str, Any] = {
+                "display_name": display_name,
+                "photo_count": _bounded_int(item.get("photo_count")),
+            }
+            facet_handle = _text(item.get("facet_handle"), 40)
+            cover_asset_id = _text(item.get("cover_asset_id"), 160)
+            if facet_handle.startswith("pf_"):
+                projected_person["facet_handle"] = facet_handle
+            if cover_asset_id in valid_ids:
+                projected_person["cover_asset_id"] = cover_asset_id
+            people_overview.append(projected_person)
             if len(people_overview) >= 32:
                 break
     return {
@@ -345,6 +367,7 @@ def mobile_story_projection(story: dict[str, Any]) -> dict[str, Any]:
         "photos": photos,
         "chapters": chapters,
         "people_overview": people_overview,
+        "capabilities": sorted(capabilities),
         "location_overview": [
             {
                 "label": _text(item.get("label"), 120),
@@ -508,6 +531,33 @@ def mobile_people_review_summary(
     }
     counts["total_review_count"] = sum(counts.values())
     return counts
+
+
+def mobile_people_readiness(repository: PersonIdentityRepository) -> dict[str, int | str]:
+    """Explain whether confirmed names can currently appear in a Story."""
+
+    readiness = repository.people_readiness()
+    payload: dict[str, int | str] = {
+        "confirmed_identity_count": _bounded_int(readiness.confirmed_identity_count),
+        "active_observation_count": _bounded_int(readiness.active_observation_count),
+        "confirmed_face_membership_count": _bounded_int(readiness.confirmed_face_membership_count),
+        "confirmed_asset_association_count": _bounded_int(readiness.confirmed_asset_association_count),
+        "pending_alias_count": _bounded_int(readiness.pending_alias_count),
+        "pending_lineage_hold_count": _bounded_int(readiness.pending_lineage_hold_count),
+    }
+    associations = int(payload["confirmed_face_membership_count"]) + int(
+        payload["confirmed_asset_association_count"]
+    )
+    if int(payload["confirmed_identity_count"]) and not associations:
+        payload["status"] = "needs_photo_link"
+        payload["message"] = "확정된 이름은 있지만 현재 사진 연결이 필요합니다."
+    elif int(payload["pending_alias_count"]):
+        payload["status"] = "needs_alias_review"
+        payload["message"] = "사진에서 찾은 인물 이름을 확인해 주세요."
+    else:
+        payload["status"] = "ready"
+        payload["message"] = "인물 Story 연결 상태가 준비되었습니다."
+    return payload
 
 
 def mobile_events(

@@ -1696,7 +1696,7 @@ public final class MainActivity extends Activity {
         int generation = ++resultsGeneration;
         LinearLayout page = page(
                 "인물 확인 현황",
-                "확정된 이름만 표시합니다. 후보 검토와 이름 변경은 Mac에서 진행해 주세요.");
+                "확정된 이름과 사진 연결 상태를 확인합니다. 이름은 동의한 Story에만 표시됩니다.");
         Button backToSettings = quietButton("설정으로 돌아가기");
         backToSettings.setOnClickListener(v -> showSettings());
         page.addView(backToSettings, matchWrap());
@@ -1717,13 +1717,69 @@ public final class MainActivity extends Activity {
         executor.execute(() -> {
             try {
                 OwnerApiClient client = new OwnerApiClient(this);
+                JSONObject readiness = client.getPeopleReadiness().getJSONObject("data");
                 JSONObject summary = client.getPeopleReviewSummary().getJSONObject("data");
                 JSONArray people = client.getPeople().getJSONArray("data");
+                JSONArray aliases = client.getPeopleAliases().getJSONArray("data");
                 runOnUiThread(() -> {
                     if (generation != resultsGeneration || !"people".equals(currentSection)) {
                         return;
                     }
                     content.removeAllViews();
+
+                    LinearLayout readinessCard = new LinearLayout(this);
+                    readinessCard.setOrientation(LinearLayout.VERTICAL);
+                    TextView readinessTitle = text("Story 인물 연결", 17, ink);
+                    readinessTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    if (Build.VERSION.SDK_INT >= 28) readinessTitle.setAccessibilityHeading(true);
+                    readinessCard.addView(readinessTitle);
+                    readinessCard.addView(bodyText(
+                            readiness.optString("message", "인물 연결 상태를 확인했습니다.") + "\n"
+                                    + "확정 이름 " + readiness.optInt("confirmed_identity_count") + " · "
+                                    + "사진 연결 "
+                                    + (readiness.optInt("confirmed_face_membership_count")
+                                    + readiness.optInt("confirmed_asset_association_count")) + " · "
+                                    + "이름 후보 " + readiness.optInt("pending_alias_count")));
+                    content.addView(card(readinessCard));
+
+                    if (aliases.length() > 0) {
+                        LinearLayout aliasesCard = new LinearLayout(this);
+                        aliasesCard.setOrientation(LinearLayout.VERTICAL);
+                        TextView aliasesTitle = text("사진에서 찾은 이름", 17, ink);
+                        aliasesTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                        if (Build.VERSION.SDK_INT >= 28) aliasesTitle.setAccessibilityHeading(true);
+                        aliasesCard.addView(aliasesTitle);
+                        aliasesCard.addView(bodyText(
+                                "Apple Photos가 제공한 이름 후보입니다. 사진과 맞는 확정 인물을 선택해 주세요."));
+                        for (int aliasIndex = 0; aliasIndex < aliases.length(); aliasIndex++) {
+                            JSONObject alias = aliases.optJSONObject(aliasIndex);
+                            if (alias == null) continue;
+                            String aliasLabel = alias.optString("display_label", "이름 후보");
+                            String aliasHandle = alias.optString("alias_action_handle", "");
+                            TextView aliasName = text(aliasLabel, 16, ink);
+                            aliasName.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                            aliasName.setPadding(0, dp(12), 0, dp(4));
+                            aliasesCard.addView(aliasName);
+                            for (int personIndex = 0; personIndex < people.length(); personIndex++) {
+                                JSONObject person = people.optJSONObject(personIndex);
+                                if (person == null
+                                        || !"user_confirmed".equals(person.optString("identity_status"))) {
+                                    continue;
+                                }
+                                String personName = person.optString("display_name", "").trim();
+                                String identityHandle = person.optString("consent_action_handle", "");
+                                if (personName.isEmpty() || identityHandle.isEmpty()) continue;
+                                Button connect = quietButton(personName + " 사진으로 연결");
+                                connect.setContentDescription(
+                                        aliasLabel + " 후보를 " + personName + " 인물로 연결");
+                                connect.setOnClickListener(v -> confirmPersonAlias(
+                                        aliasHandle, identityHandle, connect));
+                                aliasesCard.addView(connect, matchWrap());
+                                aliasesCard.addView(space(dp(6)));
+                            }
+                        }
+                        content.addView(card(aliasesCard));
+                    }
 
                     LinearLayout review = new LinearLayout(this);
                     review.setOrientation(LinearLayout.VERTICAL);
@@ -1854,6 +1910,28 @@ public final class MainActivity extends Activity {
                             stale
                                     ? "최신 상태를 다시 불러왔습니다. 확인한 뒤 다시 선택해 주세요."
                                     : connectionHelp(error));
+                });
+            }
+        });
+    }
+
+    private void confirmPersonAlias(
+            String aliasActionHandle, String identityActionHandle, Button button) {
+        button.setEnabled(false);
+        setLoading(true);
+        executor.execute(() -> {
+            try {
+                new OwnerApiClient(this).confirmPersonAlias(
+                        aliasActionHandle, identityActionHandle);
+                runOnUiThread(() -> {
+                    showMessage("사진 연결 완료", "Story의 인물 정보가 새로 반영되었습니다.");
+                    showPeople();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    button.setEnabled(true);
+                    setLoading(false);
+                    showMessage("사진을 연결하지 못했어요", connectionHelp(error));
                 });
             }
         });

@@ -407,8 +407,8 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         assert events.status_code == 200
         assert len(events.json()["data"]) == 1
         assert download_page.status_code == 200
-        assert "PhotosMcp 앨범 0.6.3" in download_page.text
-        assert 'download="PhotosMcp-Album-0.6.3.apk"' in download_page.text
+        assert "PhotosMcp 앨범 0.7.0" in download_page.text
+        assert 'download="PhotosMcp-Album-0.7.0.apk"' in download_page.text
         assert "Chrome으로 열기" in download_page.text
         assert download_apk.status_code == 200
         assert download_apk.content == b"signed-test-apk"
@@ -633,6 +633,8 @@ def test_people_endpoints_require_owner_session_and_hide_unconfirmed_names(
         assert (
             client.get("/mobile-client/v1/people/review-summary").status_code == 401
         )
+        assert client.get("/mobile-client/v1/people/readiness").status_code == 401
+        assert client.get("/mobile-client/v1/people/aliases").status_code == 401
         token, _owner_key_id, _owner_key, _challenge = _owner_session(
             client, ingest_device, ingest_key
         )
@@ -641,6 +643,9 @@ def test_people_endpoints_require_owner_session_and_hide_unconfirmed_names(
         people_response = client.get("/mobile-client/v1/people", headers=headers)
         summary_response = client.get(
             "/mobile-client/v1/people/review-summary", headers=headers
+        )
+        readiness_response = client.get(
+            "/mobile-client/v1/people/readiness", headers=headers
         )
 
         assert people_response.status_code == 200
@@ -683,6 +688,83 @@ def test_people_endpoints_require_owner_session_and_hide_unconfirmed_names(
             "pending_lineage_hold_count": 0,
             "total_review_count": 2,
         }
+        assert readiness_response.status_code == 200
+        assert readiness_response.json()["data"]["status"] == "needs_photo_link"
+        assert readiness_response.json()["data"]["confirmed_identity_count"] == 2
+
+
+def test_signed_provider_alias_confirmation_links_exact_asset_and_refreshes_story(
+    tmp_path,
+) -> None:
+    identities = PersonIdentityRepository(tmp_path / "person-alias-identities.db")
+    person = identities.create_identity(
+        person_identity_id="person_alias_mobile_001",
+        display_name="민지",
+        identity_status="user_confirmed",
+        name_status="user_confirmed",
+    )
+    identities.set_story_name_consent(
+        person.person_identity_id,
+        "owner",
+        True,
+        expected_identity_revision=person.identity_revision,
+    )
+    identities.register_provider_person_alias(
+        provider="apple_photos",
+        private_display_label="Apple의 민지",
+        local_asset_id="local-asset-mobile-000001",
+    )
+    app, ingest_device, ingest_key, _repository = _fixture(
+        tmp_path,
+        identity_repository=identities,
+    )
+    path = "/mobile-client/v1/people/alias/confirm"
+
+    with TestClient(app, base_url="https://photos.example") as client:
+        token, _owner_key_id, owner_key, _challenge = _owner_session(
+            client, ingest_device, ingest_key
+        )
+        auth = {"Authorization": f"Bearer {token}"}
+        person_projection = client.get(
+            "/mobile-client/v1/people", headers=auth
+        ).json()["data"][0]
+        aliases = client.get(
+            "/mobile-client/v1/people/aliases", headers=auth
+        ).json()["data"]
+        assert aliases[0]["display_label"] == "Apple의 민지"
+        assert "alias_id" not in aliases[0]
+        payload = {
+            "schema_version": 1,
+            "alias_action_handle": aliases[0]["alias_action_handle"],
+            "identity_action_handle": person_projection["consent_action_handle"],
+        }
+        body = json.dumps(payload, separators=(",", ":"))
+        command_headers = _signed_command_headers(
+            token,
+            owner_key,
+            path=path,
+            body=body,
+            prefix="person-alias",
+        )
+        response = client.post(
+            path,
+            content=body,
+            headers=command_headers,
+        )
+        duplicate = client.post(path, content=body, headers=command_headers)
+
+        assert response.status_code == 200, response.text
+        assert duplicate.status_code == 200, duplicate.text
+        assert duplicate.json()["data"] == response.json()["data"]
+        assert response.json()["data"]["confirmed_asset_association_count"] == 1
+        assert response.json()["data"]["pending_alias_count"] == 0
+        assert client.get(
+            "/mobile-client/v1/people/aliases", headers=auth
+        ).json()["data"] == []
+        evidence = identities.build_story_person_evidence(
+            ["local-asset-mobile-000001"]
+        )
+        assert evidence["person_refs"][0]["display_name"] == "민지"
 
 
 def test_signed_person_consent_is_idempotent_and_revision_safe(tmp_path) -> None:

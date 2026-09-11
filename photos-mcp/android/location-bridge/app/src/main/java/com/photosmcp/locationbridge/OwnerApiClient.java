@@ -49,6 +49,47 @@ final class OwnerApiClient {
         return getJson(API + "/people/review-summary");
     }
 
+    JSONObject getPeopleReadiness() throws Exception {
+        return getJson(API + "/people/readiness");
+    }
+
+    JSONObject getPeopleAliases() throws Exception {
+        return getJson(API + "/people/aliases");
+    }
+
+    JSONObject confirmPersonAlias(
+            String aliasActionHandle, String identityActionHandle) throws Exception {
+        if (aliasActionHandle == null
+                || !aliasActionHandle.matches("aal_[A-Za-z0-9_-]{24,80}")) {
+            throw new IllegalArgumentException("invalid alias action handle");
+        }
+        if (identityActionHandle == null
+                || !identityActionHandle.matches("pah_[A-Za-z0-9_-]{24,80}")) {
+            throw new IllegalArgumentException("invalid identity action handle");
+        }
+        String path = API + "/people/alias/confirm";
+        JSONObject payload = new JSONObject();
+        payload.put("schema_version", 1);
+        payload.put("alias_action_handle", aliasActionHandle);
+        payload.put("identity_action_handle", identityActionHandle);
+        String body = payload.toString();
+        String bodyHash = BridgeKeys.hex(
+                MessageDigest.getInstance("SHA-256").digest(
+                        body.getBytes(StandardCharsets.UTF_8)));
+        String idempotencyKey = "person-alias-" + UUID.randomUUID();
+        String nonce = "nonce-" + UUID.randomUUID();
+        String createdAt = Instant.now().toString();
+        String message = "OWNER-COMMAND-V1\nPOST\n" + path + "\n" + bodyHash + "\n"
+                + nonce + "\n" + idempotencyKey + "\n" + createdAt;
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Idempotency-Key", idempotencyKey);
+        headers.put("X-Command-Nonce", nonce);
+        headers.put("X-Command-Created-At", createdAt);
+        headers.put("X-Device-Signature", BridgeKeys.signOwner(
+                message.getBytes(StandardCharsets.UTF_8)));
+        return authorized("POST", path, body, true, headers);
+    }
+
     JSONObject setPersonStoryNameConsent(
             String actionHandle, String audience, boolean allowed) throws Exception {
         if (actionHandle == null

@@ -19,6 +19,7 @@
 - [인물 중심 추천·동일인 확인·Story 인명 반영 계획](13-person-centric-curation-and-story-identity-plan-2026-09-09.md): 기존 person 점수·Apple 사람 필터·동일인 shadow·People UI를 하나의 private identity 흐름으로 연결한다. 자동 동일인은 검토 후보로만 사용하고, 소유자가 확인한 이름만 개인 Story에 결정적으로 표시하며 가족 공유는 인물별 별도 동의를 적용한다.
 - [삭제·재분석·추천 앨범 수명주기 재설계](14-deletion-reanalysis-and-recommendation-lifecycle-plan-2026-09-10.md): 작업 목록·Story·처리 원장·추천 archive·현재 추천·외부 앨범·인물·GPS의 삭제 경계를 분리한다. 수동 재분석은 exact collection Story와 로컬 결과를 먼저 만들고, 기존 앨범 추가와 새 버전 앨범 게시를 구분한 뒤 generation/current-head와 provider membership 정합화로 단계적으로 전환한다.
 - [Google Photos 검색·분할 수집 개선안](15-picker-search-and-batched-acquisition-plan-2026-09-11.md): Picker 날짜·앨범 검색과 다중 화면 매크로를 결합하고, 최대 1,000장을 100장 단위로 내구 다운로드·분석한 뒤 Google·Apple 추천과 Story를 하나로 통합한다. 여러 Picker 세션은 날짜 범위의 완전 소진 또는 안정적인 이어선택이 검증된 경우에만 사용한다.
+- [인물 이름 연계 Story·인물별 사진 탐색 개선 계획](16-person-linked-story-and-people-gallery-plan-2026-09-11.md): 보존된 인물 이름과 최신 추천 자산 사이의 association 단절을 복구하고, Apple alias 확인·안정 얼굴 lineage·인물별 사진 필터·오인식 수정·검증 가능한 Story v4 인물 서사를 단계적으로 연결한다.
 
 ## 선호 학습
 

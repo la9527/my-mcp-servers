@@ -812,3 +812,76 @@ def test_one_face_cannot_be_owner_confirmed_for_two_identities_even_concurrently
     )
     reassigned = repository.latest_owner_confirmed_memberships("unique-membership-asset")
     assert [item.person_identity_id for item in reassigned] == [losing_person_id]
+
+
+def test_v2_name_only_aliases_do_not_auto_merge_and_require_owner_confirmation(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    first = repository.register_provider_person_alias(
+        provider="apple_photos",
+        private_display_label="가족",
+        local_asset_id="local-a",
+    )
+    second = repository.register_provider_person_alias(
+        provider="apple_photos",
+        private_display_label="가족",
+        local_asset_id="local-b",
+    )
+
+    assert first.alias_id != second.alias_id
+    assert first.alias_key_quality == "name_only"
+    assert repository.people_readiness().pending_alias_count == 2
+    assert repository.build_story_person_evidence(["local-a"])["person_refs"] == []
+
+    identity = repository.create_identity(
+        display_name="우리 가족",
+        identity_status="user_confirmed",
+        name_status="user_confirmed",
+    )
+    revision = repository.set_story_name_consent(
+        identity.person_identity_id,
+        "owner",
+        True,
+        expected_identity_revision=identity.identity_revision,
+    )
+    assert revision == 1
+    current = repository.get_identity(identity.person_identity_id)
+    confirmed = repository.confirm_provider_person_alias(
+        first.alias_id,
+        identity.person_identity_id,
+        expected_identity_revision=current.identity_revision,
+    )
+
+    assert confirmed.alias_state == "owner_confirmed"
+    readiness = repository.people_readiness()
+    assert readiness.confirmed_asset_association_count == 1
+    assert readiness.pending_alias_count == 1
+    evidence = repository.build_story_person_evidence(["local-a", "local-b"])
+    assert evidence["assets"][0]["person_refs"] == [identity.person_identity_id]
+    assert evidence["assets"][1]["person_refs"] == []
+
+
+def test_v2_schema_upgrade_preserves_v1_identity_and_audit(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    identity = repository.create_identity(
+        display_name="보존 이름",
+        identity_status="user_confirmed",
+        name_status="user_confirmed",
+    )
+    with sqlite3.connect(repository.path) as connection:
+        connection.execute(
+            "UPDATE repository_metadata SET value = '1' WHERE key = 'schema_version'"
+        )
+
+    upgraded = _repository(tmp_path)
+
+    assert upgraded.get_identity(identity.person_identity_id).display_name == "보존 이름"
+    assert upgraded.verify_audit_chain()
+    with sqlite3.connect(upgraded.path) as connection:
+        assert connection.execute(
+            "SELECT value FROM repository_metadata WHERE key = 'schema_version'"
+        ).fetchone()[0] == "2"
+        assert connection.execute(
+            "SELECT COUNT(*) FROM provider_person_alias_versions"
+        ).fetchone()[0] == 0

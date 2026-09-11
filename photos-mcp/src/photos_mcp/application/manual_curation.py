@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable
 import uuid
 from zoneinfo import ZoneInfo
 
-from photos_mcp.application.story_generation import ensure_scoped_story
+from photos_mcp.application.story_generation import StoryIdentityRepository, ensure_scoped_story
 from photos_mcp.application.recommendation_lifecycle import (
     begin_manual_recommendation_version, recommendation_version_projection,
 )
@@ -291,6 +291,7 @@ def _backfill_active_manual_story_scopes(
     repository: RunRepository,
     *,
     now: datetime,
+    identity_repository: StoryIdentityRepository | None = None,
 ) -> int:
     """Upgrade active legacy manual Stories while their operation still exists."""
     updated = 0
@@ -326,6 +327,7 @@ def _backfill_active_manual_story_scopes(
             origin_run_id=run_id,
             reanalysis_spec=request,
             now=now,
+            identity_repository=identity_repository,
         )
         if not revised.get("photos"):
             soft_delete_story(repository, story_id=story_id, now=now)
@@ -467,6 +469,7 @@ def reconcile_manual_curation_operations(
     *,
     repository: RunRepository,
     now: datetime | None = None,
+    identity_repository: StoryIdentityRepository | None = None,
 ) -> dict[str, Any]:
     """Project terminal parent runs and build one date-scoped fallback Story."""
     observed = now or _utcnow()
@@ -493,6 +496,7 @@ def reconcile_manual_curation_operations(
                 origin_run_id=run_id,
                 reanalysis_spec=request,
                 now=observed,
+                identity_repository=identity_repository,
             )
             if story.get("photos"):
                 stories += 1
@@ -548,6 +552,7 @@ def reconcile_manual_curation_operations(
     backfilled = _backfill_active_manual_story_scopes(
         repository,
         now=observed,
+        identity_repository=identity_repository,
     )
     return {
         "completed_operation_count": completed,

@@ -49,7 +49,7 @@ h1{font-family:ui-serif,Georgia,serif;font-size:clamp(2rem,6vw,4.6rem);line-heig
 button,.button{min-height:48px;min-width:48px;border:0;border-radius:999px;padding:10px 18px;font:inherit;font-weight:700;cursor:pointer;background:var(--accent);color:#fff;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.secondary{background:var(--accent2);color:var(--accent)}button:focus-visible,.button:focus-visible,.tile:focus-visible{outline:3px solid #e19b38;outline-offset:3px}
 .notice{border:1px solid var(--line);background:var(--card);padding:16px;border-radius:16px;margin:18px 0}.secret{font:700 1.35rem ui-monospace,monospace;letter-spacing:.16em}.copy-row{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}.owner-tools,.stories,.shares{margin:28px 0}.owner-tools h2,.stories h2,.shares h2{font-family:ui-serif,Georgia,serif;margin-bottom:8px}.owner-tools>p,.stories>p{margin-top:0;color:var(--muted)}.manual-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;background:var(--card);border:1px solid var(--line);padding:16px;border-radius:18px}.manual-form label{font-size:.82rem;color:var(--muted);display:grid;gap:4px}.manual-form input[type=date],.manual-form input[type=number],.manual-form select{height:46px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);padding:0 12px;font:inherit}.manual-form .source-row,.manual-form .action-row{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:12px;align-items:center}.manual-form .source-row label{display:flex;align-items:center;gap:7px;min-height:38px}.manual-form input[type=checkbox]{width:20px;height:20px}.manual-form .action-row{justify-content:space-between}.manual-form .action-row span{color:var(--muted);font-size:.8rem}.story-list,.share-list{display:grid;gap:10px}.story-card,.share-card{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;background:var(--card);border:1px solid var(--line);padding:14px 16px;border-radius:16px}.story-card p,.share-card p{margin:0;color:var(--muted);font-size:.84rem}.share-actions{display:flex;flex-wrap:wrap;gap:8px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}.tile{border:0;background:#d9d5cd;padding:0;position:relative;aspect-ratio:1;overflow:hidden;border-radius:12px;cursor:zoom-in}.tile img{width:100%;height:100%;object-fit:cover;display:block}.tile span{position:absolute;left:8px;bottom:8px;background:rgba(18,24,27,.72);color:#fff;border-radius:999px;padding:3px 8px;font-size:.7rem}
 .story-status{display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:var(--accent2);color:var(--accent);padding:4px 10px;font-size:.78rem;font-weight:700}.chapters{display:grid;gap:clamp(34px,6vw,68px);margin-top:34px}.chapter{border-top:1px solid var(--line);padding-top:22px}.chapter-head{display:grid;grid-template-columns:minmax(0,1fr);gap:5px;margin-bottom:16px}.chapter-date{color:var(--accent);font-size:.78rem;font-weight:750;letter-spacing:.08em}.chapter h2{font-family:ui-serif,Georgia,serif;font-size:clamp(1.6rem,4vw,2.5rem);line-height:1.1;margin:0}.chapter-copy{color:var(--muted);max-width:68ch;margin:5px 0 0}.people-caption{display:flex;align-items:center;gap:7px;color:var(--accent);font-size:.84rem;font-weight:720;margin:4px 0 0}.people-caption::before{content:"인물";border:1px solid currentColor;border-radius:999px;padding:1px 6px;font-size:.64rem;letter-spacing:.04em}.chapter .grid{margin-top:14px}.closing{font-family:ui-serif,Georgia,serif;font-size:clamp(1.1rem,2.2vw,1.45rem);max-width:48ch;margin:50px 0 0;padding:24px 0;border-top:1px solid var(--line)}
-.place-list,.location-overview,.people-overview{display:flex;flex-wrap:wrap;gap:7px;margin:7px 0 0}.place,.location-chip,.person-chip{display:inline-flex;align-items:center;gap:6px;border:0;border-radius:999px;background:var(--accent2);color:var(--accent);padding:4px 10px;font-size:.78rem;font-weight:700;min-height:32px;min-width:0}.place[aria-pressed="true"]{background:var(--accent);color:#fff}.location-overview{margin:20px 0 4px}.people-overview{margin:9px 0 4px}.people-overview::before{content:"함께한 사람";display:inline-flex;align-items:center;color:var(--muted);font-size:.74rem;font-weight:700;padding-right:2px}.person-chip{background:#eee8f7;color:#5b397a}.location-chip[data-status="contextual_estimate"]{background:#eee6d4;color:#72561e}.location-chip[data-status="unknown"]{background:#e7e7e4;color:#626866}.location-subchapter{margin-top:24px}.location-subchapter h3{display:flex;align-items:center;gap:8px;font-size:1rem;margin:0;color:var(--ink)}.location-subchapter h3 span{color:var(--muted);font-size:.72rem;font-weight:600}.location-subchapter .grid{margin-top:10px}.story-map{margin:18px 0 22px;border:1px solid var(--line);border-radius:18px;overflow:hidden;background:var(--card)}.story-map iframe{display:block;width:100%;height:min(52vw,360px);min-height:240px;border:0}.story-map-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;color:var(--muted);font-size:.78rem}.story-map-foot a{font-weight:700;color:var(--accent)}.legal{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:48px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:.78rem}
+.place-list,.location-overview,.people-overview{display:flex;flex-wrap:wrap;gap:7px;margin:7px 0 0}.place,.location-chip,.person-chip{display:inline-flex;align-items:center;gap:6px;border:0;border-radius:999px;background:var(--accent2);color:var(--accent);padding:4px 10px;font-size:.78rem;font-weight:700;min-height:40px;min-width:0}.place[aria-pressed="true"],.person-chip[aria-pressed="true"]{background:var(--accent);color:#fff}.location-overview{margin:20px 0 4px}.people-overview{margin:9px 0 4px}.people-overview::before{content:"함께한 사람";display:inline-flex;align-items:center;color:var(--muted);font-size:.74rem;font-weight:700;padding-right:2px}.person-chip{background:#eee8f7;color:#5b397a}.person-filter-status{width:100%;margin:2px 0 0;color:var(--muted);font-size:.76rem}.tile[hidden]{display:none}.location-chip[data-status="contextual_estimate"]{background:#eee6d4;color:#72561e}.location-chip[data-status="unknown"]{background:#e7e7e4;color:#626866}.location-subchapter{margin-top:24px}.location-subchapter h3{display:flex;align-items:center;gap:8px;font-size:1rem;margin:0;color:var(--ink)}.location-subchapter h3 span{color:var(--muted);font-size:.72rem;font-weight:600}.location-subchapter .grid{margin-top:10px}.story-map{margin:18px 0 22px;border:1px solid var(--line);border-radius:18px;overflow:hidden;background:var(--card)}.story-map iframe{display:block;width:100%;height:min(52vw,360px);min-height:240px;border:0}.story-map-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;color:var(--muted);font-size:.78rem}.story-map-foot a{font-weight:700;color:var(--accent)}.legal{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:48px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:.78rem}
 .empty{padding:50px 20px;text-align:center;background:var(--card);border:1px solid var(--line);border-radius:20px;margin-top:30px}.lock{width:min(430px,calc(100% - 32px));margin:12vh auto;background:var(--card);border:1px solid var(--line);border-radius:24px;padding:30px;box-shadow:0 20px 60px rgba(40,35,25,.12)}.lock h1{font-size:2.2rem}.lock label{display:grid;gap:7px;color:var(--muted)}.lock input{height:50px;border:1px solid var(--line);border-radius:12px;padding:0 14px;font:1.15rem ui-monospace,monospace;letter-spacing:.12em;margin-bottom:14px;width:100%}.error{color:var(--danger)}
 .viewer{border:0;padding:0;background:var(--scrim);color:white;width:100vw;height:100dvh;max-width:none;max-height:none}.viewer::backdrop{background:var(--scrim)}.viewer-inner{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr) auto auto auto}.viewer-top,.viewer-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px max(10px,env(safe-area-inset-right)) 8px max(10px,env(safe-area-inset-left));background:rgba(8,11,13,.9)}.viewer-top{justify-content:flex-end;padding-top:max(8px,env(safe-area-inset-top));min-height:64px}.viewer-foot{padding-bottom:max(8px,env(safe-area-inset-bottom))}.viewer-actions{display:flex;align-items:center;gap:4px}.viewer button,.viewer .button{background:rgba(255,255,255,.16);backdrop-filter:blur(8px)}.zoom-control{padding:0;width:48px;height:48px;border-radius:50%;font-size:1.15rem}.zoom-reset{font-size:.78rem}.stage{position:relative;display:grid;place-items:center;min-height:0;overflow:hidden;touch-action:none}.stage figure{margin:0;width:100%;height:100%;display:grid;place-items:center;min-width:0;overflow:hidden;touch-action:none;overscroll-behavior:contain}.stage img{max-width:100%;max-height:100%;object-fit:contain;transform:translate3d(0,0,0) scale(1);transform-origin:center;will-change:transform;touch-action:none;user-select:none;-webkit-user-drag:none;cursor:grab}.stage figure.is-zoomed img{cursor:grabbing}.position-indicator{display:grid;gap:5px;padding:8px max(20px,env(safe-area-inset-right)) 1px max(20px,env(safe-area-inset-left));background:rgba(8,11,13,.9)}.position-count{text-align:center;font-size:.8rem;font-weight:750;font-variant-numeric:tabular-nums}.position-track{height:3px;border-radius:999px;background:rgba(255,255,255,.24);overflow:hidden}.position-fill{display:block;width:0;height:100%;border-radius:inherit;background:#82cfb4;transition:width .18s ease}.gesture-hint{margin:0;padding:7px 16px;background:rgba(8,11,13,.9);color:#bec9c3;text-align:center;font-size:.76rem}.caption{min-width:0}.caption strong,.caption span{display:block}.caption span{color:#c7ced2;font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.download[hidden]{display:none}.expiry{font-size:.8rem;color:var(--muted);margin-top:32px}
 @media(min-width:680px){.grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.tile{border-radius:16px}}
@@ -68,17 +68,20 @@ const d=document;
 d.querySelectorAll('[data-copy-value]').forEach(button=>button.addEventListener('click',async()=>{const original=button.textContent;try{await navigator.clipboard.writeText(button.dataset.copyValue||'');button.textContent='복사됨'}catch(_error){button.textContent='복사 실패'}setTimeout(()=>{button.textContent=original},1400)}));
 d.querySelectorAll('[data-map-target]').forEach(button=>button.addEventListener('click',()=>{const chapter=button.closest('.chapter'),frame=chapter?.querySelector('[data-map-frame]'),link=chapter?.querySelector('[data-map-link]');if(frame&&button.dataset.mapTarget){frame.src=button.dataset.mapTarget;frame.title=`${button.textContent.trim()} Google 지도`}if(link&&button.dataset.mapOpen)link.href=button.dataset.mapOpen;chapter?.querySelectorAll('[data-map-target]').forEach(item=>item.setAttribute('aria-pressed',item===button?'true':'false'))}));
 const dialog=d.querySelector('[data-viewer]');if(!dialog)return;
-const tiles=[...d.querySelectorAll('[data-photo]')],image=dialog.querySelector('[data-full]'),figure=image.closest('figure'),count=dialog.querySelector('[data-count]'),positionTrack=dialog.querySelector('[data-position-progress]'),positionFill=dialog.querySelector('[data-position-fill]'),title=dialog.querySelector('[data-title]'),detail=dialog.querySelector('[data-detail]'),download=dialog.querySelector('[data-save]'),zoomReset=dialog.querySelector('[data-zoom-reset]');
+const allTiles=[...d.querySelectorAll('[data-photo]')],filterButtons=[...d.querySelectorAll('[data-person-filter]')],filterStatus=d.querySelector('[data-person-filter-status]');let tiles=[...allTiles];
+function applyPersonFilter(handle,label){allTiles.forEach(tile=>{const facets=(tile.dataset.personFacets||'').split(' ').filter(Boolean);tile.hidden=Boolean(handle)&&!facets.includes(handle)});tiles=allTiles.filter(tile=>!tile.hidden);filterButtons.forEach(button=>button.setAttribute('aria-pressed',button.dataset.personFilter===handle?'true':'false'));if(filterStatus)filterStatus.textContent=handle?`${label} 사진 ${tiles.length}장`:`전체 사진 ${tiles.length}장`;if(dialog.open)dialog.close()}
+filterButtons.forEach(button=>button.addEventListener('click',()=>applyPersonFilter(button.dataset.personFilter||'',button.dataset.personLabel||'선택한 인물')));
+const image=dialog.querySelector('[data-full]'),figure=image.closest('figure'),count=dialog.querySelector('[data-count]'),positionTrack=dialog.querySelector('[data-position-progress]'),positionFill=dialog.querySelector('[data-position-fill]'),title=dialog.querySelector('[data-title]'),detail=dialog.querySelector('[data-detail]'),download=dialog.querySelector('[data-save]'),zoomReset=dialog.querySelector('[data-zoom-reset]');
 const pointers=new Map();let index=0,scale=1,tx=0,ty=0,startX=0,startY=0,startAt=0,lastTapAt=0,lastTapX=0,lastTapY=0,pinchDistance=0,pinchScale=1,pinching=false;
 const clamp=(value,minimum,maximum)=>Math.max(minimum,Math.min(maximum,value));
 function panLimits(){return{x:Math.max(0,(image.offsetWidth*scale-figure.clientWidth)/2),y:Math.max(0,(image.offsetHeight*scale-figure.clientHeight)/2)}}
 function renderTransform(){const limits=panLimits();tx=clamp(tx,-limits.x,limits.x);ty=clamp(ty,-limits.y,limits.y);image.style.transform=`translate3d(${tx}px,${ty}px,0) scale(${scale})`;figure.classList.toggle('is-zoomed',scale>1.01);zoomReset.textContent=scale===1?'1×':`${scale.toFixed(1)}×`;zoomReset.setAttribute('aria-label',`현재 ${scale.toFixed(1)}배, 원래 크기로`) }
 function resetZoom(){scale=1;tx=0;ty=0;renderTransform()}
 function setZoom(next,clientX,clientY){const previous=scale;next=clamp(next,1,4);if(Math.abs(next-previous)<.001)return;const box=figure.getBoundingClientRect(),focusX=clientX-box.left-figure.clientWidth/2,focusY=clientY-box.top-figure.clientHeight/2;tx=focusX-(focusX-tx)*(next/previous);ty=focusY-(focusY-ty)*(next/previous);scale=next;if(scale<=1.01){scale=1;tx=0;ty=0}renderTransform()}
-function show(next){resetZoom();index=(next+tiles.length)%tiles.length;const t=tiles[index],current=index+1;image.src=t.dataset.preview;image.alt=t.dataset.alt||'';count.textContent=`${current} / ${tiles.length}`;positionTrack.setAttribute('aria-valuemax',String(tiles.length));positionTrack.setAttribute('aria-valuenow',String(current));positionTrack.setAttribute('aria-valuetext',`${current} / ${tiles.length}`);positionFill.style.width=`${current/tiles.length*100}%`;title.textContent=t.dataset.title||'사진';detail.textContent=[t.dataset.date,t.dataset.location,t.dataset.people].filter(Boolean).join(' · ');if(t.dataset.download){download.hidden=false;download.href=t.dataset.download;download.setAttribute('download','')}else{download.hidden=true;download.removeAttribute('href')}[-1,1].forEach(offset=>{const adjacent=tiles[(index+offset+tiles.length)%tiles.length];if(adjacent){const preload=new Image();preload.src=adjacent.dataset.preview}})}
+function show(next){if(!tiles.length)return;resetZoom();index=(next+tiles.length)%tiles.length;const t=tiles[index],current=index+1;image.src=t.dataset.preview;image.alt=t.dataset.alt||'';count.textContent=`${current} / ${tiles.length}`;positionTrack.setAttribute('aria-valuemax',String(tiles.length));positionTrack.setAttribute('aria-valuenow',String(current));positionTrack.setAttribute('aria-valuetext',`${current} / ${tiles.length}`);positionFill.style.width=`${current/tiles.length*100}%`;title.textContent=t.dataset.title||'사진';detail.textContent=[t.dataset.date,t.dataset.location,t.dataset.people].filter(Boolean).join(' · ');if(t.dataset.download){download.hidden=false;download.href=t.dataset.download;download.setAttribute('download','')}else{download.hidden=true;download.removeAttribute('href')}[-1,1].forEach(offset=>{const adjacent=tiles[(index+offset+tiles.length)%tiles.length];if(adjacent){const preload=new Image();preload.src=adjacent.dataset.preview}})}
 function navigate(offset){show(index+offset)}
 function releaseViewer(){resetZoom();image.removeAttribute('src');image.alt=''}
-tiles.forEach((tile,i)=>tile.addEventListener('click',()=>{show(i);dialog.showModal()}));
+allTiles.forEach(tile=>tile.addEventListener('click',()=>{const i=tiles.indexOf(tile);if(i>=0){show(i);dialog.showModal()}}));
 dialog.querySelector('[data-close]').addEventListener('click',()=>dialog.close());
 zoomReset.addEventListener('click',resetZoom);
 dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close()});dialog.addEventListener('close',releaseViewer);
@@ -151,11 +154,17 @@ def _photo_card(
         prefix = f"/photos/assets/{asset_id}"
     download = f"{prefix}/download" if public and download_enabled else ""
     people_caption = str(photo.get("people_caption") or "").strip()
+    person_facets = " ".join(
+        str(value)
+        for value in photo.get("person_facets") or []
+        if str(value).startswith("pf_")
+    )
     return (
         f'<button class="tile" type="button" data-photo data-preview="{_e(prefix)}/preview" '
         f'data-download="{_e(download)}" data-title="{_e(photo.get("title"))}" '
         f'data-alt="{_e(photo.get("alt"))}" data-date="{_e(photo.get("capture_date"))}" '
         f'data-location="{_e(photo.get("location"))}" data-people="{_e(people_caption)}" '
+        f'data-person-facets="{_e(person_facets)}" '
         f'aria-label="{_e(photo.get("alt") or "사진 크게 보기")}">'
         f'<img src="{_e(prefix)}/thumb" alt="{_e(photo.get("alt"))}" loading="lazy" decoding="async">'
         f'<span>{_e(photo.get("capture_date"))}</span></button>'
@@ -325,8 +334,8 @@ def render_story(
             )
             place_list = f'<div class="place-list">{places}</div>' if places else ""
         people_caption = (
-            f'<p class="people-caption">{_e(chapter.get("people_caption"))}</p>'
-            if chapter.get("people_caption")
+            f'<p class="people-caption">{_e(chapter.get("people_intro") or chapter.get("people_caption"))}</p>'
+            if chapter.get("people_intro") or chapter.get("people_caption")
             else ""
         )
         chapter_html.append(
@@ -405,15 +414,33 @@ def render_story(
         if overview
         else ""
     )
-    people_overview = "".join(
+    people_filter_buttons = "".join(
+        f'<button class="person-chip" type="button" data-person-filter="{_e(item.get("facet_handle"))}" '
+        f'data-person-label="{_e(item.get("display_name"))}" aria-pressed="false">'
+        f'{_e(item.get("display_name"))} · {_e(item.get("photo_count") or 0)}장</button>'
+        for item in story.get("people_overview") or []
+        if isinstance(item, dict)
+        and str(item.get("display_name") or "").strip()
+        and str(item.get("facet_handle") or "").startswith("pf_")
+    )
+    people_static = "".join(
         f'<span class="person-chip">{_e(item.get("display_name"))} · {_e(item.get("photo_count") or 0)}장</span>'
         for item in story.get("people_overview") or []
-        if isinstance(item, dict) and str(item.get("display_name") or "").strip()
+        if isinstance(item, dict)
+        and str(item.get("display_name") or "").strip()
+        and not str(item.get("facet_handle") or "").startswith("pf_")
     )
     people_overview_html = (
-        f'<nav class="people-overview" aria-label="확인된 인물별 사진 요약">{people_overview}</nav>'
-        if people_overview
-        else ""
+        '<nav class="people-overview" aria-label="확인된 인물별 사진 필터">'
+        '<button class="person-chip" type="button" data-person-filter="" '
+        'data-person-label="전체" aria-pressed="true">전체</button>'
+        f'{people_filter_buttons}<span class="person-filter-status" data-person-filter-status '
+        f'aria-live="polite">전체 사진 {len(photos)}장</span></nav>'
+        if people_filter_buttons
+        else (
+            f'<nav class="people-overview" aria-label="확인된 인물별 사진 요약">{people_static}</nav>'
+            if people_static else ""
+        )
     )
     policy_prefix = "" if public else "/photos"
     body = (

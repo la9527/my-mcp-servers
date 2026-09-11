@@ -15,6 +15,7 @@ from photos_mcp.application.recommendation_storage import (
     queue_recommendation_storage_notification,
     reconcile_pending_recommendations,
 )
+from photos_mcp.application.person_identity_repository import PersonIdentityRepository
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
 
@@ -87,6 +88,50 @@ def test_materializes_only_exact_recommendations_by_capture_date(tmp_path) -> No
     assert group is not None
     assert group["destination_provider"] == "apple_photos"
     assert group["policy_state"] == "draft"
+
+
+def test_apple_person_labels_enter_private_alias_queue_but_google_labels_do_not(
+    tmp_path: Path,
+) -> None:
+    repo = RunRepository(tmp_path / "jobs.db")
+    identities = PersonIdentityRepository(tmp_path / "people" / "private.sqlite3")
+    source = tmp_path / "apple.jpg"
+    source.write_bytes(b"apple-person")
+    google = tmp_path / "google.jpg"
+    google.write_bytes(b"google-person")
+    apple_item = _item(source, photo_id="apple-person")
+    apple_item["known_persons"] = ["사람 A"]
+    google_item = _item(google, photo_id="google-person")
+    google_item["known_persons"] = ["잘못 노출되면 안 됨"]
+    service = RecommendationStorageService(
+        repository=repo,
+        root=tmp_path / "store",
+        identity_repository=identities,
+    )
+
+    service.materialize(
+        analysis_run_id="apple-analysis",
+        automation_run_id="daily",
+        provider="apple",
+        source_id="library",
+        items=[apple_item],
+    )
+    service.materialize(
+        analysis_run_id="google-analysis",
+        automation_run_id="daily",
+        provider="google",
+        source_id="picker",
+        items=[google_item],
+    )
+
+    aliases = identities.list_provider_person_aliases()
+    assert [item.private_display_label for item in aliases] == ["사람 A"]
+    assert aliases[0].provider == "apple_photos"
+    serialized_members = json.dumps(
+        repo.list_recommendation_members_for_local_asset(aliases[0].local_asset_id),
+        ensure_ascii=False,
+    )
+    assert "사람 A" not in serialized_members
 
 
 def test_manual_materialization_stays_out_of_publish_groups(tmp_path) -> None:

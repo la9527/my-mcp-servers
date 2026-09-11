@@ -21,13 +21,15 @@ import uuid
 from photos_mcp.infrastructure.runtime.paths import photos_mcp_home
 
 
-IDENTITY_REPOSITORY_SCHEMA_VERSION = 1
+IDENTITY_REPOSITORY_SCHEMA_VERSION = 2
 _MIGRATION_NAMESPACE = uuid.UUID("15b9642f-c077-4a9d-84d6-13637905eca8")
 _IDENTITY_STATES = {"candidate", "user_confirmed", "conflicted", "hidden", "deleted"}
 _NAME_STATES = {"unlabeled", "provider_asserted", "user_confirmed", "revoked"}
 _MEMBERSHIP_STATES = {"candidate", "owner_confirmed", "rejected", "conflicted"}
 _AUDIENCES = {"owner", "family_share"}
 _OBSERVATION_STATES = {"active", "invalid", "missing"}
+_ALIAS_STATES = {"candidate", "owner_confirmed", "rejected"}
+_ASSET_ASSOCIATION_STATES = {"candidate", "owner_confirmed", "rejected", "unavailable"}
 
 
 class ConfirmedMembershipConflictError(ValueError):
@@ -127,6 +129,29 @@ class IdentityReviewSummary:
 
 
 @dataclass(frozen=True)
+class ProviderPersonAliasRecord:
+    alias_id: str
+    provider: str
+    alias_key_quality: str
+    private_display_label: str
+    local_asset_id: str
+    alias_state: str
+    person_identity_id: str | None
+    alias_revision: int
+    created_at: str
+
+
+@dataclass(frozen=True)
+class PeopleReadiness:
+    confirmed_identity_count: int
+    active_observation_count: int
+    confirmed_face_membership_count: int
+    confirmed_asset_association_count: int
+    pending_alias_count: int
+    pending_lineage_hold_count: int
+
+
+@dataclass(frozen=True)
 class LegacyLineageResolution:
     lineage_status: str
     face_observation_id: str | None
@@ -187,6 +212,8 @@ class PersonIdentityRepository:
         with self._connect() as connection:
             connection.executescript(
                 """
+                BEGIN IMMEDIATE;
+
                 CREATE TABLE IF NOT EXISTS repository_metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -274,6 +301,67 @@ class PersonIdentityRepository:
                     FOREIGN KEY (face_observation_id) REFERENCES face_observations(face_observation_id),
                     FOREIGN KEY (person_identity_id) REFERENCES person_identities(person_identity_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS provider_person_alias_versions (
+                    alias_id TEXT NOT NULL,
+                    alias_revision INTEGER NOT NULL,
+                    provider TEXT NOT NULL,
+                    alias_key_hash TEXT NOT NULL,
+                    alias_key_quality TEXT NOT NULL,
+                    private_display_label TEXT NOT NULL,
+                    local_asset_id TEXT NOT NULL,
+                    alias_state TEXT NOT NULL,
+                    person_identity_id TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (alias_id, alias_revision),
+                    FOREIGN KEY (person_identity_id) REFERENCES person_identities(person_identity_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS provider_person_alias_asset_index
+                ON provider_person_alias_versions(local_asset_id, provider);
+
+                CREATE TABLE IF NOT EXISTS asset_person_association_versions (
+                    local_asset_id TEXT NOT NULL,
+                    person_identity_id TEXT NOT NULL,
+                    association_revision INTEGER NOT NULL,
+                    association_state TEXT NOT NULL,
+                    provenance TEXT NOT NULL,
+                    decision_policy_version TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    invalidated_at TEXT,
+                    PRIMARY KEY (local_asset_id, person_identity_id, association_revision),
+                    FOREIGN KEY (person_identity_id) REFERENCES person_identities(person_identity_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS current_owner_confirmed_asset_people (
+                    local_asset_id TEXT NOT NULL,
+                    person_identity_id TEXT NOT NULL,
+                    association_revision INTEGER NOT NULL,
+                    PRIMARY KEY (local_asset_id, person_identity_id),
+                    FOREIGN KEY (person_identity_id) REFERENCES person_identities(person_identity_id)
+                );
+
+                CREATE TRIGGER IF NOT EXISTS asset_association_projection_insert
+                AFTER INSERT ON asset_person_association_versions
+                WHEN NEW.association_state = 'owner_confirmed'
+                BEGIN
+                    INSERT INTO current_owner_confirmed_asset_people(
+                        local_asset_id, person_identity_id, association_revision
+                    ) VALUES (
+                        NEW.local_asset_id, NEW.person_identity_id, NEW.association_revision
+                    )
+                    ON CONFLICT(local_asset_id, person_identity_id) DO UPDATE SET
+                        association_revision = excluded.association_revision;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS asset_association_projection_remove
+                AFTER INSERT ON asset_person_association_versions
+                WHEN NEW.association_state <> 'owner_confirmed'
+                BEGIN
+                    DELETE FROM current_owner_confirmed_asset_people
+                    WHERE local_asset_id = NEW.local_asset_id
+                      AND person_identity_id = NEW.person_identity_id;
+                END;
 
                 CREATE TABLE IF NOT EXISTS migration_runs (
                     source_digest TEXT PRIMARY KEY,
@@ -625,6 +713,251 @@ class PersonIdentityRepository:
             pending_lineage_hold_count=pending_holds,
         )
 
+    def people_readiness(self) -> PeopleReadiness:
+        """Return count-only diagnostics without labels, paths, or embeddings."""
+
+        with self._connect() as connection:
+            values = {
+                "confirmed_identity_count": connection.execute(
+                    "SELECT COUNT(*) FROM person_identities WHERE identity_status = 'user_confirmed'"
+                ).fetchone()[0],
+                "active_observation_count": connection.execute(
+                    "SELECT COUNT(*) FROM face_observations WHERE observation_status = 'active'"
+                ).fetchone()[0],
+                "confirmed_face_membership_count": connection.execute(
+                    "SELECT COUNT(*) FROM current_owner_confirmed_memberships"
+                ).fetchone()[0],
+                "confirmed_asset_association_count": connection.execute(
+                    "SELECT COUNT(*) FROM current_owner_confirmed_asset_people"
+                ).fetchone()[0],
+                "pending_alias_count": connection.execute(
+                    """SELECT COUNT(*) FROM provider_person_alias_versions a
+                       WHERE a.alias_state = 'candidate'
+                         AND a.alias_revision = (
+                           SELECT MAX(a2.alias_revision)
+                           FROM provider_person_alias_versions a2
+                           WHERE a2.alias_id = a.alias_id
+                         )"""
+                ).fetchone()[0],
+                "pending_lineage_hold_count": connection.execute(
+                    """SELECT COUNT(DISTINCT legacy_face_hash)
+                       FROM legacy_membership_holds
+                       WHERE lineage_status IN ('pending', 'ambiguous', 'missing')"""
+                ).fetchone()[0],
+            }
+        return PeopleReadiness(**{key: int(value) for key, value in values.items()})
+
+    def register_provider_person_alias(
+        self,
+        *,
+        provider: str,
+        private_display_label: str,
+        local_asset_id: str,
+        provider_alias_key: str = "",
+    ) -> ProviderPersonAliasRecord:
+        """Store a provider hint as a private review candidate.
+
+        Name-only hints include the local asset in their key. Equal labels on
+        different assets therefore remain separate until the owner connects
+        them to an identity.
+        """
+
+        provider_value = provider.strip().lower()
+        label = " ".join(private_display_label.split())[:100]
+        asset_id = local_asset_id.strip()
+        if not provider_value or not label or not asset_id:
+            raise ValueError("provider, private_display_label, and local_asset_id are required")
+        key_quality = "provider_stable" if provider_alias_key.strip() else "name_only"
+        key_material = provider_alias_key.strip() or f"{label}\0{asset_id}"
+        key_hash = _private_value_hash(f"{provider_value}\0{key_material}")
+        alias_id = f"alias_{key_hash[:32]}"
+        now = self._now_fn()
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM provider_person_alias_versions
+                   WHERE alias_id = ? ORDER BY alias_revision DESC LIMIT 1""",
+                (alias_id,),
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    """INSERT INTO provider_person_alias_versions(
+                         alias_id, alias_revision, provider, alias_key_hash,
+                         alias_key_quality, private_display_label, local_asset_id,
+                         alias_state, person_identity_id, created_at
+                       ) VALUES (?, 1, ?, ?, ?, ?, ?, 'candidate', NULL, ?)""",
+                    (alias_id, provider_value, key_hash, key_quality, label, asset_id, now),
+                )
+                row = connection.execute(
+                    "SELECT * FROM provider_person_alias_versions WHERE alias_id = ? AND alias_revision = 1",
+                    (alias_id,),
+                ).fetchone()
+        assert row is not None
+        return self._alias_record(row)
+
+    def list_provider_person_aliases(
+        self,
+        *,
+        alias_state: str | None = "candidate",
+    ) -> tuple[ProviderPersonAliasRecord, ...]:
+        if alias_state is not None:
+            self._validate_state(alias_state, _ALIAS_STATES, "alias_state")
+        state_clause = "" if alias_state is None else "AND a.alias_state = ?"
+        params: tuple[Any, ...] = () if alias_state is None else (alias_state,)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT a.* FROM provider_person_alias_versions a
+                    WHERE a.alias_revision = (
+                      SELECT MAX(a2.alias_revision) FROM provider_person_alias_versions a2
+                      WHERE a2.alias_id = a.alias_id
+                    ) {state_clause}
+                    ORDER BY a.created_at, a.alias_id""",
+                params,
+            ).fetchall()
+        return tuple(self._alias_record(row) for row in rows)
+
+    def set_asset_person_association(
+        self,
+        *,
+        local_asset_id: str,
+        person_identity_id: str,
+        association_state: str,
+        expected_identity_revision: int,
+        provenance: str = "owner_review",
+        decision_policy_version: str = "asset-person-v1",
+        actor: str = "owner",
+        request_id: str = "",
+    ) -> int:
+        self._validate_state(association_state, _ASSET_ASSOCIATION_STATES, "association_state")
+        asset_id = local_asset_id.strip()
+        if not asset_id:
+            raise ValueError("local_asset_id is required")
+        now = self._now_fn()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = connection.execute(
+                """SELECT * FROM asset_person_association_versions
+                   WHERE local_asset_id = ? AND person_identity_id = ?
+                   ORDER BY association_revision DESC LIMIT 1""",
+                (asset_id, person_identity_id),
+            ).fetchone()
+            identity_revision = self._bump_identity_revision(
+                connection, person_identity_id, expected_identity_revision, now
+            )
+            revision = (int(previous["association_revision"]) if previous else 0) + 1
+            connection.execute(
+                """INSERT INTO asset_person_association_versions VALUES
+                   (?, ?, ?, ?, ?, ?, ?, NULL)""",
+                (
+                    asset_id, person_identity_id, revision, association_state,
+                    provenance, decision_policy_version, now,
+                ),
+            )
+            self._append_audit(
+                connection,
+                event_type="asset-person-association",
+                entity_id=person_identity_id,
+                entity_revision=identity_revision,
+                actor=actor,
+                request_id=request_id,
+                before={"local_asset_id": asset_id, "state": previous["association_state"] if previous else None},
+                after={"local_asset_id": asset_id, "state": association_state},
+                created_at=now,
+            )
+        return revision
+
+    def confirm_provider_person_alias(
+        self,
+        alias_id: str,
+        person_identity_id: str,
+        *,
+        expected_identity_revision: int,
+        actor: str = "owner",
+        request_id: str = "",
+    ) -> ProviderPersonAliasRecord:
+        """Owner-confirm one alias and its exact asset association."""
+
+        now = self._now_fn()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = connection.execute(
+                """SELECT * FROM provider_person_alias_versions
+                   WHERE alias_id = ? ORDER BY alias_revision DESC LIMIT 1""",
+                (alias_id,),
+            ).fetchone()
+            if latest is None:
+                raise KeyError(alias_id)
+            if str(latest["alias_state"]) != "candidate":
+                raise ValueError("provider alias is not pending review")
+            local_asset_id = str(latest["local_asset_id"])
+            prior_association = connection.execute(
+                """SELECT * FROM asset_person_association_versions
+                   WHERE local_asset_id = ? AND person_identity_id = ?
+                   ORDER BY association_revision DESC LIMIT 1""",
+                (local_asset_id, person_identity_id),
+            ).fetchone()
+            identity_revision = self._bump_identity_revision(
+                connection,
+                person_identity_id,
+                expected_identity_revision,
+                now,
+            )
+            association_revision = (
+                int(prior_association["association_revision"])
+                if prior_association else 0
+            ) + 1
+            connection.execute(
+                """INSERT INTO asset_person_association_versions VALUES
+                   (?, ?, ?, 'owner_confirmed', ?, 'asset-person-v1', ?, NULL)""",
+                (
+                    local_asset_id,
+                    person_identity_id,
+                    association_revision,
+                    f"provider_alias:{str(latest['provider'])}",
+                    now,
+                ),
+            )
+            self._append_audit(
+                connection,
+                event_type="provider-alias-confirm",
+                entity_id=person_identity_id,
+                entity_revision=identity_revision,
+                actor=actor,
+                request_id=request_id,
+                before={
+                    "alias_id": alias_id,
+                    "local_asset_id": local_asset_id,
+                    "association_state": (
+                        prior_association["association_state"]
+                        if prior_association else None
+                    ),
+                },
+                after={
+                    "alias_id": alias_id,
+                    "local_asset_id": local_asset_id,
+                    "association_state": "owner_confirmed",
+                },
+                created_at=now,
+            )
+            alias_revision = int(latest["alias_revision"]) + 1
+            connection.execute(
+                """INSERT INTO provider_person_alias_versions(
+                     alias_id, alias_revision, provider, alias_key_hash,
+                     alias_key_quality, private_display_label, local_asset_id,
+                     alias_state, person_identity_id, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'owner_confirmed', ?, ?)""",
+                (
+                    alias_id, alias_revision, latest["provider"], latest["alias_key_hash"],
+                    latest["alias_key_quality"], latest["private_display_label"],
+                    latest["local_asset_id"], person_identity_id, now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM provider_person_alias_versions WHERE alias_id = ? AND alias_revision = ?",
+                (alias_id, alias_revision),
+            ).fetchone()
+        assert row is not None
+        return self._alias_record(row)
+
     def set_name(
         self,
         person_identity_id: str,
@@ -891,21 +1224,27 @@ class PersonIdentityRepository:
                 rows = connection.execute(
                     f"""
                     SELECT DISTINCT
-                        o.local_asset_id,
+                        confirmed.local_asset_id,
                         i.person_identity_id,
                         i.identity_revision,
                         n.display_name
-                    FROM face_observations o
-                    JOIN current_owner_confirmed_memberships current
-                      ON current.face_observation_id = o.face_observation_id
+                    FROM (
+                        SELECT o.local_asset_id, current.person_identity_id
+                        FROM face_observations o
+                        JOIN current_owner_confirmed_memberships current
+                          ON current.face_observation_id = o.face_observation_id
+                        WHERE o.observation_status = 'active'
+                        UNION
+                        SELECT a.local_asset_id, a.person_identity_id
+                        FROM current_owner_confirmed_asset_people a
+                    ) confirmed
                     JOIN person_identities i
-                      ON i.person_identity_id = current.person_identity_id
+                      ON i.person_identity_id = confirmed.person_identity_id
                     JOIN name_state_versions n
                       ON n.person_identity_id = i.person_identity_id
                     JOIN story_name_consent_versions c
                       ON c.person_identity_id = i.person_identity_id
-                    WHERE o.local_asset_id IN ({placeholders})
-                      AND o.observation_status = 'active'
+                    WHERE confirmed.local_asset_id IN ({placeholders})
                       AND i.identity_status = 'user_confirmed'
                       AND n.name_status = 'user_confirmed'
                       AND n.display_name <> ''
@@ -922,7 +1261,7 @@ class PersonIdentityRepository:
                         WHERE c2.person_identity_id = i.person_identity_id
                           AND c2.audience = c.audience
                       )
-                    ORDER BY o.local_asset_id, i.person_identity_id
+                    ORDER BY confirmed.local_asset_id, i.person_identity_id
                     """,
                     (*asset_ids, audience),
                 ).fetchall()
@@ -1254,6 +1593,24 @@ class PersonIdentityRepository:
         values = dict(row)
         values.pop("quality_summary_json", None)
         return FaceObservationRecord(**values)
+
+    @staticmethod
+    def _alias_record(row: sqlite3.Row) -> ProviderPersonAliasRecord:
+        return ProviderPersonAliasRecord(
+            alias_id=str(row["alias_id"]),
+            provider=str(row["provider"]),
+            alias_key_quality=str(row["alias_key_quality"]),
+            private_display_label=str(row["private_display_label"]),
+            local_asset_id=str(row["local_asset_id"]),
+            alias_state=str(row["alias_state"]),
+            person_identity_id=(
+                str(row["person_identity_id"])
+                if row["person_identity_id"] is not None
+                else None
+            ),
+            alias_revision=int(row["alias_revision"]),
+            created_at=str(row["created_at"]),
+        )
 
     @staticmethod
     def _read_v3_registry(path: Path) -> tuple[dict[str, Any], str]:

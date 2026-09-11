@@ -33,6 +33,7 @@ from photos_mcp.application.story_generation import (
     refresh_recommendation_story,
 )
 from photos_mcp.application.combined_curation import reconcile_combined_curation
+from photos_mcp.application.person_identity_repository import PersonIdentityRepository
 
 
 DEFAULT_RECOMMENDATION_ROOT = Path(
@@ -227,9 +228,27 @@ class RecommendationStorageService:
         *,
         repository: RunRepository,
         root: str | Path | None = None,
+        identity_repository: PersonIdentityRepository | None = None,
     ) -> None:
         self.repository = repository
         self.root = Path(root) if root is not None else recommendation_root()
+        self.identity_repository = identity_repository
+
+    @staticmethod
+    def _private_provider_person_labels(item: dict[str, Any], provider: str) -> tuple[str, ...]:
+        if provider not in {"apple_photos", "local"}:
+            return ()
+        raw = item.get("known_persons") or item.get("persons") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple, set)):
+            return ()
+        labels = {
+            " ".join(str(value).split())[:100]
+            for value in raw
+            if " ".join(str(value).split())
+        }
+        return tuple(sorted(labels))
 
     def materialize(
         self,
@@ -474,6 +493,15 @@ class RecommendationStorageService:
                     }
                 )
                 self.repository.upsert_recommendation_member(member)
+                labels = self._private_provider_person_labels(item, normalized_provider)
+                if labels:
+                    private_repository = self.identity_repository or PersonIdentityRepository()
+                    for label in labels:
+                        private_repository.register_provider_person_alias(
+                            provider=normalized_provider,
+                            private_display_label=label,
+                            local_asset_id=local_asset_id,
+                        )
                 receipt_id = _stable_id(
                     "destination",
                     collection_id,

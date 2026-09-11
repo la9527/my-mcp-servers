@@ -15,6 +15,7 @@ from photos_mcp.application.story_sharing import (
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 from photos_mcp.interfaces.http.story_web import build_public_share_app
 from photos_mcp.interfaces.http.story_web import (
+    STORY_JS,
     configured_owner_logins,
     render_owner,
     render_story,
@@ -324,6 +325,24 @@ def test_public_story_renders_only_explicit_family_share_people_projection(
     assert "소유자 이름" not in shared_html
     assert "함께한 사람: 가족 공개 이름" in shared_html
     assert "가족 공개 이름 · 1장" in shared_html
+
+
+def test_owner_story_person_chip_filters_the_same_photo_set_as_viewer(tmp_path: Path) -> None:
+    repository, _root = _repository(tmp_path)
+    identities = FakeIdentityRepository(owner_name="민지")
+    story = build_recommendation_story(
+        repository,
+        now=NOW,
+        identity_repository=identities,
+    )
+
+    rendered = render_story(story, public=False)
+
+    facet = story["people_overview"][0]["facet_handle"]
+    assert f'data-person-filter="{facet}"' in rendered
+    assert f'data-person-facets="{facet}"' in rendered
+    assert "data-person-filter-status" in rendered
+    assert "let tiles=[...allTiles]" in STORY_JS
 
 
 def test_owner_created_share_exposes_separate_copy_controls_once(tmp_path: Path) -> None:

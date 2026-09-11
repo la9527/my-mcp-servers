@@ -37,6 +37,7 @@ from photos_mcp.application.mobile_client import (
     mobile_envelope,
     mobile_events,
     mobile_people,
+    mobile_people_readiness,
     mobile_person,
     mobile_people_review_summary,
     mobile_run_projection,
@@ -84,7 +85,7 @@ from photos_mcp.interfaces.http.story_web import (
 API_PREFIX = "/mobile-client/v1"
 STORY_PREFIX = "/mobile-client/story"
 DOWNLOAD_PREFIX = "/mobile-client/download"
-ANDROID_APP_VERSION = "0.6.3"
+ANDROID_APP_VERSION = "0.7.0"
 MOBILE_SESSION_COOKIE = "photos_mobile_story_session"
 MAX_BODY_BYTES = 32 * 1024
 SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{8,160}$")
@@ -102,6 +103,7 @@ CONTROL_SCOPE = "curation:write"
 IDENTITY_CONTROL_SCOPE = "identity:write"
 SAFE_COMMAND_VALUE = re.compile(r"^[A-Za-z0-9._:-]{8,180}$")
 IDENTITY_ACTION_HANDLE = re.compile(r"^pah_[A-Za-z0-9_-]{24,80}$")
+ALIAS_ACTION_HANDLE = re.compile(r"^aal_[A-Za-z0-9_-]{24,80}$")
 IDENTITY_ACTION_TTL_SECONDS = 10 * 60
 ManualAdvancer = Callable[[], Awaitable[dict[str, int]]]
 
@@ -222,6 +224,28 @@ class PersonConsentPayload(BaseModel):
     def action_handle_is_safe(cls, value: str) -> str:
         if not IDENTITY_ACTION_HANDLE.fullmatch(value):
             raise ValueError("invalid action handle")
+        return value
+
+
+class PersonAliasConfirmPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    schema_version: Literal[1] = 1
+    alias_action_handle: str = Field(min_length=28, max_length=84)
+    identity_action_handle: str = Field(min_length=28, max_length=84)
+
+    @field_validator("alias_action_handle")
+    @classmethod
+    def alias_handle_is_safe(cls, value: str) -> str:
+        if not ALIAS_ACTION_HANDLE.fullmatch(value):
+            raise ValueError("invalid alias action handle")
+        return value
+
+    @field_validator("identity_action_handle")
+    @classmethod
+    def identity_handle_is_safe(cls, value: str) -> str:
+        if not IDENTITY_ACTION_HANDLE.fullmatch(value):
+            raise ValueError("invalid identity action handle")
         return value
 
 
@@ -384,6 +408,7 @@ class MobileClientHttp:
         self._identity_action_handles: dict[
             str, tuple[str, str, int, float]
         ] = {}
+        self._alias_action_handles: dict[str, tuple[str, str, float]] = {}
         self._identity_consent_results: dict[
             tuple[str, str], tuple[str, dict[str, Any], float]
         ] = {}
@@ -437,7 +462,10 @@ class MobileClientHttp:
                     repository=repository,
                     identity_repository=self._identity_repository,
                 )
-            reconciled = reconcile_manual_curation_operations(repository=repository)
+            reconciled = reconcile_manual_curation_operations(
+                repository=repository,
+                identity_repository=self._identity_repository,
+            )
             story_ids = tuple(reconciled.get("story_ids") or ())
             if story_ids:
                 # Android-original GPS arrives through a separate encrypted
@@ -543,6 +571,11 @@ class MobileClientHttp:
             for handle, binding in self._identity_action_handles.items()
             if binding[3] > now_timestamp
         }
+        self._alias_action_handles = {
+            handle: binding
+            for handle, binding in self._alias_action_handles.items()
+            if binding[2] > now_timestamp
+        }
         self._identity_consent_results = {
             key: result
             for key, result in self._identity_consent_results.items()
@@ -581,6 +614,27 @@ class MobileClientHttp:
             if binding is None or binding[0] != device_id:
                 return None
             return binding[1], binding[2]
+
+    def _issue_alias_action_handle(self, *, device_id: str, alias_id: str) -> str:
+        now_timestamp = datetime.now(UTC).timestamp()
+        with self._lock:
+            self._prune_identity_commands_locked(now_timestamp)
+            handle = f"aal_{secrets.token_urlsafe(24)}"
+            self._alias_action_handles[handle] = (
+                device_id,
+                alias_id,
+                now_timestamp + IDENTITY_ACTION_TTL_SECONDS,
+            )
+        return handle
+
+    def _alias_action_binding(self, *, device_id: str, handle: str) -> str | None:
+        now_timestamp = datetime.now(UTC).timestamp()
+        with self._lock:
+            self._prune_identity_commands_locked(now_timestamp)
+            binding = self._alias_action_handles.get(handle)
+            if binding is None or binding[0] != device_id:
+                return None
+            return binding[1]
 
     async def _verify_owner_command(
         self,
@@ -887,7 +941,10 @@ class MobileClientHttp:
         repository = self._repository()
         if repository is None:
             return _json_error(503, "service_unavailable")
-        reconcile_manual_curation_operations(repository=repository)
+        reconcile_manual_curation_operations(
+            repository=repository,
+            identity_repository=self._identity_repository,
+        )
         operation_id = str(request.path_params.get("operation_id") or "")
         if not SAFE_ID.fullmatch(operation_id):
             return _json_error(404, "not_found")
@@ -1033,6 +1090,116 @@ class MobileClientHttp:
             mobile_envelope(mobile_people_review_summary(self._identity_repository)),
             headers=API_HEADERS,
         )
+
+    async def people_readiness(self, request: Request) -> Response:
+        if self._session(request, scope="status:read") is None:
+            return _json_error(401, "unauthorized")
+        if self._identity_repository is None:
+            return _json_error(503, "people_unavailable")
+        return JSONResponse(
+            mobile_envelope(mobile_people_readiness(self._identity_repository)),
+            headers=API_HEADERS,
+        )
+
+    async def people_aliases(self, request: Request) -> Response:
+        device = self._session(request, scope="status:read")
+        if device is None:
+            return _json_error(401, "unauthorized")
+        if self._identity_repository is None:
+            return _json_error(503, "people_unavailable")
+        items = [
+            {
+                "provider": alias.provider,
+                "display_label": alias.private_display_label,
+                "source_quality": alias.alias_key_quality,
+                "alias_action_handle": self._issue_alias_action_handle(
+                    device_id=device.device_id,
+                    alias_id=alias.alias_id,
+                ),
+            }
+            for alias in self._identity_repository.list_provider_person_aliases()
+        ]
+        return JSONResponse(mobile_envelope(items), headers=API_HEADERS)
+
+    async def people_alias_confirm(self, request: Request) -> Response:
+        device = self._session(request, scope=IDENTITY_CONTROL_SCOPE)
+        if device is None:
+            return _json_error(401, "unauthorized")
+        repository = self._repository()
+        if repository is None or self._identity_repository is None:
+            return _json_error(503, "people_unavailable")
+        parsed = await _bounded_json(request, PersonAliasConfirmPayload, max_body_bytes=2048)
+        if not isinstance(parsed, PersonAliasConfirmPayload):
+            return _json_error(400, "invalid_request")
+        path = f"{API_PREFIX}/people/alias/confirm"
+        try:
+            idempotency_key, nonce = await self._verify_owner_command(
+                request, device=device, path=path
+            )
+        except ValueError as exc:
+            code = str(exc)
+            return _json_error(401 if code == "stale_command" else 400, code[:48])
+        except (InvalidSignature, UnsupportedAlgorithm, binascii.Error, TypeError):
+            return _json_error(401, "command_verification_failed")
+        body_hash = hashlib.sha256(await request.body()).hexdigest()
+        cache_key = (device.device_id, idempotency_key)
+        now_timestamp = datetime.now(UTC).timestamp()
+        with self._lock:
+            self._prune_identity_commands_locked(now_timestamp)
+            prior = self._identity_consent_results.get(cache_key)
+            if prior is not None:
+                if prior[0] != body_hash:
+                    return _json_error(409, "idempotency_key_conflict")
+                return JSONResponse(mobile_envelope(prior[1]), headers=API_HEADERS)
+        alias_id = self._alias_action_binding(
+            device_id=device.device_id,
+            handle=parsed.alias_action_handle,
+        )
+        identity_binding = self._identity_action_binding(
+            device_id=device.device_id,
+            handle=parsed.identity_action_handle,
+        )
+        if alias_id is None or identity_binding is None:
+            return _json_error(404, "alias_action_unavailable")
+        person_identity_id, expected_revision = identity_binding
+        device_fingerprint = hashlib.sha256(device.device_id.encode("utf-8")).hexdigest()[:24]
+        if not repository.consume_curation_command_nonce(
+            device_fingerprint=device_fingerprint,
+            nonce=nonce,
+            request_hash=body_hash,
+        ):
+            return _json_error(409, "command_replay")
+        try:
+            self._identity_repository.confirm_provider_person_alias(
+                alias_id,
+                person_identity_id,
+                expected_identity_revision=expected_revision,
+                actor="owner:mobile",
+                request_id=idempotency_key,
+            )
+            refreshed = refresh_all_story_location_projections(
+                repository,
+                identity_repository=self._identity_repository,
+            )
+        except KeyError:
+            return _json_error(404, "alias_action_unavailable")
+        except ValueError as exc:
+            if str(exc).startswith("stale identity revision"):
+                return _json_error(409, "stale_identity_revision")
+            return _json_error(409, "alias_confirmation_rejected")
+        except Exception:
+            return _json_error(503, "story_refresh_incomplete")
+        result = {
+            **mobile_people_readiness(self._identity_repository),
+            "refreshed_story_count": int(refreshed.get("refreshed") or 0),
+        }
+        with self._lock:
+            self._identity_consent_results[cache_key] = (
+                body_hash,
+                result,
+                now_timestamp + IDENTITY_ACTION_TTL_SECONDS,
+            )
+        return JSONResponse(mobile_envelope(result), headers=API_HEADERS)
 
     async def people_consent(self, request: Request) -> Response:
         device = self._session(request, scope=IDENTITY_CONTROL_SCOPE)
@@ -1554,6 +1721,21 @@ class MobileClientHttp:
                 f"{API_PREFIX}/people/review-summary",
                 ("GET",),
                 self.people_review_summary,
+            ),
+            MobileRouteSpec(
+                f"{API_PREFIX}/people/readiness",
+                ("GET",),
+                self.people_readiness,
+            ),
+            MobileRouteSpec(
+                f"{API_PREFIX}/people/aliases",
+                ("GET",),
+                self.people_aliases,
+            ),
+            MobileRouteSpec(
+                f"{API_PREFIX}/people/alias/confirm",
+                ("POST",),
+                self.people_alias_confirm,
             ),
             MobileRouteSpec(
                 f"{API_PREFIX}/people/consent",

@@ -15,7 +15,7 @@ from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
 
 STORY_ID = "recommendations-latest"
-STORY_SCHEMA_VERSION = "recommendation-story-v3"
+STORY_SCHEMA_VERSION = "recommendation-story-v4"
 PROMPT_VERSION = "photos-story-director-v1"
 ALLOWED_THEMES = {"day_in_life", "weekend_journal", "seasonal_digest", "mixed_archive"}
 _UNSAFE_TEXT = re.compile(r"https?://|<\s*/?\s*(?:script|iframe|style)|file://", re.IGNORECASE)
@@ -233,6 +233,100 @@ def _chapter_people_fields(photos: list[dict[str, Any]]) -> dict[str, Any]:
         "person_refs": [person["person_ref"] for person in confirmed],
         "confirmed_people": confirmed,
         "people_caption": f"함께한 사람: {', '.join(names)}" if names else "",
+    }
+
+
+def _has_final_consonant(value: str) -> bool:
+    if not value:
+        return False
+    code = ord(value[-1])
+    return 0xAC00 <= code <= 0xD7A3 and (code - 0xAC00) % 28 != 0
+
+
+def _join_people_names(names: list[str]) -> str:
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        particle = "과" if _has_final_consonant(names[0]) else "와"
+        return f"{names[0]}{particle} {names[1]}"
+    return f"{', '.join(names[:-1])}, {names[-1]}"
+
+
+def _apply_people_facets(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Attach Story-scoped presentation handles and verified people prose."""
+
+    story_id = str(manifest.get("story_id") or STORY_ID)
+    photos = [dict(item) for item in manifest.get("photos") or [] if isinstance(item, dict)]
+    overview = [dict(item) for item in manifest.get("people_overview") or [] if isinstance(item, dict)]
+    handle_by_ref: dict[str, str] = {}
+    for person in overview:
+        person_ref = str(person.get("person_ref") or "")
+        revision = max(0, int(person.get("identity_revision") or 0))
+        if not person_ref or revision < 1:
+            continue
+        handle = "pf_" + hashlib.sha256(
+            f"{story_id}\0{person_ref}\0{revision}".encode("utf-8")
+        ).hexdigest()[:24]
+        handle_by_ref[person_ref] = handle
+        person["facet_handle"] = handle
+        asset_ids = [
+            str(photo.get("asset_id") or "")
+            for photo in photos
+            if person_ref in set(str(value) for value in photo.get("person_refs") or [])
+        ]
+        person["asset_ids"] = [value for value in asset_ids if value]
+        person["cover_asset_id"] = person["asset_ids"][0] if person["asset_ids"] else ""
+    for photo in photos:
+        photo["person_facets"] = [
+            handle_by_ref[person_ref]
+            for person_ref in photo.get("person_refs") or []
+            if person_ref in handle_by_ref
+        ]
+    photo_by_ref = {str(photo.get("photo_ref") or ""): photo for photo in photos}
+    chapters: list[dict[str, Any]] = []
+    for item in manifest.get("chapters") or []:
+        if not isinstance(item, dict):
+            continue
+        chapter = dict(item)
+        chapter_photos = [
+            photo_by_ref[ref]
+            for ref in (str(value) for value in chapter.get("photo_refs") or [])
+            if ref in photo_by_ref
+        ]
+        chapter["person_facets"] = sorted(
+            {
+                handle
+                for photo in chapter_photos
+                for handle in photo.get("person_facets") or []
+            }
+        )
+        names = [
+            str(person.get("display_name") or "")
+            for person in chapter.get("confirmed_people") or []
+            if isinstance(person, dict) and str(person.get("display_name") or "")
+        ]
+        if names:
+            joined = _join_people_names(names)
+            subject = "이" if _has_final_consonant(joined) else "가"
+            chapter["people_title"] = f"{joined}{subject} 함께한 장면"
+            chapter["people_intro"] = f"{joined}와 함께한 사진을 모았습니다."
+        else:
+            chapter["people_title"] = ""
+            chapter["people_intro"] = ""
+        chapters.append(chapter)
+    return {
+        **manifest,
+        "schema_version": STORY_SCHEMA_VERSION,
+        "capabilities": [
+            "people_summary",
+            "people_filter",
+            "structured_people_narrative",
+        ],
+        "photos": photos,
+        "chapters": chapters,
+        "people_overview": overview,
     }
 
 
@@ -573,6 +667,7 @@ def _persist_revision(
     *,
     story_id: str = STORY_ID,
 ) -> dict[str, Any]:
+    manifest = _apply_people_facets(manifest)
     existing = repository.get_story_manifest(story_id)
     if existing and existing.get("evidence_hash") == manifest.get("evidence_hash"):
         old_generation = existing.get("generation") if isinstance(existing.get("generation"), dict) else {}
@@ -707,8 +802,21 @@ def ensure_scoped_story(
         scope["reanalysis_spec"] = dict(reanalysis_spec)
     existing = repository.get_story_manifest(story_id)
     if existing and existing.get("evidence_hash") == bundle["evidence_hash"]:
-        if existing.get("scope") == scope:
+        if (
+            existing.get("scope") == scope
+            and existing.get("schema_version") == STORY_SCHEMA_VERSION
+        ):
             return existing
+        if existing.get("schema_version") != STORY_SCHEMA_VERSION:
+            try:
+                upgraded = _upgrade_manifest_structure(existing, bundle)
+                return _persist_revision(
+                    repository,
+                    {**upgraded, "scope": scope},
+                    story_id=story_id,
+                )
+            except ValueError:
+                pass
         return _persist_revision(
             repository,
             {**existing, "scope": scope},
@@ -762,7 +870,10 @@ def refresh_all_story_location_projections(
         except ValueError:
             failed += 1
             continue
-        if upgraded.get("evidence_hash") == existing.get("evidence_hash"):
+        if (
+            upgraded.get("evidence_hash") == existing.get("evidence_hash")
+            and existing.get("schema_version") == STORY_SCHEMA_VERSION
+        ):
             skipped += 1
             continue
         _persist_revision(repository, upgraded, story_id=story_id)

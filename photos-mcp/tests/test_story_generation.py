@@ -200,7 +200,7 @@ def test_legacy_story_schema_is_upgraded_even_when_evidence_is_unchanged(tmp_pat
 
     upgraded = ensure_recommendation_story(repo, now=NOW)
 
-    assert upgraded["schema_version"] == "recommendation-story-v3"
+    assert upgraded["schema_version"] == "recommendation-story-v4"
     assert upgraded["revision"] == 2
     assert upgraded["title"] == "보존해야 할 기존 Qwen 제목"
     assert upgraded["generation"]["source"] == "hermes-router"
@@ -224,7 +224,7 @@ def test_owner_story_uses_only_repository_confirmed_names_outside_llm_evidence(
     assert identities.calls[0][1] == "owner"
     assert "민지" not in llm_evidence
     assert "person_opaque_confirmed_001" in llm_evidence
-    assert story["schema_version"] == "recommendation-story-v3"
+    assert story["schema_version"] == "recommendation-story-v4"
     assert story["identity_evidence_hash"] == "1" * 64
     assert story["photos"][0]["person_refs"] == [identities.person_ref]
     assert story["photos"][0]["confirmed_people"] == [
@@ -237,6 +237,15 @@ def test_owner_story_uses_only_repository_confirmed_names_outside_llm_evidence(
     assert story["photos"][0]["people_caption"] == "함께한 사람: 민지"
     assert story["chapters"][0]["people_caption"] == "함께한 사람: 민지"
     assert story["people_overview"][0]["display_name"] == "민지"
+    facet = story["people_overview"][0]["facet_handle"]
+    assert facet.startswith("pf_")
+    assert story["people_overview"][0]["asset_ids"] == [
+        photo["asset_id"] for photo in story["photos"]
+    ]
+    assert all(photo["person_facets"] == [facet] for photo in story["photos"])
+    assert all(chapter["person_facets"] == [facet] for chapter in story["chapters"])
+    assert all(chapter["people_title"] == "민지가 함께한 장면" for chapter in story["chapters"])
+    assert "민지" not in llm_evidence
 
 
 def test_owner_story_omits_unconfirmed_or_unconsented_people(tmp_path: Path) -> None:
