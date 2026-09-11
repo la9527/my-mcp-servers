@@ -7,9 +7,14 @@ from PIL import Image
 import pytest
 
 from photos_mcp.application.person_identity_management import (
+    PeopleCatalog,
+    PersonFace,
+    PersonIdentity,
     PersonIdentityRegistry,
     build_people_catalog,
+    merge_stable_people_catalog,
 )
+from photos_mcp.application.person_identity_repository import PersonIdentityRepository
 
 
 def _source(tmp_path: Path, job_id: str, embeddings: list[list[float]]) -> tuple[str, dict, Path]:
@@ -221,3 +226,70 @@ def test_identity_uses_largest_face_as_representative(tmp_path: Path) -> None:
 
     assert identity.representative_face is not None
     assert identity.representative_face.area == max(face.area for face in identity.faces)
+
+
+def test_stable_identities_remain_visible_without_recent_face_artifacts(tmp_path: Path) -> None:
+    registry = PersonIdentityRegistry(tmp_path / "people" / "people-private.json")
+    repository = PersonIdentityRepository(tmp_path / "people" / "person-identities.sqlite3")
+    repository.create_identity(
+        display_name="보존된 인물",
+        identity_status="user_confirmed",
+    )
+
+    merged = merge_stable_people_catalog(
+        PeopleCatalog(identities=(), face_count=0, source_job_count=0),
+        repository=repository,
+        registry=registry,
+    )
+
+    assert len(merged.identities) == 1
+    assert merged.stable_identity_count == 1
+    assert merged.identities[0].display_name == "보존된 인물"
+    assert merged.identities[0].faces == ()
+    assert merged.identities[0].stable_identity_id.startswith("person_")
+
+
+def test_migrated_legacy_group_is_decorated_instead_of_duplicated(tmp_path: Path) -> None:
+    registry_path = tmp_path / "people" / "people-private.json"
+    registry_path.parent.mkdir(parents=True)
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "identities": {"legacy-person": {"name": "이전 이름"}},
+                "face_overrides": {},
+                "excluded_face_ids": [],
+                "excluded_face_origins": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    registry = PersonIdentityRegistry(registry_path)
+    repository = PersonIdentityRepository(tmp_path / "people" / "person-identities.sqlite3")
+    repository.migrate_v3_registry(registry_path, dry_run=False)
+    face = PersonFace(
+        face_id="face-one",
+        job_id="job-one",
+        photo_id="photo-one",
+        face_index=0,
+        crop_path="/tmp/crop.jpg",
+        preview_path="/tmp/preview.jpg",
+        source_photo_path="/tmp/source.jpg",
+        embedding=(1.0, 0.0),
+        area=0.5,
+    )
+
+    merged = merge_stable_people_catalog(
+        PeopleCatalog(
+            identities=(PersonIdentity("legacy-person", "이전 이름", (face,), True),),
+            face_count=1,
+            source_job_count=1,
+        ),
+        repository=repository,
+        registry=registry,
+    )
+
+    assert len(merged.identities) == 1
+    assert merged.identities[0].faces == (face,)
+    assert merged.identities[0].stable_identity_id.startswith("person_")

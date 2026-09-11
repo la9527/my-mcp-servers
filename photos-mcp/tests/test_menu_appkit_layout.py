@@ -48,6 +48,7 @@ from photos_mcp.interfaces.appkit.people.controller import PhotosMcpPeopleManage
 from photos_mcp.interfaces.appkit.people.drag_views import IdentityDragHandle, IdentityDropRowView
 from photos_mcp.interfaces.appkit.classification import controller as classification_controller_module
 from photos_mcp.application.person_identity_management import PeopleCatalog, PersonFace, PersonIdentity
+from photos_mcp.application.person_identity_repository import PersonIdentityRepository
 from photos_mcp.ui_theme import scaled_font_size
 
 
@@ -241,7 +242,54 @@ def test_main_window_people_tab_has_a_local_only_empty_state() -> None:
         if isinstance(view, NSTextField)
     }
 
-    assert {"인물 관리", "인물 묶음", "관리할 얼굴이 없습니다"}.issubset(labels)
+    assert {"인물 관리", "인물 묶음", "등록된 인물이 없습니다"}.issubset(labels)
+
+
+def test_main_window_people_tab_shows_stable_identity_without_face_cache(tmp_path) -> None:
+    NSApplication.sharedApplication()
+    menu = _menu_controller(_snapshot())
+    repository = PersonIdentityRepository(tmp_path / "people-private.sqlite3")
+    stable_identity = repository.create_identity(
+        display_name="보존된 인물",
+        identity_status="user_confirmed",
+    )
+    menu._identity_repository = repository
+    controller = PhotosMcpMainWindowController.alloc().initWithMenuController_(menu)
+
+    controller.showTab_("people")
+    descendants = list(_walk(controller.window().contentView()))
+    labels = {
+        str(view.stringValue() or "")
+        for view in descendants
+        if isinstance(view, NSTextField)
+    }
+    buttons = {
+        str(view.title() or "")
+        for view in descendants
+        if isinstance(view, NSButton)
+    }
+
+    assert "보존된 인물" in labels
+    assert "사진 연결 필요 · 설정 보존됨" in labels
+    assert "내 Story에 이름 표시" in buttons
+    assert "가족 공유 Story에 이름 표시" in buttons
+
+    manager = controller._people_manager
+    manager._name_field.setStringValue_("변경된 인물")
+    manager.saveName_(None)
+    assert repository.get_identity(stable_identity.person_identity_id).display_name == "변경된 인물"
+
+    manager.undoLastChange_(None)
+    assert repository.get_identity(stable_identity.person_identity_id).display_name == "보존된 인물"
+
+    owner_toggle = next(
+        view
+        for view in _walk(controller.window().contentView())
+        if isinstance(view, NSButton) and str(view.identifier() or "") == "owner"
+    )
+    owner_toggle.setState_(NSControlStateValueOn)
+    manager.toggleStableConsent_(owner_toggle)
+    assert repository.current_consent(stable_identity.person_identity_id, "owner") is True
 
 
 def test_people_management_renders_drag_drop_controls_for_multiple_groups() -> None:

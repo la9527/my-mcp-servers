@@ -7,7 +7,7 @@ membership overrides under the private Photos MCP home directory.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -25,6 +25,7 @@ from photos_mcp.infrastructure.runtime.paths import photos_mcp_home
 
 if TYPE_CHECKING:
     from photos_mcp.application.person_identity_repository import (
+        PersonIdentityRecord,
         PersonIdentityRepository,
         RegistryMigrationReport,
     )
@@ -93,6 +94,10 @@ class PersonIdentity:
     name: str
     faces: tuple[PersonFace, ...]
     is_manual: bool
+    stable_identity_id: str = ""
+    stable_identity_status: str = ""
+    stable_identity_revision: int = 0
+    stable_name_status: str = ""
 
     @property
     def display_name(self) -> str:
@@ -112,9 +117,95 @@ class PeopleCatalog:
     source_job_count: int
     excluded_face_count: int = 0
     excluded_faces: tuple[PersonFace, ...] = ()
+    stable_identity_count: int = 0
+    pending_alias_count: int = 0
+    pending_lineage_hold_count: int = 0
 
     def identity(self, identity_id: str) -> PersonIdentity | None:
         return next((item for item in self.identities if item.identity_id == identity_id), None)
+
+
+def merge_stable_people_catalog(
+    catalog: PeopleCatalog,
+    *,
+    repository: "PersonIdentityRepository",
+    registry: "PersonIdentityRegistry",
+) -> PeopleCatalog:
+    """Merge durable identities into a legacy face-backed AppKit catalog.
+
+    Face crops remain an optional presentation source. Durable identities are
+    always visible, including after job history or validation caches are
+    cleared. A migrated legacy group is decorated with its stable identity so
+    the same person is not rendered twice.
+    """
+
+    records = repository.list_identities()
+    if not records:
+        return catalog
+    by_stable_id: dict[str, PersonIdentityRecord] = {
+        record.person_identity_id: record for record in records
+    }
+    source_digest = ""
+    if registry.path.is_file():
+        try:
+            source_digest = repository.migrate_v3_registry(
+                registry.path,
+                dry_run=True,
+            ).source_digest
+        except (OSError, ValueError):
+            source_digest = ""
+
+    represented: set[str] = set()
+    merged: list[PersonIdentity] = []
+    for identity in catalog.identities:
+        stable_id = (
+            repository.mapped_person_identity_id(
+                source_digest=source_digest,
+                legacy_identity_id=identity.identity_id,
+            )
+            if source_digest
+            else None
+        )
+        record = by_stable_id.get(stable_id or "")
+        if record is None:
+            merged.append(identity)
+            continue
+        represented.add(record.person_identity_id)
+        merged.append(
+            replace(
+                identity,
+                name=record.display_name or identity.name,
+                stable_identity_id=record.person_identity_id,
+                stable_identity_status=record.identity_status,
+                stable_identity_revision=record.identity_revision,
+                stable_name_status=record.name_status,
+            )
+        )
+
+    for record in records:
+        if record.person_identity_id in represented:
+            continue
+        merged.append(
+            PersonIdentity(
+                identity_id=record.person_identity_id,
+                name=record.display_name,
+                faces=(),
+                is_manual=False,
+                stable_identity_id=record.person_identity_id,
+                stable_identity_status=record.identity_status,
+                stable_identity_revision=record.identity_revision,
+                stable_name_status=record.name_status,
+            )
+        )
+
+    readiness = repository.people_readiness()
+    return replace(
+        catalog,
+        identities=tuple(merged),
+        stable_identity_count=len(records),
+        pending_alias_count=readiness.pending_alias_count,
+        pending_lineage_hold_count=readiness.pending_lineage_hold_count,
+    )
 
 
 class _Components:

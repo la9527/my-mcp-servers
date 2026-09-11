@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 import objc
@@ -33,6 +34,7 @@ from photos_mcp.application.person_identity_management import (
     PersonIdentity,
     PersonIdentityRegistry,
     build_people_catalog,
+    merge_stable_people_catalog,
 )
 from photos_mcp.interfaces.appkit.results.collection_item import cached_image
 from photos_mcp.interfaces.appkit.results.photo_viewer import PhotosMcpPhotoViewerController
@@ -65,6 +67,7 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._main_controller = main_controller
         self._menu_controller = main_controller._menu_controller
         self._registry = PersonIdentityRegistry()
+        self._identity_repository = getattr(self._menu_controller, "_identity_repository", None)
         self._catalog = PeopleCatalog(identities=(), face_count=0, source_job_count=0)
         self._selected_identity_id = ""
         self._focused_identity_id = ""
@@ -83,6 +86,7 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._gallery_scroll_origin = None
         self._identity_labels: dict[str, str] = {}
         self._undo_snapshot: dict[str, Any] | None = None
+        self._stable_name_undo: tuple[str, str, str] | None = None
         self._undo_message = ""
         self._viewer_controller = PhotosMcpPhotoViewerController.alloc().init()
         self._load_catalog()
@@ -114,7 +118,11 @@ class PhotosMcpPeopleManagerController(NSObject):
         )
         self._button(parent, width - _MARGIN - 110.0, height - 66.0, 110.0, 32.0, "새로 고침", "refreshCatalog:")
 
-        status = f"{len(self._catalog.identities)}개 묶음 · 얼굴 {self._catalog.face_count}개 · 최근 작업 {self._catalog.source_job_count}개"
+        status = f"{len(self._catalog.identities)}명 · 연결된 얼굴 {self._catalog.face_count}개 · 최근 작업 {self._catalog.source_job_count}개"
+        if self._catalog.pending_alias_count:
+            status += f" · 이름 확인 대기 {self._catalog.pending_alias_count}건"
+        if self._catalog.pending_lineage_hold_count:
+            status += f" · 사진 연결 대기 {self._catalog.pending_lineage_hold_count}건"
         if self._catalog.excluded_face_count:
             status += f" · 제외 {self._catalog.excluded_face_count}개"
         self._label(parent, _MARGIN, height - 112.0, usable, 18.0, status, 9.8, False, secondary=True)
@@ -263,6 +271,34 @@ class PhotosMcpPeopleManagerController(NSObject):
         if identity is None or self._name_field is None:
             return
         name = str(self._name_field.stringValue() or "").strip()
+        if identity.stable_identity_id and self._identity_repository is not None:
+            try:
+                before = self._identity_repository.get_identity(identity.stable_identity_id)
+                self._identity_repository.set_name(
+                    identity.stable_identity_id,
+                    name,
+                    name_status="user_confirmed" if name else "unlabeled",
+                    expected_identity_revision=before.identity_revision,
+                    actor="owner:mac-app",
+                    request_id="mac-people-name",
+                )
+            except (KeyError, OSError, sqlite3.Error, ValueError) as exc:
+                self._alert("인물 이름을 저장할 수 없습니다", str(exc))
+                return
+            self._stable_name_undo = (
+                identity.stable_identity_id,
+                before.display_name,
+                before.name_status,
+            )
+            self._undo_snapshot = None
+            self._undo_message = "인물 이름을 변경했습니다.  ⌘Z로 실행 취소할 수 있습니다."
+            self._name_draft_identity_id = ""
+            self._name_draft = ""
+            self._name_selection_range = None
+            self._name_restore_pending_identity_id = ""
+            self._load_catalog()
+            self._main_controller.rebuild()
+            return
         snapshot = self._registry.snapshot()
         try:
             self._selected_identity_id = self._registry.assign_name(identity, name)
@@ -274,6 +310,39 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._name_draft = ""
         self._name_selection_range = None
         self._name_restore_pending_identity_id = ""
+        self._load_catalog()
+        self._main_controller.rebuild()
+
+    def toggleStableConsent_(self, sender) -> None:
+        identity = self._selected_identity()
+        audience = str(sender.identifier() or "") if sender is not None else ""
+        if (
+            identity is None
+            or not identity.stable_identity_id
+            or self._identity_repository is None
+            or audience not in {"owner", "family_share"}
+        ):
+            return
+        allowed = sender.state() == NSControlStateValueOn
+        try:
+            current = self._identity_repository.get_identity(identity.stable_identity_id)
+            if self._identity_repository.current_consent(
+                identity.stable_identity_id,
+                audience,
+            ) == allowed:
+                return
+            self._identity_repository.set_story_name_consent(
+                identity.stable_identity_id,
+                audience,
+                allowed,
+                expected_identity_revision=current.identity_revision,
+                actor="owner:mac-app",
+                request_id=f"mac-people-consent-{audience}",
+            )
+        except (KeyError, OSError, sqlite3.Error, ValueError) as exc:
+            self._alert("Story 이름 사용 설정을 저장할 수 없습니다", str(exc))
+            self._main_controller.rebuild()
+            return
         self._load_catalog()
         self._main_controller.rebuild()
 
@@ -330,6 +399,26 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._main_controller.rebuild()
 
     def undoLastChange_(self, _sender) -> None:
+        if self._stable_name_undo is not None and self._identity_repository is not None:
+            identity_id, previous_name, previous_status = self._stable_name_undo
+            try:
+                current = self._identity_repository.get_identity(identity_id)
+                self._identity_repository.set_name(
+                    identity_id,
+                    previous_name,
+                    name_status=previous_status,
+                    expected_identity_revision=current.identity_revision,
+                    actor="owner:mac-app",
+                    request_id="mac-people-name-undo",
+                )
+            except (KeyError, OSError, sqlite3.Error, ValueError) as exc:
+                self._alert("변경을 되돌릴 수 없습니다", str(exc))
+                return
+            self._stable_name_undo = None
+            self._undo_message = ""
+            self._load_catalog()
+            self._main_controller.rebuild()
+            return
         if self._undo_snapshot is None:
             return
         try:
@@ -338,6 +427,7 @@ class PhotosMcpPeopleManagerController(NSObject):
             self._alert("변경을 되돌릴 수 없습니다", str(exc))
             return
         self._undo_snapshot = None
+        self._stable_name_undo = None
         self._undo_message = ""
         self._load_catalog()
         self._main_controller.rebuild()
@@ -348,7 +438,13 @@ class PhotosMcpPeopleManagerController(NSObject):
             return False
         source = self._catalog.identity(str(payload.get("source_identity_id") or ""))
         target = self._catalog.identity(target_identity_id)
-        if source is None or target is None or source.identity_id == target.identity_id:
+        if (
+            source is None
+            or target is None
+            or source.identity_id == target.identity_id
+            or not source.faces
+            or not target.faces
+        ):
             return False
         drag_type = str(payload.get("drag_type") or "")
         if drag_type == IDENTITY_DRAG_TYPE:
@@ -459,7 +555,19 @@ class PhotosMcpPeopleManagerController(NSObject):
             if payload.get("error"):
                 continue
             sources.append((job_id, payload, face_measurements_path(job_id)))
-        self._catalog = build_people_catalog(sources, registry=self._registry)
+        catalog = build_people_catalog(sources, registry=self._registry)
+        if self._identity_repository is not None:
+            try:
+                catalog = merge_stable_people_catalog(
+                    catalog,
+                    repository=self._identity_repository,
+                    registry=self._registry,
+                )
+            except (OSError, sqlite3.Error, ValueError):
+                # Keep the face-backed legacy catalog available if the durable
+                # repository is damaged or temporarily locked.
+                pass
+        self._catalog = catalog
         unnamed_index = 0
         self._identity_labels = {}
         for identity in self._catalog.identities:
@@ -479,6 +587,14 @@ class PhotosMcpPeopleManagerController(NSObject):
     @objc.python_method
     def _selected_identity(self) -> PersonIdentity | None:
         return self._catalog.identity(self._selected_identity_id)
+
+    @objc.python_method
+    def _identity_summary(self, identity: PersonIdentity) -> str:
+        if identity.stable_identity_id and not identity.faces:
+            return "사진 연결 필요 · 설정 보존됨"
+        if identity.stable_identity_id:
+            return f"연결된 얼굴 {len(identity.faces)}개 · 안정 저장소"
+        return f"얼굴 {len(identity.faces)}개 · {'직접 수정됨' if identity.is_manual else '자동 그룹'}"
 
     @objc.python_method
     def _face_drag_payload(self, identity: PersonIdentity, face_ids: Any) -> dict[str, Any]:
@@ -547,7 +663,7 @@ class PhotosMcpPeopleManagerController(NSObject):
             row.setFrame_(NSMakeRect(0.0, row_y, row_width, 52.0))
             self._style_card(row, selected=selected)
             label = self._identity_labels.get(identity.identity_id, identity.display_name)
-            row.setAccessibilityLabel_(f"{label}, 얼굴 {len(identity.faces)}개")
+            row.setAccessibilityLabel_(f"{label}, {self._identity_summary(identity)}")
             row.setAccessibilityValue_("선택됨" if selected else "선택 안 됨")
             document.addSubview_(row)
             if identity.identity_id == self._focused_identity_id:
@@ -560,16 +676,17 @@ class PhotosMcpPeopleManagerController(NSObject):
                 image_view.setAccessibilityLabel_(f"{label} 대표 얼굴")
                 row.addSubview_(image_view)
             self._label(row, 54.0, 27.0, max(60.0, row_width - 140.0), 18.0, label, 11.2, True)
-            self._label(row, 54.0, 9.0, max(60.0, row_width - 140.0), 16.0, f"얼굴 {len(identity.faces)}개 · {'직접 수정됨' if identity.is_manual else '자동 그룹'}", 8.8, False, secondary=True)
+            self._label(row, 54.0, 9.0, max(60.0, row_width - 140.0), 16.0, self._identity_summary(identity), 8.8, False, secondary=True)
             count = self._label(row, row_width - 76.0, 17.0, 32.0, 18.0, str(len(identity.faces)), 11.0, True, accent=selected)
             count.setAlignment_(2)
-            drag_handle = IdentityDragHandle.alloc().initWithPayload_controller_(
-                {"source_identity_id": identity.identity_id, "face_ids": []}, self
-            )
-            drag_handle.setFrame_(NSMakeRect(row_width - 40.0, 10.0, 32.0, 32.0))
-            drag_handle.setAccessibilityLabel_(f"{label} 그룹 전체를 드래그하여 합치기")
-            drag_handle.setToolTip_(f"{label} 그룹 전체를 다른 인물 그룹으로 드래그")
-            row.addSubview_(drag_handle)
+            if identity.faces:
+                drag_handle = IdentityDragHandle.alloc().initWithPayload_controller_(
+                    {"source_identity_id": identity.identity_id, "face_ids": []}, self
+                )
+                drag_handle.setFrame_(NSMakeRect(row_width - 40.0, 10.0, 32.0, 32.0))
+                drag_handle.setAccessibilityLabel_(f"{label} 그룹 전체를 드래그하여 합치기")
+                drag_handle.setToolTip_(f"{label} 그룹 전체를 다른 인물 그룹으로 드래그")
+                row.addSubview_(drag_handle)
         card.addSubview_(scroll)
         if self._identity_scroll_origin is not None:
             scroll.contentView().scrollToPoint_(NSMakePoint(*self._identity_scroll_origin))
@@ -580,8 +697,8 @@ class PhotosMcpPeopleManagerController(NSObject):
         identity = self._selected_identity()
         if identity is None:
             card = self._card(parent, x, y, width, height, selected=False)
-            self._label(card, 24.0, height - 50.0, width - 48.0, 28.0, "관리할 얼굴이 없습니다", 17.0, True)
-            self._label(card, 24.0, height - 78.0, width - 48.0, 22.0, "얼굴이 포함된 사진 분석을 완료하면 이곳에 자동 묶음이 표시됩니다.", 10.5, False, secondary=True)
+            self._label(card, 24.0, height - 50.0, width - 48.0, 28.0, "등록된 인물이 없습니다", 17.0, True)
+            self._label(card, 24.0, height - 78.0, width - 48.0, 22.0, "인물 사진 분석이 완료되면 후보를 확인하고 이름을 지정할 수 있습니다.", 10.5, False, secondary=True)
             if self._catalog.excluded_face_count:
                 self._button(card, 24.0, height - 124.0, 220.0, 30.0, f"제외한 얼굴 모두 복원 ({self._catalog.excluded_face_count})", "restoreExcludedFaces:")
             self._label(card, 24.0, 50.0, max(180.0, width - 180.0), 18.0, self._undo_message, 8.8, False, secondary=True)
@@ -592,10 +709,10 @@ class PhotosMcpPeopleManagerController(NSObject):
         card = self._card(parent, x, y, width, height, selected=True)
         identity_label = self._identity_labels.get(identity.identity_id, identity.display_name)
         self._label(card, 20.0, height - 42.0, max(180.0, width - 390.0), 24.0, identity_label, 16.0, True)
-        self._label(card, 20.0, height - 64.0, max(180.0, width - 390.0), 18.0, f"얼굴 {len(identity.faces)}개 · {'직접 수정됨' if identity.is_manual else '자동 그룹'}", 9.0, False, secondary=True)
+        self._label(card, 20.0, height - 64.0, max(180.0, width - 390.0), 18.0, self._identity_summary(identity), 9.0, False, secondary=True)
         if self._catalog.excluded_face_count:
             self._button(card, width - 400.0, height - 68.0, 210.0, 28.0, f"제외한 얼굴 모두 복원 ({self._catalog.excluded_face_count})", "restoreExcludedFaces:")
-        if identity.is_manual:
+        if identity.is_manual and not identity.stable_identity_id:
             self._button(card, width - 180.0, height - 68.0, 160.0, 28.0, "자동 그룹으로 되돌리기", "clearManualChanges:")
         self._label(card, 20.0, height - 100.0, 58.0, 20.0, "이름", 10.2, True)
         self._name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(72.0, height - 106.0, max(120.0, width - 292.0), 28.0))
@@ -612,7 +729,11 @@ class PhotosMcpPeopleManagerController(NSObject):
         ):
             self.performSelector_withObject_afterDelay_("restoreNameEditorState:", self._name_field, 0.0)
         self._button(card, width - 210.0, height - 106.0, 92.0, 28.0, "이름 저장", "saveName:", primary=True)
-        representative = identity.representative_face or identity.faces[0]
+        if not identity.faces:
+            self._stable_identity_details(card, width, height, identity)
+            return
+        representative = identity.representative_face
+        assert representative is not None
         representative_button = self._button(
             card,
             width - 128.0,
@@ -661,7 +782,7 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._move_popup.addItemWithTitle_("이동할 그룹 선택")
         peer_ids: list[str] = []
         for peer in self._catalog.identities:
-            if peer.identity_id == identity.identity_id:
+            if peer.identity_id == identity.identity_id or not peer.faces:
                 continue
             label = self._identity_labels.get(peer.identity_id, peer.display_name)
             self._move_popup.addItemWithTitle_(label)
@@ -690,6 +811,93 @@ class PhotosMcpPeopleManagerController(NSObject):
         undo_title = self._undo_message or "마지막 변경을 되돌릴 수 있습니다."
         self._label(card, 20.0, 10.0, max(180.0, width - 170.0), 16.0, undo_title, 8.3, False, secondary=True)
         undo_button = self._button(card, width - 132.0, 34.0, 112.0, 28.0, "실행 취소", "undoLastChange:", enabled=self._undo_snapshot is not None)
+        undo_button.setKeyEquivalent_("z")
+        undo_button.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
+
+    @objc.python_method
+    def _stable_identity_details(
+        self,
+        card: Any,
+        width: float,
+        height: float,
+        identity: PersonIdentity,
+    ) -> None:
+        self._label(
+            card,
+            20.0,
+            height - 156.0,
+            width - 40.0,
+            22.0,
+            "이름과 공유 설정은 안전하게 보존되어 있습니다.",
+            11.0,
+            True,
+        )
+        self._label(
+            card,
+            20.0,
+            height - 184.0,
+            width - 40.0,
+            22.0,
+            "현재 사진과 연결된 얼굴이 없습니다. 다음 인물 분석에서 일치하는 얼굴을 확인해 연결합니다.",
+            10.0,
+            False,
+            secondary=True,
+        )
+        if self._identity_repository is not None:
+            consent_rows = (
+                ("owner", "내 Story에 이름 표시"),
+                ("family_share", "가족 공유 Story에 이름 표시"),
+            )
+            for index, (audience, title) in enumerate(consent_rows):
+                toggle = NSButton.alloc().initWithFrame_(
+                    NSMakeRect(20.0, height - 232.0 - (index * 38.0), width - 40.0, 28.0)
+                )
+                toggle.setButtonType_(NSButtonTypeSwitch)
+                toggle.setTitle_(title)
+                toggle.setIdentifier_(audience)
+                toggle.setTarget_(self)
+                toggle.setAction_("toggleStableConsent:")
+                try:
+                    consent_allowed = self._identity_repository.current_consent(
+                        identity.stable_identity_id,
+                        audience,
+                    )
+                except (KeyError, OSError, sqlite3.Error, ValueError):
+                    consent_allowed = False
+                    toggle.setEnabled_(False)
+                    toggle.setToolTip_("인물 저장소를 읽을 수 없어 현재 설정을 표시할 수 없습니다.")
+                toggle.setState_(NSControlStateValueOn if consent_allowed else 0)
+                toggle.setAccessibilityLabel_(title)
+                card.addSubview_(toggle)
+        pending = []
+        if self._catalog.pending_alias_count:
+            pending.append(f"이름 확인 {self._catalog.pending_alias_count}건")
+        if self._catalog.pending_lineage_hold_count:
+            pending.append(f"기존 얼굴 연결 {self._catalog.pending_lineage_hold_count}건")
+        pending_text = " · ".join(pending) if pending else "대기 중인 인물 검토가 없습니다."
+        self._label(
+            card,
+            20.0,
+            104.0,
+            width - 40.0,
+            20.0,
+            pending_text,
+            9.5,
+            False,
+            secondary=True,
+        )
+        undo_title = self._undo_message or "이름 변경은 안정 인물 저장소에 기록됩니다."
+        self._label(card, 20.0, 50.0, max(180.0, width - 180.0), 18.0, undo_title, 8.8, False, secondary=True)
+        undo_button = self._button(
+            card,
+            width - 140.0,
+            38.0,
+            116.0,
+            30.0,
+            "실행 취소",
+            "undoLastChange:",
+            enabled=self._stable_name_undo is not None,
+        )
         undo_button.setKeyEquivalent_("z")
         undo_button.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
 
@@ -799,11 +1007,13 @@ class PhotosMcpPeopleManagerController(NSObject):
     @objc.python_method
     def _remember_undo(self, message: str) -> None:
         self._undo_snapshot = self._registry.snapshot()
+        self._stable_name_undo = None
         self._undo_message = message
 
     @objc.python_method
     def _remember_successful_change(self, snapshot: dict[str, Any], message: str) -> None:
         self._undo_snapshot = snapshot
+        self._stable_name_undo = None
         self._undo_message = f"{message}  ⌘Z로 실행 취소할 수 있습니다."
 
     @objc.python_method

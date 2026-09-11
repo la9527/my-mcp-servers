@@ -670,6 +670,30 @@ class PersonIdentityRepository:
             ).fetchall()
         return tuple(PersonIdentityRecord(**dict(row)) for row in rows)
 
+    def mapped_person_identity_id(
+        self,
+        *,
+        source_digest: str,
+        legacy_identity_id: str,
+    ) -> str | None:
+        """Resolve one private legacy registry id to its stable opaque id.
+
+        The legacy id is hashed before lookup and is never returned or stored
+        in plaintext by the stable repository. This is intended for local UI
+        adapters that must avoid rendering a migrated identity twice.
+        """
+
+        if not source_digest or not legacy_identity_id:
+            return None
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT person_identity_id
+                   FROM legacy_identity_mappings
+                   WHERE source_digest = ? AND legacy_identity_hash = ?""",
+                (source_digest, _private_value_hash(legacy_identity_id)),
+            ).fetchone()
+        return str(row["person_identity_id"]) if row is not None else None
+
     def identity_review_summary(self) -> IdentityReviewSummary:
         """Return current candidate/conflict counts without private labels."""
 

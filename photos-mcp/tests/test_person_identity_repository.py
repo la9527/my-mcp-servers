@@ -250,6 +250,19 @@ def test_v3_migration_dry_run_is_count_only_and_apply_preserves_manual_data(tmp_
         legacy_known_faces={"같은 이름": 2, "vendor-only": 1},
     )
     assert applied.applied is True
+    mapped_identity_id = repository.mapped_person_identity_id(
+        source_digest=applied.source_digest,
+        legacy_identity_id="person-old-a",
+    )
+    assert mapped_identity_id is not None
+    assert repository.get_identity(mapped_identity_id).display_name == "같은 이름"
+    assert (
+        repository.mapped_person_identity_id(
+            source_digest=applied.source_digest,
+            legacy_identity_id="unknown-legacy-id",
+        )
+        is None
+    )
     with sqlite3.connect(repository.path) as connection:
         identities = connection.execute(
             "SELECT identity_status FROM person_identities ORDER BY person_identity_id"

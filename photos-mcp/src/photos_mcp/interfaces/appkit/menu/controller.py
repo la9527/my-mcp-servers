@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+import sqlite3
 import subprocess
 from threading import Thread
 from typing import Any
@@ -91,6 +92,7 @@ from photos_mcp.application.preflight_service import (
     run_preflight_check,
     run_startup_checks,
 )
+from photos_mcp.application.person_identity_repository import PersonIdentityRepository
 from photos_mcp.interfaces.appkit.results.controller import PhotosMcpResultsController
 from photos_mcp.infrastructure.persistence.state_store import (
     HISTORICAL_JOB_STATUSES,
@@ -938,9 +940,18 @@ class PhotosMcpMenuController(NSObject):
         self._history_deletion_title = None
         self._history_deletion_detail = None
         self._history_deletion_indicator = None
+        self._identity_repository = None
         return self
 
     def install(self) -> None:
+        try:
+            self._identity_repository = PersonIdentityRepository()
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            # The rest of Photos MCP remains usable if the private identity
+            # repository is temporarily unavailable; the People screen will
+            # fall back to its legacy face catalog and explain the empty state.
+            logger.warning("Unable to open private person identity repository: %s", type(exc).__name__)
+            self._identity_repository = None
         status_bar = NSStatusBar.systemStatusBar()
         self._status_item = status_bar.statusItemWithLength_(NSVariableStatusItemLength)
         button = self._status_item.button()
