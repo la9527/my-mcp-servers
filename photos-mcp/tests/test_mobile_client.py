@@ -259,7 +259,7 @@ def _location_prefetch(*, date_from: str, date_to: str, scanned: int = 0, gps: i
         "gps_manifest_count": gps,
         "remaining_batches": 0,
         "extractor_version": "android-bridge-2",
-        "client_version": "0.7.2",
+        "client_version": "0.7.3",
         "completed_at": datetime.now(UTC).isoformat(),
     }
 
@@ -402,6 +402,8 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         )
 
         assert capabilities.status_code == 200
+        assert capabilities.json()["data"]["latest_android_app_version"] == "0.7.3"
+        assert capabilities.json()["data"]["minimum_android_app_version"] == "0.7.3"
         assert dashboard.status_code == 200
         assert dashboard.json()["data"]["daemon_status"] == "ready"
         assert runs.json()["data"][0]["run_id"] == "combined-mobile-test"
@@ -423,8 +425,8 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         assert events.status_code == 200
         assert len(events.json()["data"]) == 1
         assert download_page.status_code == 200
-        assert "PhotosMcp 앨범 0.7.2" in download_page.text
-        assert 'download="PhotosMcp-Album-0.7.2.apk"' in download_page.text
+        assert "PhotosMcp 앨범 0.7.3" in download_page.text
+        assert 'download="PhotosMcp-Album-0.7.3.apk"' in download_page.text
         assert "Chrome으로 열기" in download_page.text
         assert download_apk.status_code == 200
         assert download_apk.content == b"signed-test-apk"
@@ -569,6 +571,34 @@ def test_story_v3_people_projection_keeps_only_confirmed_presentation_fields() -
     assert legacy["people_overview"] == []
     assert "confirmed_people" not in legacy["photos"][0]
     assert "people_caption" not in legacy["chapters"][0]
+
+
+def test_story_projection_exposes_original_analysis_range_for_reanalysis() -> None:
+    projected = mobile_client_application.mobile_story_projection(
+        {
+            "story_id": "story-manual-range-001",
+            "date_from": "2026-08-14",
+            "date_to": "2026-08-16",
+            "scope": {
+                "kind": "capture_date_bounded",
+                "date_from": "2026-08-11",
+                "date_to": "2026-08-20",
+                "origin_run_id": "combined-manual-range-001",
+                "reanalysis_spec": {
+                    "date_from": "2026-08-11",
+                    "date_to": "2026-08-20",
+                    "sources": ["apple", "google"],
+                },
+            },
+        }
+    )
+
+    # Visible dates describe the photos selected for the Story, while analysis
+    # dates retain the complete original request scope used for GPS prefetch.
+    assert projected["date_from"] == "2026-08-14"
+    assert projected["date_to"] == "2026-08-16"
+    assert projected["analysis_date_from"] == "2026-08-11"
+    assert projected["analysis_date_to"] == "2026-08-20"
 
 
 def test_dashboard_reads_only_explicit_story_manifest_and_never_resurrects_deleted_story(

@@ -327,6 +327,17 @@ def mobile_story_projection(story: dict[str, Any]) -> dict[str, Any]:
         chapters.append(chapter_projection)
     generation = story.get("generation") if isinstance(story.get("generation"), dict) else {}
     scope = story.get("scope") if isinstance(story.get("scope"), dict) else {}
+    reanalysis_spec = (
+        scope.get("reanalysis_spec")
+        if isinstance(scope.get("reanalysis_spec"), dict)
+        else {}
+    )
+    analysis_date_from = _text(
+        reanalysis_spec.get("date_from") or scope.get("date_from"), 32
+    )
+    analysis_date_to = _text(
+        reanalysis_spec.get("date_to") or scope.get("date_to"), 32
+    )
     people_overview = []
     if people_are_server_derived:
         for item in story.get("people_overview") or []:
@@ -356,6 +367,11 @@ def mobile_story_projection(story: dict[str, Any]) -> dict[str, Any]:
         "closing": _text(story.get("closing"), 1000),
         "date_from": _text(story.get("date_from"), 32),
         "date_to": _text(story.get("date_to"), 32),
+        # The Story's visible date range is derived from selected photos and can
+        # be narrower than the capture-date scope that created it. Reanalysis
+        # must prefetch GPS for the original scope, not only the visible range.
+        "analysis_date_from": analysis_date_from,
+        "analysis_date_to": analysis_date_to,
         "updated_at": _text(story.get("updated_at"), 48),
         "origin": "manual" if scope.get("origin_run_id") else "automatic",
         "origin_run_id": _text(scope.get("origin_run_id"), 80),

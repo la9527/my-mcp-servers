@@ -86,7 +86,7 @@ from photos_mcp.interfaces.http.story_web import (
 API_PREFIX = "/mobile-client/v1"
 STORY_PREFIX = "/mobile-client/story"
 DOWNLOAD_PREFIX = "/mobile-client/download"
-ANDROID_APP_VERSION = "0.7.2"
+ANDROID_APP_VERSION = "0.7.3"
 MOBILE_SESSION_COOKIE = "photos_mobile_story_session"
 MAX_BODY_BYTES = 32 * 1024
 SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{8,160}$")
@@ -747,6 +747,8 @@ class MobileClientHttp:
             mobile_envelope(
                 {
                     "api_version": "v1",
+                    "latest_android_app_version": ANDROID_APP_VERSION,
+                    "minimum_android_app_version": ANDROID_APP_VERSION,
                     "max_photos_per_run": 1000,
                     "max_run_seconds": 21600,
                     "public_location_ingest_readable": False,

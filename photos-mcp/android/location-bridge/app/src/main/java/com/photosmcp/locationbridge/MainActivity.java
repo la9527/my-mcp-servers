@@ -910,7 +910,7 @@ public final class MainActivity extends Activity {
         receipt.put("extractor_version", "android-bridge-2");
         String clientVersion = getPackageManager()
                 .getPackageInfo(getPackageName(), 0).versionName;
-        receipt.put("client_version", clientVersion == null ? "0.7.2" : clientVersion);
+        receipt.put("client_version", clientVersion == null ? "0.7.3" : clientVersion);
         receipt.put("completed_at", Instant.now().toString());
         return receipt;
     }
@@ -1466,8 +1466,12 @@ public final class MainActivity extends Activity {
                                     confirmStoryReanalysis(
                                             storyId,
                                             title,
-                                            item.optString("date_from"),
-                                            item.optString("date_to"),
+                                            item.optString(
+                                                    "analysis_date_from",
+                                                    item.optString("date_from")),
+                                            item.optString(
+                                                    "analysis_date_to",
+                                                    item.optString("date_to")),
                                             displayRange));
                             entry.addView(reanalyze, matchWrap());
                             entry.addView(space(dp(6)));
@@ -1762,8 +1766,53 @@ public final class MainActivity extends Activity {
         controls.addView(appSettings);
         controls.addView(settingsStatus);
         page.addView(card(controls));
+
+        TextView versionStatus = bodyText(installedVersionLabel()
+                + "\n서버 최신 버전을 확인하고 있어요…");
+        page.addView(space(dp(12)));
+        page.addView(card(versionStatus));
         setScrollable(page);
         refreshSettingsStatus("대기 중");
+        refreshVersionStatus(versionStatus);
+    }
+
+    private String installedVersionLabel() {
+        try {
+            String version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            return "설치된 앱 버전 " + (version == null ? "확인 불가" : version);
+        } catch (PackageManager.NameNotFoundException unavailable) {
+            return "설치된 앱 버전 확인 불가";
+        }
+    }
+
+    private void refreshVersionStatus(TextView versionStatus) {
+        OwnerApiClient client = new OwnerApiClient(this);
+        if (!client.canConnect()) {
+            versionStatus.setText(installedVersionLabel()
+                    + "\n기기를 등록하면 최신 버전을 확인할 수 있어요.");
+            return;
+        }
+        executor.execute(() -> {
+            try {
+                JSONObject data = client.getCapabilities().getJSONObject("data");
+                String latest = data.optString("latest_android_app_version", "").trim();
+                String installed = getPackageManager()
+                        .getPackageInfo(getPackageName(), 0).versionName;
+                String result;
+                if (latest.isEmpty()) {
+                    result = installedVersionLabel() + "\n서버 최신 버전 정보가 없습니다.";
+                } else if (latest.equals(installed)) {
+                    result = installedVersionLabel() + "\n최신 버전입니다.";
+                } else {
+                    result = installedVersionLabel() + "\n업데이트 필요 · 최신 버전 " + latest;
+                }
+                String finalResult = result;
+                runOnUiThread(() -> versionStatus.setText(finalResult));
+            } catch (Exception error) {
+                runOnUiThread(() -> versionStatus.setText(installedVersionLabel()
+                        + "\n최신 버전 확인 실패 · Tailscale 연결을 확인해 주세요."));
+            }
+        });
     }
 
     private void showPeople() {

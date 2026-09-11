@@ -1,5 +1,6 @@
 # 실행 검증 보고서
 
+- [2026-09-11 Android 0.7.3 재분석 범위·버전 표시 교정](47-android-073-reanalysis-scope-and-version-status-2026-09-11.md): 휴대폰 GPS 70건이 정상 수신됐는데도 Story 표시 날짜와 원래 분석 범위가 달라 428로 거절되던 원인을 교정했다. 설정 하단의 설치/최신 버전 상태와 원인별 오류 안내를 추가하고 0.7.3 APK를 배포했다.
 - [2026-09-10 추천 버전·현재 결과와 읽기 전용 진단](43-recommendation-generation-and-readonly-audit-2026-09-10.md): 수동 전체 재분석의 복수 provider snapshot과 원자적 current 전환, 실패·증분·동시 실행 보호를 구현했다. 운영 로컬 파일 96개의 hash를 검증하고 과거 집계 차이 한 건을 자동 변경 없이 식별했다.
 - [2026-09-11 Google Picker 날짜 검색·분할 수집 실검증](44-google-picker-date-search-batch-validation-2026-09-11.md): 5일 범위 후보 probe 후 희소 창은 연속 선택하고 과밀 창은 하루로 좁히는 적응형 검색과 제한형 DOM 선택·완료 매크로를 구현했다. 실제 Google 계정에서 단일 날짜 10회와 5일 이동 창 10회를 각각 선택·API 조회·임시 다운로드까지 연속 검증했고, 100장 다운로드 묶음과 다운로드 완료 전 세션 보존 정책도 확인했다.
 - [2026-09-11 Android 수동 날짜 GPS 선동기화 구현·검증](45-android-manual-date-gps-prefetch-2026-09-11.md): 선택한 KST 촬영 날짜의 휴대폰 카메라 원본 GPS를 과거 체크포인트와 무관하게 먼저 암호화 전송하고, outbox 잔여가 0일 때만 수동 분석을 등록하도록 Android 0.7.1을 배포했다.

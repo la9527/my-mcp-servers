@@ -41,6 +41,10 @@ final class OwnerApiClient {
         return getJson(API + "/dashboard");
     }
 
+    JSONObject getCapabilities() throws Exception {
+        return getJson(API + "/capabilities");
+    }
+
     JSONObject getPeople() throws Exception {
         return getJson(API + "/people");
     }
@@ -290,7 +294,10 @@ final class OwnerApiClient {
             response = request(method, ownerOrigin() + path, body, accessToken(), extraHeaders);
         }
         if (response.status < 200 || response.status >= 300) {
-            throw new OwnerApiException(response.status, friendlyFailure(response.status));
+            throw new OwnerApiException(
+                    response.status,
+                    responseErrorCode(response.body),
+                    friendlyFailure(response.status, responseErrorCode(response.body)));
         }
         if (response.status == 204 || response.body.isEmpty()) return new JSONObject();
         return new JSONObject(response.body);
@@ -304,7 +311,7 @@ final class OwnerApiClient {
             response = requestBinary(ownerOrigin() + path, accessToken());
         }
         if (response.status < 200 || response.status >= 300) {
-            throw new OwnerApiException(response.status, friendlyFailure(response.status));
+            throw new OwnerApiException(response.status, "", friendlyFailure(response.status, ""));
         }
         if (response.body.length == 0 || response.body.length > 10 * 1024 * 1024) {
             throw new IllegalStateException("invalid result image size");
@@ -338,7 +345,8 @@ final class OwnerApiClient {
             if (response.status == 401) {
                 prefs().edit().remove("owner_enrolled").apply();
             }
-            throw new OwnerApiException(response.status, friendlyFailure(response.status));
+            String code = responseErrorCode(response.body);
+            throw new OwnerApiException(response.status, code, friendlyFailure(response.status, code));
         }
         JSONObject data = new JSONObject(response.body).getJSONObject("data");
         processAccessToken = data.getString("access_token");
@@ -373,7 +381,8 @@ final class OwnerApiClient {
         HttpResult response = request(
                 "POST", ownerOrigin() + API + "/owner-enroll", payload.toString(), null);
         if (response.status != 201) {
-            throw new OwnerApiException(response.status, friendlyFailure(response.status));
+            String code = responseErrorCode(response.body);
+            throw new OwnerApiException(response.status, code, friendlyFailure(response.status, code));
         }
         prefs().edit().putBoolean("owner_enrolled", true).commit();
     }
@@ -387,7 +396,8 @@ final class OwnerApiClient {
         HttpResult response = request(
                 "POST", ownerOrigin() + API + "/challenge", payload.toString(), null);
         if (response.status != 201) {
-            throw new OwnerApiException(response.status, friendlyFailure(response.status));
+            String code = responseErrorCode(response.body);
+            throw new OwnerApiException(response.status, code, friendlyFailure(response.status, code));
         }
         return new JSONObject(response.body).getJSONObject("data");
     }
@@ -511,11 +521,42 @@ final class OwnerApiClient {
         processTokenExpiresAt = 0L;
     }
 
-    private static String friendlyFailure(int status) {
+    private static String responseErrorCode(String body) {
+        if (body == null || body.isEmpty()) return "";
+        try {
+            return new JSONObject(body).optString("error", "").trim();
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static String friendlyFailure(int status, String code) {
         if (status == 403) return "Tailscale 연결과 소유자 로그인을 확인해 주세요.";
         if (status == 401) return "이 기기의 소유자 인증을 갱신할 수 없습니다.";
         if (status == 428) {
-            return "선택한 날짜의 GPS 동기화 확인이 필요합니다. 최신 앱에서 다시 실행해 주세요.";
+            if ("location_prefetch_scope_mismatch".equals(code)) {
+                return "GPS를 확인한 날짜와 원래 분석 날짜가 달라 재분석을 시작하지 않았습니다. "
+                        + "앱을 최신 버전으로 업데이트한 뒤 다시 실행해 주세요.";
+            }
+            if ("location_prefetch_not_received".equals(code)) {
+                return "휴대폰의 GPS 전송은 끝났지만 Mac에서 아직 모두 확인되지 않았습니다. "
+                        + "잠시 후 다시 실행해 주세요.";
+            }
+            if ("location_prefetch_stale".equals(code)) {
+                return "GPS 확인 완료 후 시간이 지나 영수증이 만료됐습니다. 다시 실행해 주세요.";
+            }
+            if ("location_prefetch_required".equals(code)) {
+                return "이 재분석에는 선택 날짜의 GPS 선동기화가 필요합니다. "
+                        + "앱을 최신 버전으로 업데이트한 뒤 다시 실행해 주세요.";
+            }
+            if ("location_prefetch_count_invalid".equals(code)) {
+                return "휴대폰의 사진 조회 수와 GPS 수가 맞지 않아 재분석을 시작하지 않았습니다.";
+            }
+            if ("location_prefetch_time_invalid".equals(code)
+                    || "location_prefetch_scope_invalid".equals(code)) {
+                return "GPS 동기화 확인 정보가 올바르지 않아 재분석을 시작하지 않았습니다.";
+            }
+            return "선택한 날짜의 GPS 동기화 확인이 필요합니다. 다시 실행해 주세요.";
         }
         if (status >= 500) return "Mac의 PhotosMcp 서비스가 아직 준비되지 않았습니다.";
         return "PhotosMcp에 연결하지 못했습니다.";
@@ -548,10 +589,12 @@ final class OwnerApiClient {
 
     static final class OwnerApiException extends Exception {
         final int status;
+        final String code;
 
-        OwnerApiException(int status, String message) {
+        OwnerApiException(int status, String code, String message) {
             super(message);
             this.status = status;
+            this.code = code == null ? "" : code;
         }
     }
 
