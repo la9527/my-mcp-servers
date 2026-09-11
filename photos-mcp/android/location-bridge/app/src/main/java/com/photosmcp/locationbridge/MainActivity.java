@@ -1802,9 +1802,11 @@ public final class MainActivity extends Activity {
                 if (latest.isEmpty()) {
                     result = installedVersionLabel() + "\n서버 최신 버전 정보가 없습니다.";
                 } else if (latest.equals(installed)) {
-                    result = installedVersionLabel() + "\n최신 버전입니다.";
+                    result = installedVersionLabel() + "\n서버 최신 버전 " + latest
+                            + "\n최신 버전입니다.";
                 } else {
-                    result = installedVersionLabel() + "\n업데이트 필요 · 최신 버전 " + latest;
+                    result = installedVersionLabel() + "\n서버 최신 버전 " + latest
+                            + "\n업데이트가 필요합니다.";
                 }
                 String finalResult = result;
                 runOnUiThread(() -> versionStatus.setText(finalResult));

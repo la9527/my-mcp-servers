@@ -79,7 +79,7 @@
 배포 APK SHA-256:
 
 ```text
-1cd0967fcd76ff75bfe21a09fb11e08a6d91acecce4c0e74d8a0ad3b60027432
+a0dbc90971ba3f5df257a7f3b9cb45f569eaca202f22bda53fc8c33097a7b03d
 ```
 
 ## 사용자 확인 순서
