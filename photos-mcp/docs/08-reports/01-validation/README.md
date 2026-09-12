@@ -1,5 +1,6 @@
 # 실행 검증 보고서
 
+- [2026-09-13 이미 확정된 얼굴의 Apple Photos 이름 후보 완료](51-already-confirmed-provider-alias-completion-2026-09-13.md): 얼굴 연결 2건은 완료됐지만 provider alias만 남아 있던 막힌 상태를 Mac·Android 공통 완료 경로로 복구하고, 이후 얼굴 확인에서 유일한 이름 후보를 같은 transaction에 포함하도록 보완했다.
 - [2026-09-12 Apple Photos 이름 후보 다중 얼굴 복구](50-provider-alias-multi-face-recovery-2026-09-12.md): 고해상도 그룹 사진의 YuNet 검출 스케일을 교정하고, 이름 후보 전용 얼굴 projection·번호 미리보기·사진 단위 복구 동작을 Mac과 Android 공통 경로에 연결했다. 운영 2인 사진과 전체 1,047개 회귀, standalone 설치본을 검증했다.
 - [2026-09-12 예외 중심 인물 인식 Mac/Android 구현](49-exception-only-people-recognition-mac-android-implementation-2026-09-12.md): schema v6 예외 큐, 반복 새 인물 묶음 확정, 자동 인식 profile, macOS/Android 동등 UI, 0.8.3 실기기 설치와 Tailnet Google 지도 경로를 검증했다.
 

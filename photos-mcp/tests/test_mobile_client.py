@@ -403,8 +403,8 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         )
 
         assert capabilities.status_code == 200
-        assert capabilities.json()["data"]["latest_android_app_version"] == "0.8.3"
-        assert capabilities.json()["data"]["minimum_android_app_version"] == "0.8.3"
+        assert capabilities.json()["data"]["latest_android_app_version"] == "0.8.4"
+        assert capabilities.json()["data"]["minimum_android_app_version"] == "0.8.4"
         assert capabilities.json()["data"]["features"]["people_automatic_recognition"] is False
         assert dashboard.status_code == 200
         assert dashboard.json()["data"]["daemon_status"] == "ready"
@@ -427,8 +427,8 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         assert events.status_code == 200
         assert len(events.json()["data"]) == 1
         assert download_page.status_code == 200
-        assert "PhotosMcp 앨범 0.8.3" in download_page.text
-        assert 'download="PhotosMcp-Album-0.8.3.apk"' in download_page.text
+        assert "PhotosMcp 앨범 0.8.4" in download_page.text
+        assert 'download="PhotosMcp-Album-0.8.4.apk"' in download_page.text
         assert "Chrome으로 열기" in download_page.text
         assert download_apk.status_code == 200
         assert download_apk.content == b"signed-test-apk"
@@ -1189,6 +1189,151 @@ def test_mobile_face_review_supports_multiple_people_crops_and_atomic_names(
             "아빠",
         }
         assert identities.get_provider_person_alias(alias.alias_id).alias_state == "owner_confirmed"
+
+
+def test_mobile_face_review_finishes_aliases_for_already_confirmed_faces(
+    tmp_path,
+) -> None:
+    identities = PersonIdentityRepository(tmp_path / "people" / "resolved-alias-mobile.db")
+    asset_id = "local-asset-mobile-000001"
+    private_root = identities.path.parent / "index-private"
+    (private_root / "review-crops").mkdir(parents=True)
+    (private_root / "previews").mkdir(parents=True)
+    Image.new("RGB", (800, 600), "#325c4e").save(private_root / "previews/group.jpg")
+    aliases = []
+    for index, (alias_name, display_name) in enumerate(
+        (("라병영", "병영"), ("라윤지", "윤지"))
+    ):
+        person = identities.create_identity(
+            display_name=display_name,
+            identity_status="user_confirmed",
+            name_status="user_confirmed",
+        )
+        face = identities.register_face_observation(
+            FaceObservationInput(
+                provider=None,
+                provider_asset_id=None,
+                local_asset_id=asset_id,
+                model_family="test",
+                model_version="v1",
+                embedding_dimension=4,
+                model_fingerprint="model-v1",
+                bbox_fingerprint=f"resolved-bbox-{index}",
+                crop_fingerprint=f"resolved-crop-{index}",
+            )
+        )
+        crop_ref = f"review-crops/resolved-{index}.jpg"
+        Image.new("RGB", (240, 240), (100 + index * 50, 120, 90)).save(
+            private_root / crop_ref
+        )
+        identities.upsert_face_review_artifacts(
+            face.face_observation_id,
+            review_crop_ref=crop_ref,
+            context_preview_ref="previews/group.jpg",
+            highlighted_context_ref="",
+        )
+        identities.register_person_review_item(
+            review_kind="quick_confirmation",
+            candidate_person_identity_id=None,
+            face_observation_id=face.face_observation_id,
+        )
+        identities.set_membership(
+            face.face_observation_id,
+            person.person_identity_id,
+            membership_state="owner_confirmed",
+            provenance="owner",
+            decision_policy_version="owner-v1",
+            expected_identity_revision=person.identity_revision,
+        )
+        aliases.append(
+            identities.register_provider_person_alias(
+                provider="apple_photos",
+                private_display_label=alias_name,
+                local_asset_id=asset_id,
+            )
+        )
+    identities.record_asset_face_index(
+        asset_id,
+        index_run_id=None,
+        model_fingerprint="model-v1",
+        index_state="completed",
+        detected_face_count=2,
+    )
+    app, ingest_device, ingest_key, _repository = _fixture(
+        tmp_path,
+        identity_repository=identities,
+    )
+
+    with TestClient(app, base_url="https://photos.example") as client:
+        token, _owner_key_id, owner_key, _challenge = _owner_session(
+            client, ingest_device, ingest_key
+        )
+        auth = {"Authorization": f"Bearer {token}"}
+        response = client.get(
+            "/mobile-client/v1/people/face-review/photos", headers=auth
+        )
+        assert response.status_code == 200, response.text
+        photo = response.json()["data"][0]
+        resolutions = photo["resolved_alias_assignments"]
+        assert photo["faces"] == []
+        assert photo["can_complete_resolved_aliases"] is True
+        assert {
+            (item["alias_display_label"], item["confirmed_display_name"])
+            for item in resolutions
+        } == {("라병영", "병영"), ("라윤지", "윤지")}
+        serialized = json.dumps(photo, ensure_ascii=False)
+        assert "person_identity_id" not in serialized
+        assert "face_observation_id" not in serialized
+
+        path = (
+            "/mobile-client/v1/people/face-review/photos/"
+            + photo["photo_review_handle"]
+            + "/assignments"
+        )
+        body = json.dumps(
+            {
+                "schema_version": 1,
+                "expected_review_revision": photo["review_revision"],
+                "assignments": [
+                    {
+                        "face_action_handle": item["face_action_handle"],
+                        "alias_action_handle": item["alias_action_handle"],
+                        "target": {
+                            "kind": "existing",
+                            "identity_action_handle": item[
+                                "identity_action_handle"
+                            ],
+                        },
+                    }
+                    for item in resolutions
+                ],
+                "face_decisions": [],
+            },
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        saved = client.post(
+            path,
+            content=body.encode("utf-8"),
+            headers=_signed_command_headers(
+                token,
+                owner_key,
+                path=path,
+                body=body,
+                prefix="resolved-aliases",
+            ),
+        )
+
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["data"]["confirmed_face_count"] == 2
+        assert all(
+            identities.get_provider_person_alias(alias.alias_id).alias_state
+            == "owner_confirmed"
+            for alias in aliases
+        )
+        assert client.get(
+            "/mobile-client/v1/people/face-review/photos", headers=auth
+        ).json()["data"] == []
 
 
 def test_signed_person_consent_is_idempotent_and_revision_safe(tmp_path) -> None:

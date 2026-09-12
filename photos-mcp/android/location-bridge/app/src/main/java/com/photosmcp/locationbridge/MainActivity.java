@@ -913,7 +913,7 @@ public final class MainActivity extends Activity {
         receipt.put("extractor_version", "android-bridge-2");
         String clientVersion = getPackageManager()
                 .getPackageInfo(getPackageName(), 0).versionName;
-        receipt.put("client_version", clientVersion == null ? "0.8.3" : clientVersion);
+        receipt.put("client_version", clientVersion == null ? "0.8.4" : clientVersion);
         receipt.put("completed_at", Instant.now().toString());
         return receipt;
     }

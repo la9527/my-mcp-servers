@@ -197,6 +197,15 @@ public final class PeopleReviewActivity extends Activity {
         }
         JSONArray faces = photo.optJSONArray("faces");
         if (faces == null) faces = new JSONArray();
+        JSONArray resolvedAliases = photo.optJSONArray("resolved_alias_assignments");
+        if (resolvedAliases != null && resolvedAliases.length() > 0 && faces.length() == 0) {
+            progress.setVisibility(View.GONE);
+            String date = photo.optString("capture_date_local", "");
+            progressLabel.setText("사진 " + (photoIndex + 1) + " / " + photos.length()
+                    + (date.isEmpty() ? "" : " · " + date));
+            renderResolvedAliasCompletion(photo, resolvedAliases, generation);
+            return;
+        }
         faceIndex = faces.length() == 0 ? 0 : Math.min(faceIndex, faces.length() - 1);
         progress.setVisibility(View.GONE);
         String date = photo.optString("capture_date_local", "");
@@ -411,6 +420,116 @@ public final class PeopleReviewActivity extends Activity {
         saves.addView(spaceHorizontal(8));
         saves.addView(next, weightedButton());
         content.addView(saves, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private void renderResolvedAliasCompletion(
+            JSONObject photo, JSONArray resolvedAliases, int generation) {
+        heading.setText("이름 힌트 확인");
+        LinearLayout summary = new LinearLayout(this);
+        summary.setOrientation(LinearLayout.VERTICAL);
+        summary.addView(label("얼굴 연결이 이미 완료됐어요", 20, ink, true));
+        summary.addView(space(6));
+        summary.addView(body(
+                "확정된 얼굴과 Apple Photos 이름을 확인한 뒤 이 사진을 마무리하세요. "
+                        + "기존 인물 연결은 변경되지 않습니다."));
+        content.addView(card(summary));
+
+        String contextUrl = photo.optString("context_image_url", "");
+        if (!contextUrl.isEmpty()) {
+            ImageView context = new ImageView(this);
+            context.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            context.setBackgroundColor(android.graphics.Color.rgb(14, 18, 16));
+            context.setImageResource(R.drawable.ic_image_placeholder);
+            context.setColorFilter(muted);
+            context.setContentDescription("확인 완료된 얼굴 위치가 표시된 사진");
+            LinearLayout.LayoutParams contextParams = new LinearLayout.LayoutParams(-1, dp(280));
+            contextParams.setMargins(0, dp(12), 0, dp(12));
+            content.addView(context, contextParams);
+            loadImage(context, contextUrl, generation);
+        }
+
+        for (int index = 0; index < resolvedAliases.length(); index++) {
+            JSONObject item = resolvedAliases.optJSONObject(index);
+            if (item == null) continue;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(12), dp(10), dp(12), dp(10));
+            ImageView crop = new ImageView(this);
+            crop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            crop.setImageResource(R.drawable.ic_image_placeholder);
+            crop.setColorFilter(muted);
+            String confirmedName = item.optString("confirmed_display_name", "인물");
+            crop.setContentDescription(confirmedName + " 확인 완료 얼굴");
+            row.addView(crop, new LinearLayout.LayoutParams(dp(76), dp(76)));
+            loadImage(crop, item.optString("crop_image_url", ""), generation);
+            TextView relationship = label(
+                    item.optString("alias_display_label", "이름 후보")
+                            + "  →  " + confirmedName + "\n확인 완료",
+                    15, ink, true);
+            relationship.setPadding(dp(14), 0, 0, 0);
+            row.addView(relationship, new LinearLayout.LayoutParams(0, -2, 1f));
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
+            rowParams.setMargins(0, 0, 0, dp(8));
+            content.addView(card(row), rowParams);
+        }
+
+        Button complete = primary(
+                "이 사진 이름 후보 " + resolvedAliases.length() + "건 완료");
+        complete.setContentDescription(
+                "확정된 얼굴은 그대로 두고 Apple Photos 이름 후보 "
+                        + resolvedAliases.length() + "건 완료");
+        complete.setEnabled(photo.optBoolean("can_complete_resolved_aliases", false));
+        complete.setOnClickListener(v -> completeResolvedAliases(photo, resolvedAliases));
+        content.addView(space(14));
+        content.addView(complete, fullButton());
+
+        Button reload = secondary("다시 불러오기");
+        reload.setOnClickListener(v -> loadReviews());
+        content.addView(space(8));
+        content.addView(reload, fullButton());
+    }
+
+    private void completeResolvedAliases(JSONObject photo, JSONArray resolvedAliases) {
+        JSONArray assignments = new JSONArray();
+        for (int index = 0; index < resolvedAliases.length(); index++) {
+            JSONObject resolution = resolvedAliases.optJSONObject(index);
+            if (resolution == null) continue;
+            try {
+                JSONObject target = new JSONObject();
+                target.put("kind", "existing");
+                target.put("identity_action_handle",
+                        resolution.optString("identity_action_handle", ""));
+                JSONObject assignment = new JSONObject();
+                assignment.put("face_action_handle",
+                        resolution.optString("face_action_handle", ""));
+                assignment.put("alias_action_handle",
+                        resolution.optString("alias_action_handle", ""));
+                assignment.put("target", target);
+                assignments.put(assignment);
+            } catch (Exception ignored) { }
+        }
+        if (assignments.length() != resolvedAliases.length()) {
+            Toast.makeText(this, "이름 연결 정보를 다시 불러와 주세요.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        progress.setVisibility(View.VISIBLE);
+        progressLabel.setText("이름 후보를 완료하는 중");
+        String photoHandle = photo.optString("photo_review_handle", "");
+        int revision = photo.optInt("review_revision", 1);
+        executor.execute(() -> {
+            try {
+                new OwnerApiClient(this).applyFaceReview(
+                        photoHandle, revision, assignments, new JSONArray());
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "이 사진의 이름 확인을 마쳤습니다.",
+                            Toast.LENGTH_SHORT).show();
+                    loadReviews();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> showFailure(error));
+            }
+        });
     }
 
     private void chooseAlias(String faceHandle, JSONArray aliases) {

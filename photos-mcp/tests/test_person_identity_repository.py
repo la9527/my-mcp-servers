@@ -1398,6 +1398,157 @@ def test_provider_alias_review_includes_system_suppressed_crop_but_not_owner_ign
     assert workspace.provider_alias_review_detail(asset_id)["faces"] == []
 
 
+def test_provider_alias_review_can_finish_unique_hints_for_already_confirmed_faces(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    asset_id = "local-provider-alias-already-confirmed"
+    people = []
+    faces = []
+    aliases = []
+    for index, (alias_name, display_name) in enumerate(
+        (("라병영", "병영"), ("라윤지", "윤지"))
+    ):
+        person = repository.create_identity(
+            display_name=display_name,
+            identity_status="user_confirmed",
+            name_status="user_confirmed",
+        )
+        face = repository.register_face_observation(
+            _local_observation(asset_id, crop=f"resolved-{index}")
+        )
+        repository.register_person_review_item(
+            review_kind="quick_confirmation",
+            candidate_person_identity_id=None,
+            face_observation_id=face.face_observation_id,
+        )
+        repository.upsert_face_review_artifacts(
+            face.face_observation_id,
+            review_crop_ref=f"review-crops/resolved-{index}.jpg",
+            context_preview_ref="previews/group.jpg",
+            highlighted_context_ref=f"highlights/resolved-{index}.jpg",
+        )
+        repository.set_membership(
+            face.face_observation_id,
+            person.person_identity_id,
+            membership_state="owner_confirmed",
+            provenance="owner",
+            decision_policy_version="owner-v1",
+            expected_identity_revision=person.identity_revision,
+        )
+        people.append(person)
+        faces.append(face)
+        aliases.append(
+            repository.register_provider_person_alias(
+                provider="apple_photos",
+                private_display_label=alias_name,
+                local_asset_id=asset_id,
+            )
+        )
+    repository.record_asset_face_index(
+        asset_id,
+        index_run_id=None,
+        model_fingerprint="model-a",
+        index_state="completed",
+        detected_face_count=2,
+    )
+    workspace = PeopleWorkspaceService(repository)
+
+    detail = workspace.provider_alias_review_detail(asset_id)
+
+    assert detail["faces"] == []
+    assert detail["can_complete_resolved_aliases"] is True
+    assert {
+        (item["alias_display_label"], item["confirmed_display_name"])
+        for item in detail["resolved_alias_assignments"]
+    } == {("라병영", "병영"), ("라윤지", "윤지")}
+    result = workspace.apply_asset_review(
+        local_asset_id=asset_id,
+        expected_review_revision=detail["review_revision"],
+        assignments=[
+            {
+                "face_observation_id": item["face_observation_id"],
+                "target_kind": "existing",
+                "person_identity_id": item["person_identity_id"],
+                "alias_id": item["alias_id"],
+            }
+            for item in detail["resolved_alias_assignments"]
+        ],
+        face_decisions=[],
+        device_fingerprint="test-device",
+        idempotency_key="finish-already-confirmed-aliases",
+        request_hash="finish-already-confirmed-aliases-hash",
+        actor="owner:test",
+    )
+
+    assert result["confirmed_face_count"] == 2
+    assert all(
+        repository.get_provider_person_alias(alias.alias_id).alias_state
+        == "owner_confirmed"
+        for alias in aliases
+    )
+    assert {
+        item.person_identity_id
+        for item in repository.latest_owner_confirmed_memberships(asset_id)
+    } == {person.person_identity_id for person in people}
+
+
+def test_face_review_automatically_carries_one_unambiguous_provider_hint(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    asset_id = "local-provider-alias-auto-carry"
+    person = repository.create_identity(
+        display_name="병영",
+        identity_status="user_confirmed",
+        name_status="user_confirmed",
+    )
+    face = repository.register_face_observation(
+        _local_observation(asset_id, crop="auto-carry")
+    )
+    repository.register_person_review_item(
+        review_kind="quick_confirmation",
+        candidate_person_identity_id=None,
+        face_observation_id=face.face_observation_id,
+    )
+    alias = repository.register_provider_person_alias(
+        provider="apple_photos",
+        private_display_label="라병영",
+        local_asset_id=asset_id,
+    )
+    repository.record_asset_face_index(
+        asset_id,
+        index_run_id=None,
+        model_fingerprint="model-a",
+        index_state="completed",
+        detected_face_count=1,
+    )
+    workspace = PeopleWorkspaceService(repository)
+    detail = workspace.asset_review_detail(asset_id)
+
+    workspace.apply_asset_review(
+        local_asset_id=asset_id,
+        expected_review_revision=detail["review_revision"],
+        assignments=[
+            {
+                "face_observation_id": face.face_observation_id,
+                "target_kind": "existing",
+                "person_identity_id": person.person_identity_id,
+            }
+        ],
+        face_decisions=[],
+        device_fingerprint="test-device",
+        idempotency_key="auto-carry-provider-alias",
+        request_hash="auto-carry-provider-alias-hash",
+        actor="owner:test",
+    )
+
+    assert (
+        repository.get_provider_person_alias(alias.alias_id).alias_state
+        == "owner_confirmed"
+    )
+
+
 def test_face_index_run_and_review_item_are_idempotent(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     run = repository.create_face_index_run(

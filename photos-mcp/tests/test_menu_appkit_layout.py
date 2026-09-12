@@ -44,14 +44,12 @@ from photos_mcp.local_file_selection_appkit import (
     _scan_local_photos,
 )
 from photos_mcp.interfaces.appkit.main.controller import PhotosMcpMainWindowController
-from photos_mcp.interfaces.appkit.people.controller import (
-    PhotosMcpPeopleManagerController,
-    _alias_matches_suggested_name,
-)
+from photos_mcp.interfaces.appkit.people.controller import PhotosMcpPeopleManagerController
 from photos_mcp.interfaces.appkit.people.drag_views import IdentityDragHandle, IdentityDropRowView
 from photos_mcp.interfaces.appkit.classification import controller as classification_controller_module
 from photos_mcp.application.person_identity_management import PeopleCatalog, PersonFace, PersonIdentity
 from photos_mcp.application.person_identity_repository import PersonIdentityRepository
+from photos_mcp.application.people_workspace import provider_alias_matches_identity_name
 from photos_mcp.ui_theme import scaled_font_size
 
 
@@ -59,10 +57,10 @@ pytestmark = pytest.mark.filterwarnings("ignore::objc.ObjCPointerWarning")
 
 
 def test_provider_alias_name_can_preselect_one_matching_face() -> None:
-    assert _alias_matches_suggested_name("성 김민지", "김민지") is True
-    assert _alias_matches_suggested_name("김민지", "김민지") is True
-    assert _alias_matches_suggested_name("다른 사람", "김민지") is False
-    assert _alias_matches_suggested_name("A", "A") is False
+    assert provider_alias_matches_identity_name("성 김민지", "김민지") is True
+    assert provider_alias_matches_identity_name("김민지", "김민지") is True
+    assert provider_alias_matches_identity_name("다른 사람", "김민지") is False
+    assert provider_alias_matches_identity_name("A", "A") is False
 
 
 def test_desktop_typography_scale_prioritizes_body_readability() -> None:

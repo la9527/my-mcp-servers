@@ -41,7 +41,10 @@ from photos_mcp.application.person_identity_management import (
     merge_stable_people_catalog,
 )
 from photos_mcp.application.person_indexing import PersonIndexingService, face_runtime_status
-from photos_mcp.application.people_workspace import PeopleWorkspaceService
+from photos_mcp.application.people_workspace import (
+    PeopleWorkspaceService,
+    provider_alias_matches_identity_name,
+)
 from photos_mcp.application.share_image_service import ShareImageError, ShareImageService
 from photos_mcp.application.story_generation import refresh_all_story_location_projections
 from photos_mcp.interfaces.appkit.results.collection_item import cached_image
@@ -63,16 +66,6 @@ _LIST_WIDTH = 286.0
 _FACE_CARD_WIDTH = 142.0
 _FACE_CARD_HEIGHT = 184.0
 _FACE_CARD_GAP = 12.0
-
-
-def _alias_matches_suggested_name(alias_label: str, suggested_name: str) -> bool:
-    alias_value = "".join(str(alias_label or "").split())
-    suggested_value = "".join(str(suggested_name or "").split())
-    return len(suggested_value) >= 2 and (
-        alias_value == suggested_value
-        or alias_value.endswith(suggested_value)
-        or suggested_value.endswith(alias_value)
-    )
 
 
 class PhotosMcpPeopleManagerController(NSObject):
@@ -411,6 +404,62 @@ class PhotosMcpPeopleManagerController(NSObject):
             )
         except (KeyError, OSError, sqlite3.Error, ValueError) as exc:
             self._alert("인물을 연결할 수 없습니다", str(exc))
+            return
+        self._advance_alias_after_change()
+
+    def completeResolvedAliases_(self, _sender) -> None:
+        """Finish provider hints whose exact faces were already owner-confirmed."""
+
+        alias = self._selected_alias()
+        detail, _face = self._selected_alias_face_review(alias)
+        if alias is None or self._identity_repository is None or detail is None:
+            self._alert(
+                "이름 후보를 완료할 수 없습니다",
+                "최신 인물 정보를 다시 불러온 뒤 시도해 주세요.",
+            )
+            return
+        resolutions = list(detail.get("resolved_alias_assignments") or [])
+        if (
+            not resolutions
+            or not bool(detail.get("can_complete_resolved_aliases"))
+        ):
+            self._alert(
+                "이름 연결을 한 번 더 확인해 주세요",
+                "이름이 한 얼굴에만 명확하게 대응될 때 일괄 완료할 수 있습니다.",
+            )
+            return
+        assignments = [
+            {
+                "face_observation_id": str(item["face_observation_id"]),
+                "target_kind": "existing",
+                "person_identity_id": str(item["person_identity_id"]),
+                "alias_id": str(item["alias_id"]),
+            }
+            for item in resolutions
+        ]
+        try:
+            result = PeopleWorkspaceService(
+                self._identity_repository,
+                run_repository=self._menu_controller._state_store.run_repository,
+            ).apply_asset_review(
+                local_asset_id=alias.local_asset_id,
+                expected_review_revision=int(detail["review_revision"]),
+                assignments=assignments,
+                face_decisions=[],
+                device_fingerprint="mac-owner-app",
+                idempotency_key=f"mac-resolved-aliases-{uuid.uuid4()}",
+                request_hash=uuid.uuid4().hex,
+                actor="owner:mac-app",
+            )
+            refresh_all_story_location_projections(
+                self._menu_controller._state_store.run_repository,
+                identity_repository=self._identity_repository,
+            )
+            self._identity_repository.complete_story_refresh_outbox(
+                str(result["decision_group_id"])
+            )
+        except (KeyError, OSError, sqlite3.Error, ValueError) as exc:
+            self._alert("이름 후보를 완료할 수 없습니다", str(exc))
             return
         self._advance_alias_after_change()
 
@@ -1368,7 +1417,7 @@ class PhotosMcpPeopleManagerController(NSObject):
         if face is None:
             matching_faces = []
             for item in faces:
-                if _alias_matches_suggested_name(
+                if provider_alias_matches_identity_name(
                     str(alias.private_display_label or ""),
                     str(item.get("suggested_display_name") or ""),
                 ):
@@ -1651,6 +1700,10 @@ class PhotosMcpPeopleManagerController(NSObject):
         card = self._card(parent, x, y, width, height, selected=True)
         detail, selected_face = self._selected_alias_face_review(alias)
         faces = list((detail or {}).get("faces") or [])
+        resolved_aliases = list(
+            (detail or {}).get("resolved_alias_assignments") or []
+        )
+        resolved_only = bool(resolved_aliases) and not faces
         self._label(card, 20.0, height - 42.0, width - 40.0, 24.0, "Apple Photos 이름 후보", 16.0, True)
         self._label(card, 20.0, height - 68.0, width - 40.0, 20.0, alias.private_display_label, 12.0, True, accent=True)
         try:
@@ -1663,24 +1716,29 @@ class PhotosMcpPeopleManagerController(NSObject):
         source_line = "Apple Photos" + (f" · {capture_date}" if capture_date else "")
         self._label(card, 20.0, height - 92.0, width - 236.0, 18.0, source_line, 9.5, False, secondary=True)
         reindexing = self._index_running and self._alias_indexing_asset_id == alias.local_asset_id
-        reindex_button = self._button(
-            card,
-            width - 206.0,
-            height - 100.0,
-            186.0,
-            30.0,
-            "얼굴 찾는 중…" if reindexing else "이 사진 얼굴 다시 찾기",
-            "reindexAliasPhoto:",
-            enabled=not self._index_running and self._face_runtime.status == "ready",
-        )
-        reindex_button.setAccessibilityHelp_(
-            "현재 사진만 다시 분석하고, 기존에 직접 확정한 얼굴 연결은 보존합니다."
-        )
-        guide = (
-            "번호와 얼굴 crop을 비교해 이 이름에 해당하는 사람을 선택하세요."
-            if faces
-            else "선택할 얼굴이 없습니다. ‘이 사진 얼굴 다시 찾기’를 눌러 복구할 수 있습니다."
-        )
+        if not resolved_only:
+            reindex_button = self._button(
+                card,
+                width - 206.0,
+                height - 100.0,
+                186.0,
+                30.0,
+                "얼굴 찾는 중…" if reindexing else "이 사진 얼굴 다시 찾기",
+                "reindexAliasPhoto:",
+                enabled=not self._index_running and self._face_runtime.status == "ready",
+            )
+            reindex_button.setAccessibilityHelp_(
+                "현재 사진만 다시 분석하고, 기존에 직접 확정한 얼굴 연결은 보존합니다."
+            )
+        if resolved_only:
+            guide = (
+                f"얼굴 {len(resolved_aliases)}명의 인물 연결이 이미 완료되었습니다. "
+                "아래 이름 연결을 확인하고 이 사진을 마무리하세요."
+            )
+        elif faces:
+            guide = "번호와 얼굴 crop을 비교해 이 이름에 해당하는 사람을 선택하세요."
+        else:
+            guide = "검출된 얼굴이 없습니다. 이 사진의 얼굴을 다시 찾아 주세요."
         if self._alias_index_message and (
             not self._alias_indexing_asset_id
             or self._alias_indexing_asset_id == alias.local_asset_id
@@ -1750,38 +1808,52 @@ class PhotosMcpPeopleManagerController(NSObject):
             image_view.setImage_(cached_image(str(image_path)))
         image_view.setAccessibilityLabel_(f"{alias.private_display_label} 후보 사진")
         card.addSubview_(image_view)
+        display_faces = resolved_aliases if resolved_only else faces
+        face_summary = (
+            f"확인 완료된 얼굴 {len(display_faces)}명 · 이름 후보 연결을 마무리하세요"
+            if resolved_only
+            else f"사진 속 얼굴 {len(display_faces)}개 · 이름에 해당하는 얼굴을 선택하세요"
+        )
         self._label(
             card,
             20.0,
             246.0,
             width - 40.0,
             18.0,
-            f"사진 속 얼굴 {len(faces)}개 · 이름에 해당하는 얼굴을 선택하세요",
+            face_summary,
             9.5,
             True,
-            secondary=not bool(faces),
+            secondary=not bool(display_faces),
         )
         face_scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(20.0, 150.0, width - 40.0, 92.0)
         )
         face_scroll.setHasHorizontalScroller_(True)
         face_scroll.setDrawsBackground_(False)
-        face_document_width = max(width - 40.0, len(faces) * 86.0)
+        face_document_width = max(width - 40.0, len(display_faces) * 110.0)
         face_document = NSView.alloc().initWithFrame_(
             NSMakeRect(0.0, 0.0, face_document_width, 78.0)
         )
         face_scroll.setDocumentView_(face_document)
-        for index, face in enumerate(faces):
+        for index, face in enumerate(display_faces):
             face_id = str(face.get("face_observation_id") or "")
             selected = face_id == self._selected_alias_face_id
-            button = NSButton.alloc().initWithFrame_(NSMakeRect(index * 86.0, 0.0, 78.0, 74.0))
-            button.setTitle_(f"얼굴 {index + 1}" + (" ✓" if selected else ""))
+            button = NSButton.alloc().initWithFrame_(NSMakeRect(index * 110.0, 0.0, 102.0, 74.0))
+            resolved_name = str(face.get("confirmed_display_name") or "")
+            button.setTitle_(
+                f"{resolved_name} ✓"
+                if resolved_only
+                else f"얼굴 {index + 1}" + (" ✓" if selected else "")
+            )
             button.setImagePosition_(NSImageAbove)
-            button.setTarget_(self)
-            button.setAction_("selectAliasFace:")
+            if not resolved_only:
+                button.setTarget_(self)
+                button.setAction_("selectAliasFace:")
             button.setIdentifier_(face_id)
             button.setAccessibilityLabel_(
-                f"얼굴 {index + 1}, {'선택됨' if selected else '선택 안 됨'}"
+                f"{resolved_name}, 확인 완료"
+                if resolved_only
+                else f"얼굴 {index + 1}, {'선택됨' if selected else '선택 안 됨'}"
             )
             try:
                 crop_path = workspace.artifact_path(str(face.get("review_crop_ref") or ""))
@@ -1790,6 +1862,50 @@ class PhotosMcpPeopleManagerController(NSObject):
                 pass
             face_document.addSubview_(button)
         card.addSubview_(face_scroll)
+        if resolved_only:
+            relationship = " · ".join(
+                f"{item.get('alias_display_label')} → {item.get('confirmed_display_name')}"
+                for item in resolved_aliases
+            )
+            self._label(
+                card,
+                20.0,
+                116.0,
+                width - 40.0,
+                24.0,
+                relationship,
+                11.0,
+                True,
+                accent=True,
+            )
+            can_complete = bool(
+                (detail or {}).get("can_complete_resolved_aliases")
+            )
+            self._button(
+                card,
+                20.0,
+                68.0,
+                min(280.0, width - 244.0),
+                34.0,
+                f"이 사진 이름 후보 {len(resolved_aliases)}건 완료",
+                "completeResolvedAliases:",
+                primary=True,
+                enabled=can_complete,
+            )
+            self._button(card, width - 214.0, 68.0, 94.0, 30.0, "후보 제외", "rejectAlias:")
+            self._button(card, width - 110.0, 68.0, 90.0, 30.0, "나중에", "deferAlias:")
+            self._label(
+                card,
+                20.0,
+                34.0,
+                width - 40.0,
+                18.0,
+                "완료하면 기존 얼굴 연결은 그대로 두고 Apple Photos 이름 후보만 확정합니다.",
+                8.8,
+                False,
+                secondary=True,
+            )
+            return
         self._alias_identity_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(20.0, 112.0, min(260.0, width - 220.0), 30.0), False
         )

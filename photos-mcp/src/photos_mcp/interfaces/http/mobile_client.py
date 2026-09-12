@@ -90,7 +90,7 @@ from photos_mcp.interfaces.http.story_web import (
 API_PREFIX = "/mobile-client/v1"
 STORY_PREFIX = "/mobile-client/story"
 DOWNLOAD_PREFIX = "/mobile-client/download"
-ANDROID_APP_VERSION = "0.8.3"
+ANDROID_APP_VERSION = "0.8.4"
 MOBILE_SESSION_COOKIE = "photos_mobile_story_session"
 MAX_BODY_BYTES = 32 * 1024
 SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{8,160}$")
@@ -1529,6 +1529,52 @@ class MobileClientHttp:
                     "identity_suggestion": suggestion,
                 }
             )
+        resolved_alias_assignments: list[dict[str, Any]] = []
+        for item in detail.get("resolved_alias_assignments") or []:
+            person_identity_id = str(item.get("person_identity_id") or "")
+            try:
+                identity = self._identity_repository.get_identity(person_identity_id)
+            except KeyError:
+                continue
+            face_handle = self._issue_face_action_handle(
+                device_id=device_id,
+                local_asset_id=str(detail["local_asset_id"]),
+                face_observation_id=str(item.get("face_observation_id") or ""),
+                review_revision=review_revision,
+            )
+            crop_ref = str(item.get("review_crop_ref") or "")
+            crop_handle = (
+                self._issue_people_image_handle(
+                    device_id=device_id, artifact_ref=crop_ref
+                )
+                if crop_ref
+                else ""
+            )
+            resolved_alias_assignments.append(
+                {
+                    "alias_display_label": str(
+                        item.get("alias_display_label") or ""
+                    )[:80],
+                    "confirmed_display_name": str(
+                        item.get("confirmed_display_name") or ""
+                    )[:80],
+                    "face_action_handle": face_handle,
+                    "alias_action_handle": self._issue_alias_action_handle(
+                        device_id=device_id,
+                        alias_id=str(item.get("alias_id") or ""),
+                    ),
+                    "identity_action_handle": self._issue_identity_action_handle(
+                        device_id=device_id,
+                        person_identity_id=person_identity_id,
+                        identity_revision=identity.identity_revision,
+                    ),
+                    "crop_image_url": (
+                        f"{API_PREFIX}/people/review-images/{crop_handle}"
+                        if crop_handle
+                        else ""
+                    ),
+                }
+            )
         identity_choices = []
         for choice in self._people_workspace().identity_choices():
             representative_ref = str(choice.get("representative_face_ref") or "")
@@ -1540,6 +1586,7 @@ class MobileClientHttp:
                         device_id=device_id, artifact_ref=representative_ref
                     )
                 )
+            automatic = dict(choice.get("automation_profile") or {})
             identity_choices.append(
                 {
                     "display_name": str(choice["display_name"])[:80],
@@ -1550,7 +1597,23 @@ class MobileClientHttp:
                         identity_revision=int(choice["identity_revision"]),
                     ),
                     "representative_face_url": representative_url,
-                    "automatic_recognition": dict(choice.get("automation_profile") or {}),
+                    "automatic_recognition": {
+                        "profile_revision": int(
+                            automatic.get("profile_revision") or 0
+                        ),
+                        "auto_enabled": bool(automatic.get("auto_enabled", True)),
+                        "suspended": bool(automatic.get("suspended", False)),
+                        "owner_confirmed_anchor_count": int(
+                            automatic.get("owner_confirmed_anchor_count") or 0
+                        ),
+                        "independent_context_count": int(
+                            automatic.get("independent_context_count") or 0
+                        ),
+                        "maturity": str(automatic.get("maturity") or "learning")[:24],
+                        "policy_version": str(
+                            automatic.get("policy_version") or ""
+                        )[:48],
+                    },
                 }
             )
         return {
@@ -1565,6 +1628,10 @@ class MobileClientHttp:
             ),
             "aliases": aliases,
             "faces": faces,
+            "resolved_alias_assignments": resolved_alias_assignments,
+            "can_complete_resolved_aliases": bool(
+                detail.get("can_complete_resolved_aliases")
+            ),
             "identity_choices": identity_choices,
         }
 
@@ -1588,7 +1655,10 @@ class MobileClientHttp:
         if offset == 0:
             for detail in self._people_workspace().list_provider_alias_reviews(limit=limit):
                 asset_id = str(detail.get("local_asset_id") or "")
-                if asset_id and detail.get("faces"):
+                if asset_id and (
+                    detail.get("faces")
+                    or detail.get("resolved_alias_assignments")
+                ):
                     details.append(detail)
                     seen_asset_ids.add(asset_id)
         for detail in page.items:
@@ -1622,6 +1692,10 @@ class MobileClientHttp:
         local_asset_id, issued_revision = binding
         try:
             detail = self._people_workspace().asset_review_detail(local_asset_id)
+            if detail.get("aliases"):
+                detail = self._people_workspace().provider_alias_review_detail(
+                    local_asset_id
+                )
         except (KeyError, RuntimeError):
             return Response(status_code=404, headers=API_HEADERS)
         if int(detail.get("review_revision") or 0) != issued_revision:

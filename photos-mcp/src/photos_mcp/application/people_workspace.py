@@ -11,6 +11,24 @@ from photos_mcp.application.person_identity_repository import PersonIdentityRepo
 from photos_mcp.application.people_automation_policy import PEOPLE_AUTOMATION_POLICY_VERSION
 
 
+def provider_alias_matches_identity_name(alias_label: str, identity_name: str) -> bool:
+    """Return a conservative match for a private provider label and owner name.
+
+    Apple Photos can expose a full name while the owner-facing identity uses a
+    given name or family nickname.  Whitespace-insensitive suffix matching keeps
+    that useful relationship, but one-character names are deliberately excluded.
+    Callers must still enforce a one-to-one match within the photo before acting.
+    """
+
+    alias_value = "".join(str(alias_label or "").split())
+    identity_value = "".join(str(identity_name or "").split())
+    return len(identity_value) >= 2 and (
+        alias_value == identity_value
+        or alias_value.endswith(identity_value)
+        or identity_value.endswith(alias_value)
+    )
+
+
 @dataclass(frozen=True)
 class PeopleReviewPage:
     items: tuple[dict[str, Any], ...]
@@ -130,8 +148,26 @@ class PeopleWorkspaceService:
                 "aliases": [],
             }
         choices: list[dict[str, Any]] = []
+        resolved_faces: list[dict[str, Any]] = []
         for raw_face in detail.get("faces") or []:
-            if raw_face.get("confirmed_person_identity_id"):
+            confirmed_person_id = str(
+                raw_face.get("confirmed_person_identity_id") or ""
+            )
+            if confirmed_person_id:
+                try:
+                    identity = self.identity_repository.get_identity(
+                        confirmed_person_id
+                    )
+                except KeyError:
+                    continue
+                if (
+                    identity.identity_status == "user_confirmed"
+                    and identity.name_status == "user_confirmed"
+                    and identity.display_name.strip()
+                ):
+                    face = dict(raw_face)
+                    face["confirmed_display_name"] = identity.display_name.strip()
+                    resolved_faces.append(face)
                 continue
             review_state = str(raw_face.get("review_state") or "pending")
             review_kind = str(raw_face.get("review_kind") or "")
@@ -151,6 +187,55 @@ class PeopleWorkspaceService:
             face["manual_alias_choice"] = True
             choices.append(face)
 
+        pending_aliases = [dict(value) for value in (detail.get("aliases") or [])]
+        proposed_resolutions: list[dict[str, Any]] = []
+        for alias in pending_aliases:
+            matching_faces = [
+                face
+                for face in resolved_faces
+                if provider_alias_matches_identity_name(
+                    str(alias.get("private_display_label") or ""),
+                    str(face.get("confirmed_display_name") or ""),
+                )
+            ]
+            if len(matching_faces) != 1:
+                continue
+            face = matching_faces[0]
+            proposed_resolutions.append(
+                {
+                    "alias_id": str(alias.get("alias_id") or ""),
+                    "alias_display_label": str(
+                        alias.get("private_display_label") or ""
+                    ),
+                    "face_observation_id": str(
+                        face.get("face_observation_id") or ""
+                    ),
+                    "person_identity_id": str(
+                        face.get("confirmed_person_identity_id") or ""
+                    ),
+                    "confirmed_display_name": str(
+                        face.get("confirmed_display_name") or ""
+                    ),
+                    "review_crop_ref": str(face.get("review_crop_ref") or ""),
+                    "highlighted_context_ref": str(
+                        face.get("highlighted_context_ref") or ""
+                    ),
+                }
+            )
+        face_use_counts: dict[str, int] = {}
+        person_use_counts: dict[str, int] = {}
+        for item in proposed_resolutions:
+            face_id = str(item["face_observation_id"])
+            person_id = str(item["person_identity_id"])
+            face_use_counts[face_id] = face_use_counts.get(face_id, 0) + 1
+            person_use_counts[person_id] = person_use_counts.get(person_id, 0) + 1
+        resolved_alias_assignments = [
+            item
+            for item in proposed_resolutions
+            if face_use_counts.get(str(item["face_observation_id"])) == 1
+            and person_use_counts.get(str(item["person_identity_id"])) == 1
+        ]
+
         asset: dict[str, Any] = {}
         if self.run_repository is not None:
             try:
@@ -168,6 +253,10 @@ class PeopleWorkspaceService:
             **detail,
             "faces": choices,
             "actionable_face_count": len(choices),
+            "resolved_faces": resolved_faces,
+            "resolved_alias_assignments": resolved_alias_assignments,
+            "can_complete_resolved_aliases": bool(pending_aliases)
+            and len(resolved_alias_assignments) == len(pending_aliases),
             "capture_date_local": str(asset.get("capture_date_local") or "")[:10],
             "source": str(asset.get("source") or asset.get("provider") or ""),
             "numbered_context_ref": numbered_ref,
@@ -276,16 +365,84 @@ class PeopleWorkspaceService:
         request_hash: str,
         actor: str,
     ) -> dict[str, Any]:
+        assignment_values = [dict(value) for value in assignments]
+        self._attach_unambiguous_provider_aliases(
+            local_asset_id=local_asset_id,
+            assignments=assignment_values,
+        )
         return self.identity_repository.apply_asset_people_review(
             local_asset_id=local_asset_id,
             expected_review_revision=expected_review_revision,
-            assignments=assignments,
+            assignments=assignment_values,
             face_decisions=face_decisions,
             device_fingerprint=device_fingerprint,
             idempotency_key=idempotency_key,
             request_hash=request_hash,
             actor=actor,
         )
+
+    def _attach_unambiguous_provider_aliases(
+        self,
+        *,
+        local_asset_id: str,
+        assignments: list[dict[str, Any]],
+    ) -> None:
+        """Carry a unique provider hint with a face decision when clients omit it.
+
+        This prevents a confirmed face and its Apple Photos name hint from
+        becoming two disconnected review states.  Ambiguous matches are left for
+        explicit owner review.
+        """
+
+        if not assignments:
+            return
+        try:
+            detail = self.identity_repository.asset_people_review_detail(
+                local_asset_id
+            )
+        except KeyError:
+            return
+        aliases = [
+            dict(alias)
+            for alias in (detail.get("aliases") or [])
+            if str(alias.get("alias_id") or "")
+        ]
+        explicitly_used = {
+            str(assignment.get("alias_id") or "")
+            for assignment in assignments
+            if str(assignment.get("alias_id") or "")
+        }
+        proposals: list[tuple[int, str]] = []
+        for index, assignment in enumerate(assignments):
+            if assignment.get("alias_id"):
+                continue
+            target_kind = str(assignment.get("target_kind") or "")
+            display_name = str(assignment.get("display_name") or "").strip()
+            if target_kind == "existing":
+                try:
+                    display_name = self.identity_repository.get_identity(
+                        str(assignment.get("person_identity_id") or "")
+                    ).display_name.strip()
+                except KeyError:
+                    continue
+            if not display_name:
+                continue
+            matching_aliases = [
+                alias
+                for alias in aliases
+                if str(alias.get("alias_id") or "") not in explicitly_used
+                and provider_alias_matches_identity_name(
+                    str(alias.get("private_display_label") or ""), display_name
+                )
+            ]
+            if len(matching_aliases) == 1:
+                proposals.append((index, str(matching_aliases[0]["alias_id"])))
+        alias_counts: dict[str, int] = {}
+        for _index, alias_id in proposals:
+            alias_counts[alias_id] = alias_counts.get(alias_id, 0) + 1
+        for index, alias_id in proposals:
+            if alias_counts[alias_id] == 1:
+                assignments[index]["alias_id"] = alias_id
 
     @staticmethod
     def stable_revision(value: Any) -> str:
