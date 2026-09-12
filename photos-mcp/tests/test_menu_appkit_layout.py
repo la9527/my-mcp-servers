@@ -242,7 +242,7 @@ def test_main_window_people_tab_has_a_local_only_empty_state() -> None:
         if isinstance(view, NSTextField)
     }
 
-    assert {"인물 관리", "인물", "등록된 인물이 없습니다"}.issubset(labels)
+    assert {"인물 관리", "관리 중인 인물 0명", "등록된 인물이 없습니다"}.issubset(labels)
 
 
 def test_main_window_people_tab_shows_stable_identity_without_face_cache(tmp_path) -> None:
@@ -270,11 +270,21 @@ def test_main_window_people_tab_shows_stable_identity_without_face_cache(tmp_pat
     }
 
     assert "보존된 인물" in labels
-    assert "사진 연결 필요 · 설정 보존됨" in labels
-    assert "내 Story에 이름 표시" in buttons
-    assert "가족 공유 Story에 이름 표시" in buttons
+    assert "사진 0장 · 직접 확인 0장" in labels
+    assert "내 Story에 이름 표시" not in buttons
 
     manager = controller._people_manager
+    manager.selectIdentityId_(stable_identity.person_identity_id)
+    descendants = list(_walk(controller.window().contentView()))
+    buttons = {
+        str(view.title() or "")
+        for view in descendants
+        if isinstance(view, NSButton)
+    }
+    assert "내 Story에 이름 표시" in buttons
+    assert "가족 공유 Story에 이름 표시" in buttons
+    assert "← 인물 목록" in buttons
+
     manager._name_field.setStringValue_("변경된 인물")
     manager.saveName_(None)
     assert repository.get_identity(stable_identity.person_identity_id).display_name == "변경된 인물"
@@ -290,6 +300,46 @@ def test_main_window_people_tab_shows_stable_identity_without_face_cache(tmp_pat
     owner_toggle.setState_(NSControlStateValueOn)
     manager.toggleStableConsent_(owner_toggle)
     assert repository.current_consent(stable_identity.person_identity_id, "owner") is True
+
+
+def test_people_home_resolves_durable_representative_face_for_stable_identity(tmp_path) -> None:
+    NSApplication.sharedApplication()
+    menu = _menu_controller(_snapshot())
+    repository = PersonIdentityRepository(tmp_path / "people-private.sqlite3")
+    menu._identity_repository = repository
+    menu._state_store.run_repository = SimpleNamespace()
+    manager = PhotosMcpPeopleManagerController.alloc().initWithMainController_(
+        PhotosMcpMainWindowController.alloc().initWithMenuController_(menu)
+    )
+    crop = tmp_path / "index-private" / "faces" / "representative.jpg"
+    crop.parent.mkdir(parents=True)
+    crop.write_bytes(b"representative")
+    identity = PersonIdentity(
+        "stable-person",
+        "가족",
+        (),
+        False,
+        stable_identity_id="stable-person",
+        stable_identity_status="user_confirmed",
+    )
+    manager._people_dashboard = {
+        "people": (
+            {
+                "person_identity_id": "stable-person",
+                "representative_face_ref": "faces/representative.jpg",
+                "linked_photo_count": 8,
+                "automation_profile": {
+                    "owner_confirmed_anchor_count": 6,
+                    "maturity": "auto_ready",
+                    "auto_enabled": True,
+                    "suspended": False,
+                },
+            },
+        )
+    }
+
+    assert manager._representative_crop_path(identity) == str(crop)
+    assert manager._identity_summary(identity) == "사진 8장 · 직접 확인 6장 · 자동 인식 안정됨"
 
 
 def test_people_management_renders_drag_drop_controls_for_multiple_groups() -> None:
@@ -340,6 +390,7 @@ def test_people_management_renders_drag_drop_controls_for_multiple_groups() -> N
         source_job_count=1,
     )
     manager._selected_identity_id = "auto-one"
+    manager._view_mode = "detail"
     main._people_manager = manager
     main.showTab_("people")
 

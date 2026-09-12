@@ -105,6 +105,7 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._stable_name_undo: tuple[str, str, str] | None = None
         self._undo_message = ""
         self._people_dashboard: dict[str, Any] = {}
+        self._view_mode = "home"
         self._viewer_controller = PhotosMcpPhotoViewerController.alloc().init()
         self._load_catalog()
         return self
@@ -120,6 +121,16 @@ class PhotosMcpPeopleManagerController(NSObject):
             view.removeFromSuperview()
         parent.setWantsLayer_(True)
         parent.layer().setBackgroundColor_(NSColor.windowBackgroundColor().CGColor())
+        if self._view_mode == "detail" and (
+            self._selected_identity() is not None or self._selected_alias() is not None
+        ):
+            self._render_person_detail(parent, width, height)
+            return
+        self._view_mode = "home"
+        self._render_people_home(parent, width, height)
+
+    @objc.python_method
+    def _render_people_home(self, parent: Any, width: float, height: float) -> None:
         usable = width - (_MARGIN * 2.0)
         self._label(parent, _MARGIN, height - 58.0, usable - 330.0, 36.0, "인물 관리", 27.0, True)
         self._label(
@@ -133,60 +144,75 @@ class PhotosMcpPeopleManagerController(NSObject):
             False,
             secondary=True,
         )
-        self._button(
-            parent,
-            width - _MARGIN - 326.0,
-            height - 66.0,
-            112.0,
-            32.0,
-            "빠르게 확인",
-            "reviewFirstException:",
-            enabled=bool(self._people_dashboard.get("exception_count")),
+        self._button(parent, width - _MARGIN - 86.0, height - 66.0, 86.0, 32.0, "새로 고침", "refreshCatalog:")
+        exception_count = int(self._people_dashboard.get("exception_count") or 0)
+        review_count = exception_count + len(self._aliases)
+        review_y = height - 220.0
+        review = self._card(parent, _MARGIN, review_y, usable, 108.0, selected=bool(review_count))
+        review_title = f"확인할 내용이 {review_count}개 있어요" if review_count else "지금은 모두 정리됐어요"
+        review_detail = (
+            "애매한 얼굴과 새로 자주 보이는 사람만 확인하면 됩니다."
+            if review_count
+            else "새 사진에서 확실한 인물은 자동으로 연결하고, 애매한 경우만 여기에 모읍니다."
         )
+        self._label(review, 24.0, 58.0, max(260.0, usable - 230.0), 26.0, review_title, 16.0, True)
+        self._label(review, 24.0, 30.0, max(260.0, usable - 230.0), 22.0, review_detail, 10.5, False, secondary=True)
+        self._button(
+            review,
+            usable - 190.0,
+            36.0,
+            166.0,
+            36.0,
+            "빠르게 확인하기",
+            "reviewFirstException:",
+            primary=True,
+            enabled=bool(review_count),
+        )
+
+        managed = self._managed_identities()
+        section_y = review_y - 54.0
+        self._label(parent, _MARGIN, section_y, usable - 240.0, 26.0, f"관리 중인 인물 {len(managed)}명", 16.0, True)
+        self._label(parent, _MARGIN, section_y - 22.0, usable - 240.0, 18.0, "대표 얼굴을 선택하면 이름과 자동 인식 설정을 확인할 수 있습니다.", 9.5, False, secondary=True)
         self._button(
             parent,
-            width - _MARGIN - 206.0,
-            height - 66.0,
-            112.0,
-            32.0,
-            "인물 찾기",
+            width - _MARGIN - 164.0,
+            section_y - 8.0,
+            164.0,
+            30.0,
+            "인물 분석 다시 실행",
             "indexPeople:",
-            primary=True,
             enabled=not self._index_running and self._face_runtime.status == "ready",
         )
-        self._button(parent, width - _MARGIN - 86.0, height - 66.0, 86.0, 32.0, "새로 고침", "refreshCatalog:")
-
-        confirmed_count = sum(
-            identity.stable_identity_status == "user_confirmed"
-            for identity in self._catalog.identities
-        )
-        candidate_count = sum(
-            identity.stable_identity_status == "candidate"
-            for identity in self._catalog.identities
-        )
-        exception_count = int(self._people_dashboard.get("exception_count") or 0)
-        auto_count = int(self._people_dashboard.get("automatic_assignment_count") or 0)
-        suppressed_count = int(self._people_dashboard.get("quality_suppressed_count") or 0)
-        status = (
-            f"확인할 내용 {exception_count}개 · 관리 인물 {confirmed_count}명 · "
-            f"자동 정리 {auto_count}개 · 품질 제외 {suppressed_count}개"
-        )
-        if self._catalog.pending_alias_count:
-            status += f" · 이름 확인 대기 {self._catalog.pending_alias_count}건"
-        if self._catalog.pending_lineage_hold_count:
-            status += f" · 사진 연결 대기 {self._catalog.pending_lineage_hold_count}건"
-        if self._catalog.excluded_face_count:
-            status += f" · 제외 {self._catalog.excluded_face_count}개"
-        runtime_label = "인물 모델 준비됨" if self._face_runtime.status == "ready" else "인물 모델 준비 필요"
-        status += f" · {runtime_label}"
-        self._label(parent, _MARGIN, height - 112.0, usable, 18.0, status, 9.8, False, secondary=True)
         if self._index_message:
-            self._label(parent, _MARGIN, height - 132.0, usable, 18.0, self._index_message, 9.2, False, secondary=True)
-        content_y = 26.0
-        content_height = max(260.0, height - 150.0)
-        list_width = min(340.0, max(258.0, usable * 0.28))
-        self._identity_list(parent, _MARGIN, content_y, list_width, content_height)
-        self._detail_panel(parent, _MARGIN + list_width + 18.0, content_y, usable - list_width - 18.0, content_height)
+            self._label(parent, _MARGIN, section_y - 42.0, usable, 18.0, self._index_message, 9.2, False, secondary=True)
+        grid_top = section_y - (58.0 if self._index_message else 42.0)
+        self._people_card_grid(parent, _MARGIN, 30.0, usable, max(180.0, grid_top - 30.0), managed)
+
+    @objc.python_method
+    def _render_person_detail(self, parent: Any, width: float, height: float) -> None:
+        usable = width - (_MARGIN * 2.0)
+        identity = self._selected_identity()
+        alias = self._selected_alias()
+        title = (
+            "사진 속 이름 확인"
+            if alias is not None
+            else self._identity_labels.get(identity.identity_id, identity.display_name)
+            if identity is not None
+            else "인물"
+        )
+        self._button(parent, _MARGIN, height - 66.0, 116.0, 32.0, "← 인물 목록", "backToPeopleHome:")
+        self._label(parent, _MARGIN + 136.0, height - 58.0, usable - 350.0, 36.0, title, 25.0, True)
+        self._label(parent, _MARGIN + 136.0, height - 82.0, usable - 180.0, 20.0, "이름, 자동 인식과 Story 표시 설정을 관리합니다.", 10.0, False, secondary=True)
+        self._button(parent, width - _MARGIN - 86.0, height - 66.0, 86.0, 32.0, "새로 고침", "refreshCatalog:")
+        self._detail_panel(parent, _MARGIN, 26.0, usable, max(320.0, height - 126.0))
+
+    def backToPeopleHome_(self, _sender) -> None:
+        self._freeze_name_state()
+        self._view_mode = "home"
+        self._selected_alias_id = ""
+        self._selected_alias_face_id = ""
+        self._selected_face_ids.clear()
+        self._main_controller.rebuild()
 
     def refreshCatalog_(self, _sender) -> None:
         self._load_catalog()
@@ -199,6 +225,7 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._selected_alias_id = self._aliases[0].alias_id
         self._selected_alias_face_id = ""
         self._selected_identity_id = ""
+        self._view_mode = "detail"
         self._main_controller.rebuild()
 
     def reviewFirstException_(self, _sender) -> None:
@@ -214,6 +241,9 @@ class PhotosMcpPeopleManagerController(NSObject):
             self._alert("확인할 내용을 불러오지 못했습니다", "잠시 후 다시 시도해 주세요.")
             return
         if not page.items:
+            if self._aliases:
+                self.showFirstAlias_(None)
+                return
             self._alert("지금 확인할 내용이 없습니다", "새 사진을 분석하면 애매한 얼굴만 이곳에 표시됩니다.")
             return
         detail = page.items[0]
@@ -561,6 +591,7 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._selected_identity_id = identity_id
         self._selected_alias_id = ""
         self._focused_identity_id = identity_id
+        self._view_mode = "detail"
         self._main_controller.rebuild()
 
     def restoreIdentityRowFocus_(self, row) -> None:
@@ -777,7 +808,14 @@ class PhotosMcpPeopleManagerController(NSObject):
 
     @objc.python_method
     def _add_identity_auto_toggle(
-        self, card: Any, y: float, width: float, identity: PersonIdentity
+        self,
+        card: Any,
+        y: float,
+        width: float,
+        identity: PersonIdentity,
+        *,
+        x: float = 20.0,
+        control_width: float | None = None,
     ) -> None:
         if self._identity_repository is None or not identity.stable_identity_id:
             return
@@ -799,7 +837,9 @@ class PhotosMcpPeopleManagerController(NSObject):
             + maturity_labels.get(str(profile["maturity"]), "학습 중")
             + f" · 직접 확인 {int(profile['owner_confirmed_anchor_count'])}장"
         )
-        toggle = NSButton.alloc().initWithFrame_(NSMakeRect(20.0, y, width - 40.0, 28.0))
+        toggle = NSButton.alloc().initWithFrame_(
+            NSMakeRect(x, y, control_width if control_width is not None else width - 40.0, 28.0)
+        )
         toggle.setButtonType_(NSButtonTypeSwitch)
         toggle.setTitle_(title)
         toggle.setTarget_(self)
@@ -1081,6 +1121,157 @@ class PhotosMcpPeopleManagerController(NSObject):
         return self._catalog.identity(self._selected_identity_id)
 
     @objc.python_method
+    def _managed_identities(self) -> tuple[PersonIdentity, ...]:
+        """Keep the home screen focused on people the owner actually manages."""
+
+        dashboard_order = {
+            str(item.get("person_identity_id") or ""): index
+            for index, item in enumerate(self._people_dashboard.get("people") or ())
+        }
+        managed = [
+            identity
+            for identity in self._catalog.identities
+            if identity.stable_identity_status == "user_confirmed"
+            or (not identity.stable_identity_id and bool(identity.name.strip()))
+            or identity.is_manual
+        ]
+        managed.sort(
+            key=lambda identity: (
+                dashboard_order.get(identity.stable_identity_id, 100_000),
+                self._identity_labels.get(identity.identity_id, identity.display_name),
+                identity.identity_id,
+            )
+        )
+        return tuple(managed)
+
+    @objc.python_method
+    def _dashboard_person(self, identity: PersonIdentity) -> dict[str, Any]:
+        if not identity.stable_identity_id:
+            return {}
+        return next(
+            (
+                dict(item)
+                for item in self._people_dashboard.get("people") or ()
+                if str(item.get("person_identity_id") or "") == identity.stable_identity_id
+            ),
+            {},
+        )
+
+    @objc.python_method
+    def _identity_metrics(self, identity: PersonIdentity) -> tuple[int, int, str, bool]:
+        person = self._dashboard_person(identity)
+        profile = dict(person.get("automation_profile") or {})
+        photo_count = int(person.get("linked_photo_count") or len(identity.faces))
+        anchor_count = int(profile.get("owner_confirmed_anchor_count") or len(identity.faces))
+        maturity = str(profile.get("maturity") or "learning")
+        enabled = bool(profile.get("auto_enabled", False)) and not bool(profile.get("suspended", False))
+        return photo_count, anchor_count, maturity, enabled
+
+    @objc.python_method
+    def _representative_crop_path(self, identity: PersonIdentity) -> str:
+        representative = identity.representative_face
+        if representative is not None and representative.crop_path:
+            return representative.crop_path
+        person = self._dashboard_person(identity)
+        artifact_ref = str(person.get("representative_face_ref") or "")
+        if not artifact_ref or self._identity_repository is None:
+            return ""
+        try:
+            return str(
+                PeopleWorkspaceService(
+                    self._identity_repository,
+                    run_repository=self._menu_controller._state_store.run_repository,
+                ).artifact_path(artifact_ref)
+            )
+        except (FileNotFoundError, OSError, ValueError):
+            return ""
+
+    @objc.python_method
+    def _people_card_grid(
+        self,
+        parent: Any,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        identities: tuple[PersonIdentity, ...],
+    ) -> None:
+        container = self._card(parent, x, y, width, height, selected=False)
+        if not identities:
+            image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                "person.2.crop.square.stack", "등록된 인물 없음"
+            )
+            image_view = NSImageView.alloc().initWithFrame_(
+                NSMakeRect((width - 64.0) / 2.0, max(86.0, height / 2.0 + 12.0), 64.0, 64.0)
+            )
+            image_view.setImage_(image)
+            if hasattr(image_view, "setContentTintColor_"):
+                image_view.setContentTintColor_(NSColor.tertiaryLabelColor())
+            container.addSubview_(image_view)
+            self._label(container, 24.0, max(54.0, height / 2.0 - 18.0), width - 48.0, 28.0, "등록된 인물이 없습니다", 15.0, True).setAlignment_(2)
+            self._label(container, 24.0, max(30.0, height / 2.0 - 42.0), width - 48.0, 20.0, "사진을 분석하면 자주 등장한 사람만 여기에 표시됩니다.", 9.5, False, secondary=True).setAlignment_(2)
+            return
+
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(12.0, 12.0, width - 24.0, height - 24.0))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setDrawsBackground_(False)
+        self._identity_scroll_view = scroll
+        document_width = max(240.0, width - 42.0)
+        gap = 16.0
+        minimum_card_width = 250.0
+        columns = max(1, min(4, int((document_width + gap) // (minimum_card_width + gap))))
+        card_width = (document_width - ((columns - 1) * gap)) / columns
+        card_height = 154.0
+        rows = (len(identities) + columns - 1) // columns
+        content_height = rows * (card_height + gap) + gap
+        document_height = max(float(scroll.contentSize().height), content_height, 1.0)
+        document = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, document_width, document_height))
+        scroll.setDocumentView_(document)
+        for index, identity in enumerate(identities):
+            column, row_index = index % columns, index // columns
+            card_x = column * (card_width + gap)
+            card_y = document_height - ((row_index + 1) * (card_height + gap))
+            card = IdentityDropRowView.alloc().initWithIdentityId_controller_(identity.identity_id, self)
+            card.setFrame_(NSMakeRect(card_x, card_y, card_width, card_height))
+            self._style_card(card, selected=False)
+            label = self._identity_labels.get(identity.identity_id, identity.display_name)
+            photo_count, anchor_count, maturity, auto_enabled = self._identity_metrics(identity)
+            maturity_label = {"auto_ready": "안정됨", "review_ready": "확인 가능", "learning": "학습 중"}.get(maturity, "학습 중")
+            card.setAccessibilityLabel_(
+                f"{label}, 사진 {photo_count}장, 자동 인식 {maturity_label}, 상세 보기"
+            )
+            document.addSubview_(card)
+
+            crop_path = self._representative_crop_path(identity)
+            portrait = NSImageView.alloc().initWithFrame_(NSMakeRect(16.0, 46.0, 88.0, 92.0))
+            portrait.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+            portrait.setWantsLayer_(True)
+            portrait.layer().setCornerRadius_(10.0)
+            portrait.layer().setMasksToBounds_(True)
+            if crop_path:
+                portrait.setImage_(cached_image(crop_path))
+            else:
+                portrait.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("person.crop.square", f"{label} 대표 얼굴 준비 중"))
+                if hasattr(portrait, "setContentTintColor_"):
+                    portrait.setContentTintColor_(NSColor.tertiaryLabelColor())
+            portrait.setAccessibilityLabel_(f"{label} 대표 얼굴")
+            card.addSubview_(portrait)
+
+            text_x = 120.0
+            text_width = max(90.0, card_width - text_x - 16.0)
+            # IdentityDropRowView is an NSButton and therefore uses a flipped
+            # content coordinate system. Keep the most important value first.
+            self._label(card, text_x, 22.0, text_width, 24.0, label, 15.0, True)
+            self._label(card, text_x, 52.0, text_width, 20.0, f"사진 {photo_count}장 · 직접 확인 {anchor_count}장", 9.2, False, secondary=True)
+            auto_text = f"자동 인식 · {maturity_label}" if auto_enabled else "자동 인식 꺼짐"
+            self._label(card, text_x, 78.0, text_width, 20.0, auto_text, 9.4, True, accent=auto_enabled)
+            self._label(card, text_x, 108.0, text_width, 20.0, "설정 보기  →", 9.4, True, secondary=True)
+        container.addSubview_(scroll)
+        if self._identity_scroll_origin is not None:
+            scroll.contentView().scrollToPoint_(NSMakePoint(*self._identity_scroll_origin))
+            scroll.reflectScrolledClipView_(scroll.contentView())
+
+    @objc.python_method
     def _selected_alias(self):
         return next(
             (alias for alias in self._aliases if alias.alias_id == self._selected_alias_id),
@@ -1135,15 +1326,21 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._selected_alias_face_id = ""
         if not self._selected_alias_id and self._catalog.identities:
             self._selected_identity_id = self._catalog.identities[0].identity_id
+            self._view_mode = "home"
         if rebuild:
             self._main_controller.rebuild()
 
     @objc.python_method
     def _identity_summary(self, identity: PersonIdentity) -> str:
-        if identity.stable_identity_id and not identity.faces:
-            return "사진 연결 필요 · 설정 보존됨"
         if identity.stable_identity_id:
-            return f"연결된 얼굴 {len(identity.faces)}개 · 안정 저장소"
+            photo_count, anchor_count, maturity, auto_enabled = self._identity_metrics(identity)
+            maturity_label = {
+                "auto_ready": "안정됨",
+                "review_ready": "확인 가능",
+                "learning": "학습 중",
+            }.get(maturity, "학습 중")
+            auto_label = f"자동 인식 {maturity_label}" if auto_enabled else "자동 인식 꺼짐"
+            return f"사진 {photo_count}장 · 직접 확인 {anchor_count}장 · {auto_label}"
         return f"얼굴 {len(identity.faces)}개 · {'직접 수정됨' if identity.is_manual else '자동 그룹'}"
 
     @objc.python_method
@@ -1536,36 +1733,72 @@ class PhotosMcpPeopleManagerController(NSObject):
         height: float,
         identity: PersonIdentity,
     ) -> None:
+        photo_count, anchor_count, maturity, _auto_enabled = self._identity_metrics(identity)
+        maturity_label = {
+            "auto_ready": "안정됨",
+            "review_ready": "확인 가능",
+            "learning": "학습 중",
+        }.get(maturity, "학습 중")
+        crop_path = self._representative_crop_path(identity)
+        portrait = NSImageView.alloc().initWithFrame_(
+            NSMakeRect(20.0, height - 344.0, 164.0, 164.0)
+        )
+        portrait.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        portrait.setWantsLayer_(True)
+        portrait.layer().setCornerRadius_(14.0)
+        portrait.layer().setMasksToBounds_(True)
+        if crop_path:
+            portrait.setImage_(cached_image(crop_path))
+        else:
+            portrait.setImage_(
+                NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                    "person.crop.square", "대표 얼굴 준비 중"
+                )
+            )
+            if hasattr(portrait, "setContentTintColor_"):
+                portrait.setContentTintColor_(NSColor.tertiaryLabelColor())
+        portrait.setAccessibilityLabel_(
+            f"{self._identity_labels.get(identity.identity_id, identity.display_name)} 대표 얼굴"
+        )
+        card.addSubview_(portrait)
         self._label(
             card,
-            20.0,
-            height - 156.0,
-            width - 40.0,
+            208.0,
+            height - 174.0,
+            width - 232.0,
             22.0,
-            "이름과 공유 설정은 안전하게 보존되어 있습니다.",
-            11.0,
+            f"관리 중 · 사진 {photo_count}장 · 직접 확인 {anchor_count}장",
+            12.0,
             True,
         )
         self._label(
             card,
-            20.0,
-            height - 184.0,
-            width - 40.0,
+            208.0,
+            height - 200.0,
+            width - 232.0,
             22.0,
-            "현재 사진과 연결된 얼굴이 없습니다. 다음 인물 분석에서 일치하는 얼굴을 확인해 연결합니다.",
+            f"자동 인식 상태는 {maturity_label}입니다. 확실한 새 사진은 이 이름으로 자동 연결됩니다.",
             10.0,
             False,
             secondary=True,
         )
         if self._identity_repository is not None:
-            self._add_identity_auto_toggle(card, height - 212.0, width, identity)
+            self._add_identity_auto_toggle(
+                card,
+                height - 240.0,
+                width,
+                identity,
+                x=208.0,
+                control_width=width - 232.0,
+            )
+            self._label(card, 208.0, height - 276.0, width - 232.0, 20.0, "Story에 이름 표시", 10.5, True)
             consent_rows = (
                 ("owner", "내 Story에 이름 표시"),
                 ("family_share", "가족 공유 Story에 이름 표시"),
             )
             for index, (audience, title) in enumerate(consent_rows):
                 toggle = NSButton.alloc().initWithFrame_(
-                    NSMakeRect(20.0, height - 252.0 - (index * 38.0), width - 40.0, 28.0)
+                    NSMakeRect(208.0, height - 310.0 - (index * 36.0), width - 232.0, 28.0)
                 )
                 toggle.setButtonType_(NSButtonTypeSwitch)
                 toggle.setTitle_(title)
