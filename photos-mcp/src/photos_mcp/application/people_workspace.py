@@ -107,6 +107,85 @@ class PeopleWorkspaceService:
             "source": str(asset.get("source") or asset.get("provider") or ""),
         }
 
+    def provider_alias_review_detail(self, local_asset_id: str) -> dict[str, Any]:
+        """Return every usable face crop for an explicit provider-name hint.
+
+        The normal review queue intentionally hides low-quality faces. A user
+        who opened an Apple Photos name hint, however, needs to choose between
+        all detected people in that exact photo. System-suppressed crops are
+        therefore visible here, while owner-resolved, rejected or explicitly
+        ignored faces remain hidden.
+        """
+
+        try:
+            detail = self.identity_repository.asset_people_review_detail(local_asset_id)
+        except KeyError:
+            detail = {
+                "local_asset_id": local_asset_id,
+                "review_revision": 0,
+                "review_state": "pending",
+                "index_state": "pending",
+                "detected_face_count": 0,
+                "faces": [],
+                "aliases": [],
+            }
+        choices: list[dict[str, Any]] = []
+        for raw_face in detail.get("faces") or []:
+            if raw_face.get("confirmed_person_identity_id"):
+                continue
+            review_state = str(raw_face.get("review_state") or "pending")
+            review_kind = str(raw_face.get("review_kind") or "")
+            review_revision = int(raw_face.get("face_review_revision") or 0)
+            system_suppressed = (
+                review_kind == "quality_suppressed"
+                and review_state == "ignored"
+                and review_revision <= 1
+            )
+            if review_state in {"resolved", "rejected"} or (
+                review_state == "ignored" and not system_suppressed
+            ):
+                continue
+            face = dict(raw_face)
+            face["source_review_state"] = review_state
+            face["review_state"] = "pending" if system_suppressed else review_state
+            face["manual_alias_choice"] = True
+            choices.append(face)
+
+        asset: dict[str, Any] = {}
+        if self.run_repository is not None:
+            try:
+                asset = self.run_repository.get_local_recommendation_asset_by_id(
+                    local_asset_id
+                ) or {}
+            except (OSError, RuntimeError):
+                asset = {}
+        numbered_ref = f"numbered-previews/{local_asset_id}.jpg"
+        try:
+            self.artifact_path(numbered_ref)
+        except (ValueError, FileNotFoundError):
+            numbered_ref = ""
+        return {
+            **detail,
+            "faces": choices,
+            "actionable_face_count": len(choices),
+            "capture_date_local": str(asset.get("capture_date_local") or "")[:10],
+            "source": str(asset.get("source") or asset.get("provider") or ""),
+            "numbered_context_ref": numbered_ref,
+        }
+
+    def list_provider_alias_reviews(self, *, limit: int = 50) -> tuple[dict[str, Any], ...]:
+        """Project pending aliases as de-duplicated face-level photo reviews."""
+
+        asset_ids: list[str] = []
+        for alias in self.identity_repository.list_provider_person_aliases(
+            alias_state="candidate"
+        ):
+            if alias.local_asset_id not in asset_ids:
+                asset_ids.append(alias.local_asset_id)
+            if len(asset_ids) >= max(1, min(50, int(limit))):
+                break
+        return tuple(self.provider_alias_review_detail(asset_id) for asset_id in asset_ids)
+
     def identity_choices(self) -> tuple[dict[str, Any], ...]:
         choices: list[dict[str, Any]] = []
         for identity in self.identity_repository.list_identities(

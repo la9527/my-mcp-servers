@@ -65,6 +65,16 @@ _FACE_CARD_HEIGHT = 184.0
 _FACE_CARD_GAP = 12.0
 
 
+def _alias_matches_suggested_name(alias_label: str, suggested_name: str) -> bool:
+    alias_value = "".join(str(alias_label or "").split())
+    suggested_value = "".join(str(suggested_name or "").split())
+    return len(suggested_value) >= 2 and (
+        alias_value == suggested_value
+        or alias_value.endswith(suggested_value)
+        or suggested_value.endswith(alias_value)
+    )
+
+
 class PhotosMcpPeopleManagerController(NSObject):
     """Render and edit private person labels without touching source libraries."""
 
@@ -95,6 +105,8 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._face_runtime = face_runtime_status()
         self._index_running = False
         self._index_message = ""
+        self._alias_indexing_asset_id = ""
+        self._alias_index_message = ""
         self._move_target_identity_id = ""
         self._identity_scroll_view = None
         self._gallery_scroll_view = None
@@ -569,6 +581,56 @@ class PhotosMcpPeopleManagerController(NSObject):
     def finishPeopleIndex_(self, message) -> None:
         self._index_running = False
         self._index_message = str(message or "")
+        self._load_catalog()
+        self._main_controller.rebuild()
+
+    def reindexAliasPhoto_(self, _sender) -> None:
+        alias = self._selected_alias()
+        if alias is None or self._identity_repository is None or self._index_running:
+            return
+        self._face_runtime = face_runtime_status()
+        if self._face_runtime.status != "ready":
+            self._alert(
+                "인물 모델을 준비하지 못했습니다",
+                ", ".join(self._face_runtime.missing_components),
+            )
+            return
+        self._index_running = True
+        self._alias_indexing_asset_id = alias.local_asset_id
+        self._alias_index_message = "이 사진에서 얼굴을 다시 찾는 중입니다…"
+        self._selected_alias_face_id = ""
+        self._main_controller.rebuild()
+        Thread(
+            target=self._run_alias_photo_index,
+            args=(alias.local_asset_id,),
+            daemon=True,
+        ).start()
+
+    @objc.python_method
+    def _run_alias_photo_index(self, local_asset_id: str) -> None:
+        try:
+            result = PersonIndexingService(
+                self._menu_controller._state_store.run_repository,
+                self._identity_repository,
+            ).index_assets(
+                local_asset_ids=(local_asset_id,),
+                scope_kind="provider_alias_photo_retry",
+            )
+            if result.failure_count:
+                message = "얼굴을 다시 찾지 못했습니다. 원본 사진 접근 상태를 확인해 주세요."
+            else:
+                message = f"다시 찾기 완료 · 얼굴 {result.detected_face_count}개"
+        except Exception as exc:
+            message = f"다시 찾기 실패 · {type(exc).__name__}: {exc}"
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "finishAliasPhotoIndex:", message, False
+        )
+
+    def finishAliasPhotoIndex_(self, message) -> None:
+        self._index_running = False
+        self._alias_indexing_asset_id = ""
+        self._alias_index_message = str(message or "")
+        self._selected_alias_face_id = ""
         self._load_catalog()
         self._main_controller.rebuild()
 
@@ -1289,7 +1351,7 @@ class PhotosMcpPeopleManagerController(NSObject):
             detail = PeopleWorkspaceService(
                 self._identity_repository,
                 run_repository=self._menu_controller._state_store.run_repository,
-            ).asset_review_detail(alias.local_asset_id)
+            ).provider_alias_review_detail(alias.local_asset_id)
         except (KeyError, OSError, sqlite3.Error, ValueError):
             return None, None
         faces = list(detail.get("faces") or [])
@@ -1303,9 +1365,22 @@ class PhotosMcpPeopleManagerController(NSObject):
             ),
             None,
         )
-        if face is None and len(faces) == 1:
-            face = faces[0]
-            self._selected_alias_face_id = str(face.get("face_observation_id") or "")
+        if face is None:
+            matching_faces = []
+            for item in faces:
+                if _alias_matches_suggested_name(
+                    str(alias.private_display_label or ""),
+                    str(item.get("suggested_display_name") or ""),
+                ):
+                    matching_faces.append(item)
+            if len(matching_faces) == 1:
+                face = matching_faces[0]
+            elif len(faces) == 1:
+                face = faces[0]
+            if face is not None:
+                self._selected_alias_face_id = str(
+                    face.get("face_observation_id") or ""
+                )
         return detail, face
 
     @objc.python_method
@@ -1586,12 +1661,31 @@ class PhotosMcpPeopleManagerController(NSObject):
             asset = {}
         capture_date = str(asset.get("capture_date_local") or "")[:10]
         source_line = "Apple Photos" + (f" · {capture_date}" if capture_date else "")
-        self._label(card, 20.0, height - 92.0, width - 40.0, 18.0, source_line, 9.5, False, secondary=True)
-        guide = (
-            "이 이름에 해당하는 얼굴 crop을 선택한 뒤 연결하세요. 사진 전체를 한 사람에게 연결하지 않습니다."
-            if faces
-            else "아직 얼굴 crop이 없습니다. 상단의 인물 찾기를 먼저 실행해 주세요."
+        self._label(card, 20.0, height - 92.0, width - 236.0, 18.0, source_line, 9.5, False, secondary=True)
+        reindexing = self._index_running and self._alias_indexing_asset_id == alias.local_asset_id
+        reindex_button = self._button(
+            card,
+            width - 206.0,
+            height - 100.0,
+            186.0,
+            30.0,
+            "얼굴 찾는 중…" if reindexing else "이 사진 얼굴 다시 찾기",
+            "reindexAliasPhoto:",
+            enabled=not self._index_running and self._face_runtime.status == "ready",
         )
+        reindex_button.setAccessibilityHelp_(
+            "현재 사진만 다시 분석하고, 기존에 직접 확정한 얼굴 연결은 보존합니다."
+        )
+        guide = (
+            "번호와 얼굴 crop을 비교해 이 이름에 해당하는 사람을 선택하세요."
+            if faces
+            else "선택할 얼굴이 없습니다. ‘이 사진 얼굴 다시 찾기’를 눌러 복구할 수 있습니다."
+        )
+        if self._alias_index_message and (
+            not self._alias_indexing_asset_id
+            or self._alias_indexing_asset_id == alias.local_asset_id
+        ):
+            guide = f"{self._alias_index_message} · {guide}"
         self._label(card, 20.0, height - 114.0, width - 40.0, 18.0, guide, 9.5, False, secondary=True)
         suggestion = dict((selected_face or {}).get("identity_suggestion") or {})
         if not suggestion and selected_face:
@@ -1627,15 +1721,26 @@ class PhotosMcpPeopleManagerController(NSObject):
                 accent=True,
             )
         image_path = None
+        workspace = PeopleWorkspaceService(
+            self._identity_repository,
+            run_repository=self._menu_controller._state_store.run_repository,
+        )
+        numbered_context_ref = str((detail or {}).get("numbered_context_ref") or "")
+        if numbered_context_ref:
+            try:
+                image_path = workspace.artifact_path(numbered_context_ref)
+            except (ValueError, FileNotFoundError):
+                image_path = None
         try:
-            image_path = ShareImageService(
-                self._menu_controller._state_store.run_repository
-            ).derivative(
-                share_id="people-review-mac",
-                public_asset_id=alias.alias_id,
-                local_asset_id=alias.local_asset_id,
-                kind="preview",
-            )
+            if image_path is None:
+                image_path = ShareImageService(
+                    self._menu_controller._state_store.run_repository
+                ).derivative(
+                    share_id="people-review-mac",
+                    public_asset_id=alias.alias_id,
+                    local_asset_id=alias.local_asset_id,
+                    kind="preview",
+                )
         except (ShareImageError, RuntimeError):
             pass
         image_height = max(150.0, height - 410.0)
@@ -1666,10 +1771,6 @@ class PhotosMcpPeopleManagerController(NSObject):
             NSMakeRect(0.0, 0.0, face_document_width, 78.0)
         )
         face_scroll.setDocumentView_(face_document)
-        workspace = PeopleWorkspaceService(
-            self._identity_repository,
-            run_repository=self._menu_controller._state_store.run_repository,
-        )
         for index, face in enumerate(faces):
             face_id = str(face.get("face_observation_id") or "")
             selected = face_id == self._selected_alias_face_id

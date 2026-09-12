@@ -2321,6 +2321,58 @@ class PersonIdentityRepository:
             )
         return revision
 
+    def supersede_unconfirmed_face_observations(
+        self,
+        local_asset_id: str,
+        *,
+        model_family: str,
+        model_fingerprint: str,
+        retained_face_observation_ids: Iterable[str],
+    ) -> int:
+        """Retire stale detector rows only after a replacement pass succeeds.
+
+        Owner-confirmed anchors are deliberately preserved. This lets detector
+        preprocessing improve without silently detaching a name the owner has
+        already verified.
+        """
+
+        asset_id = local_asset_id.strip()
+        family = model_family.strip()
+        fingerprint = model_fingerprint.strip()
+        retained = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in retained_face_observation_ids
+                if str(value).strip()
+            )
+        )
+        if not asset_id or not family or not fingerprint:
+            raise ValueError("asset, model family and fingerprint are required")
+        now = self._now_fn()
+        exclusions = ""
+        parameters: list[Any] = [now, asset_id, family, fingerprint]
+        if retained:
+            exclusions = " AND face_observation_id NOT IN ({})".format(
+                ",".join("?" for _ in retained)
+            )
+            parameters.extend(retained)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE face_observations
+                   SET observation_status = 'missing', invalidated_at = ?
+                   WHERE local_asset_id = ?
+                     AND model_family = ?
+                     AND model_fingerprint = ?
+                     AND observation_status = 'active'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM current_owner_confirmed_memberships confirmed
+                       WHERE confirmed.face_observation_id = face_observations.face_observation_id
+                     )"""
+                + exclusions,
+                tuple(parameters),
+            )
+        return max(0, int(cursor.rowcount))
+
     def upsert_face_geometry(
         self,
         face_observation_id: str,

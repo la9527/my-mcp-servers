@@ -36,6 +36,49 @@ MODEL_MINIMUM_BYTES = {
 }
 CANDIDATE_SIMILARITY = 0.55
 PERSON_MATCH_POLICY_VERSION = PEOPLE_AUTOMATION_POLICY_VERSION
+DETECTOR_MAX_LONG_EDGE = 1600
+DETECTION_PREPROCESSOR_VERSION = "bounded-long-edge-1600-v1"
+
+
+def _bounded_detector_image(image: Any, cv2_module: Any) -> tuple[Any, float, float]:
+    """Return a context-preserving detector input and its source scale factors.
+
+    YuNet becomes materially less reliable when a multi-person phone photo is
+    passed at full camera resolution. Detection therefore runs on a bounded
+    proxy while alignment, embeddings, crops and stored geometry continue to
+    use the original pixels.
+    """
+
+    height, width = image.shape[:2]
+    scale = min(1.0, float(DETECTOR_MAX_LONG_EDGE) / float(max(width, height)))
+    if scale >= 1.0:
+        return image, 1.0, 1.0
+    detector_width = max(1, int(round(width * scale)))
+    detector_height = max(1, int(round(height * scale)))
+    proxy = cv2_module.resize(
+        image,
+        (detector_width, detector_height),
+        interpolation=cv2_module.INTER_AREA,
+    )
+    return proxy, detector_width / float(width), detector_height / float(height)
+
+
+def _face_to_source_coordinates(face: Any, scale_x: float, scale_y: float) -> Any:
+    """Map a YuNet row (box plus five landmarks) back to source pixels."""
+
+    import numpy as np
+
+    if scale_x <= 0.0 or scale_y <= 0.0:
+        raise ValueError("invalid detector scale")
+    mapped = np.asarray(face, dtype="float32").copy()
+    # YuNet: x, y, w, h, right-eye, left-eye, nose, mouth corners, score.
+    for index in (0, 2, 4, 6, 8, 10, 12):
+        if index < mapped.size:
+            mapped[index] /= scale_x
+    for index in (1, 3, 5, 7, 9, 11, 13):
+        if index < mapped.size:
+            mapped[index] /= scale_y
+    return mapped
 
 
 @dataclass(frozen=True)
@@ -322,8 +365,16 @@ class PersonIndexingService:
         preview_root = self.private_root / "previews"
         review_crop_root = self.private_root / "review-crops"
         highlighted_root = self.private_root / "highlights"
+        numbered_root = self.private_root / "numbered-previews"
         embedding_root = self.private_root / "embeddings"
-        for directory in (crop_root, preview_root, review_crop_root, highlighted_root, embedding_root):
+        for directory in (
+            crop_root,
+            preview_root,
+            review_crop_root,
+            highlighted_root,
+            numbered_root,
+            embedding_root,
+        ):
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             directory.chmod(0o700)
 
@@ -344,9 +395,32 @@ class PersonIndexingService:
                 if image is None:
                     raise ValueError("image_decode_failed")
                 height, width = image.shape[:2]
-                detector.setInputSize((width, height))
-                _status, faces = detector.detect(image)
-                if faces is None:
+                detector_image, detector_scale_x, detector_scale_y = _bounded_detector_image(
+                    image, cv2
+                )
+                detector_height, detector_width = detector_image.shape[:2]
+                detector.setInputSize((detector_width, detector_height))
+                _status, detector_faces = detector.detect(detector_image)
+                faces = (
+                    []
+                    if detector_faces is None
+                    else sorted(
+                        (
+                            _face_to_source_coordinates(
+                                face, detector_scale_x, detector_scale_y
+                            )
+                            for face in detector_faces
+                        ),
+                        key=lambda face: (float(face[1]), float(face[0])),
+                    )
+                )
+                if not faces:
+                    self.identity_repository.supersede_unconfirmed_face_observations(
+                        local_asset_id,
+                        model_family=runtime.backend,
+                        model_fingerprint=runtime.model_fingerprint,
+                        retained_face_observation_ids=(),
+                    )
                     self.identity_repository.record_asset_face_index(
                         local_asset_id,
                         index_run_id=index_run_id,
@@ -363,6 +437,8 @@ class PersonIndexingService:
                     if scale < 1.0:
                         preview = cv2.resize(preview, (int(width * scale), int(height * scale)))
                     self._write_jpeg(preview_path, preview)
+                observed_face_ids: list[str] = []
+                numbered = image.copy()
                 for face_index, face in enumerate(faces):
                     counts["detected_face_count"] += 1
                     raw_x, raw_y, raw_width, raw_height = [float(value) for value in face[:4]]
@@ -379,7 +455,12 @@ class PersonIndexingService:
                     bbox_values = [round(float(value), 3) for value in face[:4]]
                     bbox_fingerprint = hashlib.sha256(
                         json.dumps(
-                            {"size": [width, height], "bbox": bbox_values, "index": face_index},
+                            {
+                                "size": [width, height],
+                                "bbox": bbox_values,
+                                "index": face_index,
+                                "preprocessor": DETECTION_PREPROCESSOR_VERSION,
+                            },
                             sort_keys=True,
                             separators=(",", ":"),
                         ).encode("utf-8")
@@ -413,6 +494,7 @@ class PersonIndexingService:
                             }
                         )
                     )
+                    observed_face_ids.append(observation.face_observation_id)
                     self.identity_repository.record_face_quality(
                         observation.face_observation_id,
                         quality_tier=quality.tier,
@@ -499,6 +581,41 @@ class PersonIndexingService:
                         context_preview_ref=preview_ref,
                         highlighted_context_ref=highlighted_ref,
                     )
+                    line_width = max(3, int(max(width, height) / 350))
+                    cv2.rectangle(
+                        numbered,
+                        (int(x), int(y)),
+                        (int(x + box_width), int(y + box_height)),
+                        (52, 211, 153),
+                        line_width,
+                    )
+                    label = str(face_index + 1)
+                    font_scale = max(0.8, max(width, height) / 1600.0)
+                    text_size, baseline = cv2.getTextSize(
+                        label,
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        font_scale,
+                        max(2, line_width),
+                    )
+                    label_left = int(x)
+                    label_bottom = max(text_size[1] + baseline + 8, int(y))
+                    cv2.rectangle(
+                        numbered,
+                        (label_left, label_bottom - text_size[1] - baseline - 8),
+                        (label_left + text_size[0] + 16, label_bottom + 2),
+                        (52, 211, 153),
+                        -1,
+                    )
+                    cv2.putText(
+                        numbered,
+                        label,
+                        (label_left + 8, label_bottom - baseline - 3),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        font_scale,
+                        (10, 24, 18),
+                        max(2, line_width),
+                        cv2.LINE_AA,
+                    )
                     counts["embedding_count"] += 1
                     if quality.tier == "quality_suppressed":
                         self.identity_repository.register_person_review_item(
@@ -519,6 +636,26 @@ class PersonIndexingService:
                                 quality.tier,
                             )
                         )
+                numbered_scale = min(1.0, 1600.0 / max(width, height))
+                if numbered_scale < 1.0:
+                    numbered = cv2.resize(
+                        numbered,
+                        (
+                            max(1, int(round(width * numbered_scale))),
+                            max(1, int(round(height * numbered_scale))),
+                        ),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                self._write_jpeg(
+                    numbered_root / f"{local_asset_id}.jpg",
+                    numbered,
+                )
+                self.identity_repository.supersede_unconfirmed_face_observations(
+                    local_asset_id,
+                    model_family=runtime.backend,
+                    model_fingerprint=runtime.model_fingerprint,
+                    retained_face_observation_ids=observed_face_ids,
+                )
                 self.identity_repository.record_asset_face_index(
                     local_asset_id,
                     index_run_id=index_run_id,

@@ -1411,6 +1411,12 @@ class MobileClientHttp:
             )
         faces: list[dict[str, Any]] = []
         context_handle = ""
+        numbered_context_ref = str(detail.get("numbered_context_ref") or "")
+        if numbered_context_ref:
+            context_handle = self._issue_people_image_handle(
+                device_id=device_id,
+                artifact_ref=numbered_context_ref,
+            )
         for index, face in enumerate(detail.get("faces") or []):
             face_handle = self._issue_face_action_handle(
                 device_id=device_id,
@@ -1577,9 +1583,23 @@ class MobileClientHttp:
             )
         except (ValueError, TypeError):
             return _json_error(400, "invalid_cursor")
+        details: list[dict[str, Any]] = []
+        seen_asset_ids: set[str] = set()
+        if offset == 0:
+            for detail in self._people_workspace().list_provider_alias_reviews(limit=limit):
+                asset_id = str(detail.get("local_asset_id") or "")
+                if asset_id and detail.get("faces"):
+                    details.append(detail)
+                    seen_asset_ids.add(asset_id)
+        for detail in page.items:
+            asset_id = str(detail.get("local_asset_id") or "")
+            if asset_id in seen_asset_ids:
+                continue
+            details.append(detail)
+            seen_asset_ids.add(asset_id)
         items = [
             self._mobile_face_review_detail(device_id=device.device_id, detail=detail)
-            for detail in page.items
+            for detail in details[:limit]
         ]
         return JSONResponse(
             mobile_envelope(

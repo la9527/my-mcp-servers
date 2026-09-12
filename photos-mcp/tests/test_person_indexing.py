@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from photos_mcp.application import person_indexing
 from photos_mcp.application.person_identity_repository import (
     FaceObservationInput,
     PersonIdentityRepository,
 )
-from photos_mcp.application.person_indexing import FaceRuntimeStatus, PersonIndexingService
+from photos_mcp.application.person_indexing import (
+    FaceRuntimeStatus,
+    PersonIndexingService,
+    _bounded_detector_image,
+    _face_to_source_coordinates,
+)
 
 
 class _RunRepository:
@@ -16,6 +22,42 @@ class _RunRepository:
 
     def list_recommendation_members_for_local_asset(self, _local_asset_id):
         return []
+
+
+def test_detector_proxy_bounds_long_edge_and_maps_yunet_geometry_to_source() -> None:
+    class FakeCv2:
+        INTER_AREA = 3
+
+        @staticmethod
+        def resize(_image, size, interpolation):
+            assert interpolation == FakeCv2.INTER_AREA
+            return np.zeros((size[1], size[0], 3), dtype="uint8")
+
+    image = np.zeros((1200, 2400, 3), dtype="uint8")
+    proxy, scale_x, scale_y = _bounded_detector_image(image, FakeCv2)
+
+    assert proxy.shape == (800, 1600, 3)
+    assert scale_x == scale_y == pytest.approx(2.0 / 3.0)
+    detector_face = np.asarray(
+        [100, 80, 200, 160, 120, 110, 220, 110, 170, 145, 135, 190, 205, 190, 0.93],
+        dtype="float32",
+    )
+    mapped = _face_to_source_coordinates(detector_face, scale_x, scale_y)
+
+    assert mapped[:4].tolist() == pytest.approx([150, 120, 300, 240])
+    assert mapped[4:14].tolist() == pytest.approx(
+        [180, 165, 330, 165, 255, 217.5, 202.5, 285, 307.5, 285]
+    )
+    assert float(mapped[-1]) == pytest.approx(0.93)
+
+
+def test_detector_proxy_keeps_small_images_unchanged() -> None:
+    image = np.zeros((600, 800, 3), dtype="uint8")
+
+    proxy, scale_x, scale_y = _bounded_detector_image(image, object())
+
+    assert proxy is image
+    assert (scale_x, scale_y) == (1.0, 1.0)
 
 
 def test_runtime_reports_missing_components_without_raising(monkeypatch, tmp_path) -> None:

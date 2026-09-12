@@ -1289,6 +1289,115 @@ def test_legacy_alias_mutations_require_exact_face_selection_for_group_photo(
     assert repository.get_identity(identity.person_identity_id).identity_revision == 1
 
 
+def test_successful_reindex_supersedes_only_unconfirmed_stale_faces(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    asset_id = "local-reindexed-group-photo"
+    retained = repository.register_face_observation(
+        _local_observation(asset_id, crop="retained")
+    )
+    stale = repository.register_face_observation(
+        _local_observation(asset_id, crop="stale")
+    )
+    confirmed = repository.register_face_observation(
+        _local_observation(asset_id, crop="confirmed")
+    )
+    person = repository.create_identity(
+        display_name="가족",
+        identity_status="user_confirmed",
+        name_status="user_confirmed",
+    )
+    repository.set_membership(
+        confirmed.face_observation_id,
+        person.person_identity_id,
+        membership_state="owner_confirmed",
+        provenance="owner",
+        decision_policy_version="owner-v1",
+        expected_identity_revision=person.identity_revision,
+    )
+
+    count = repository.supersede_unconfirmed_face_observations(
+        asset_id,
+        model_family="insightface",
+        model_fingerprint="model-a",
+        retained_face_observation_ids=(retained.face_observation_id,),
+    )
+    repository.record_asset_face_index(
+        asset_id,
+        index_run_id=None,
+        model_fingerprint="model-a",
+        index_state="completed",
+        detected_face_count=2,
+    )
+
+    assert count == 1
+    detail_ids = {
+        face["face_observation_id"]
+        for face in repository.asset_people_review_detail(asset_id)["faces"]
+    }
+    assert detail_ids == {retained.face_observation_id, confirmed.face_observation_id}
+
+
+def test_provider_alias_review_includes_system_suppressed_crop_but_not_owner_ignored(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    asset_id = "local-provider-alias-group-photo"
+    face = repository.register_face_observation(
+        _local_observation(asset_id, crop="system-suppressed")
+    )
+    repository.record_face_quality(
+        face.face_observation_id,
+        quality_tier="quality_suppressed",
+        reason_codes=("low_detector",),
+        detector_score=0.72,
+        box_short_edge_px=90,
+        sharpness_score=75.0,
+        exposure_score=0.9,
+        frontal_score=0.8,
+        clipped_fraction=0.0,
+        policy_version="test-policy",
+    )
+    repository.register_person_review_item(
+        review_kind="quality_suppressed",
+        candidate_person_identity_id=None,
+        face_observation_id=face.face_observation_id,
+        review_state="ignored",
+    )
+    repository.record_asset_face_index(
+        asset_id,
+        index_run_id=None,
+        model_fingerprint="model-a",
+        index_state="completed",
+        detected_face_count=1,
+    )
+    repository.register_provider_person_alias(
+        provider="apple_photos",
+        private_display_label="가족 후보",
+        local_asset_id=asset_id,
+    )
+    workspace = PeopleWorkspaceService(repository)
+
+    visible = workspace.provider_alias_review_detail(asset_id)
+
+    assert [item["face_observation_id"] for item in visible["faces"]] == [
+        face.face_observation_id
+    ]
+    assert visible["faces"][0]["review_state"] == "pending"
+    repository.apply_asset_people_review(
+        local_asset_id=asset_id,
+        expected_review_revision=visible["review_revision"],
+        assignments=[],
+        face_decisions=[
+            {"face_observation_id": face.face_observation_id, "decision": "ignore_unknown"}
+        ],
+        device_fingerprint="test-device",
+        idempotency_key="ignore-provider-alias-face",
+        request_hash="ignore-provider-alias-face-hash",
+    )
+
+    assert workspace.provider_alias_review_detail(asset_id)["faces"] == []
+
+
 def test_face_index_run_and_review_item_are_idempotent(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     run = repository.create_face_index_run(
