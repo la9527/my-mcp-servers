@@ -1169,22 +1169,25 @@ class PhotosMcpPeopleManagerController(NSObject):
 
     @objc.python_method
     def _representative_crop_path(self, identity: PersonIdentity) -> str:
+        # Stable identities use the repository's quality-ranked representative.
+        # The in-memory face list is job-scoped and may still start with an old,
+        # blurred, or profile crop.
+        person = self._dashboard_person(identity)
+        artifact_ref = str(person.get("representative_face_ref") or "")
+        if artifact_ref and self._identity_repository is not None:
+            try:
+                return str(
+                    PeopleWorkspaceService(
+                        self._identity_repository,
+                        run_repository=self._menu_controller._state_store.run_repository,
+                    ).artifact_path(artifact_ref)
+                )
+            except (FileNotFoundError, OSError, ValueError):
+                pass
         representative = identity.representative_face
         if representative is not None and representative.crop_path:
             return representative.crop_path
-        person = self._dashboard_person(identity)
-        artifact_ref = str(person.get("representative_face_ref") or "")
-        if not artifact_ref or self._identity_repository is None:
-            return ""
-        try:
-            return str(
-                PeopleWorkspaceService(
-                    self._identity_repository,
-                    run_repository=self._menu_controller._state_store.run_repository,
-                ).artifact_path(artifact_ref)
-            )
-        except (FileNotFoundError, OSError, ValueError):
-            return ""
+        return ""
 
     @objc.python_method
     def _people_card_grid(

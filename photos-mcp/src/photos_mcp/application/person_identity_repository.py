@@ -2071,7 +2071,13 @@ class PersonIdentityRepository:
         )
 
     def representative_face_artifact(self, person_identity_id: str) -> dict[str, Any] | None:
-        """Return one private crop reference for an owner-facing identity card."""
+        """Return the best private crop for an owner-facing identity card.
+
+        The first owner-confirmed face used to remain the representative forever.
+        That made a blurred or profile face win even after much better evidence was
+        confirmed.  Derive the projection from the latest quality measurements so
+        Mac and Android automatically improve when a better crop is indexed.
+        """
 
         with self._connect() as connection:
             row = connection.execute(
@@ -2094,10 +2100,39 @@ class PersonIdentityRepository:
                     )
                    LEFT JOIN face_artifact_refs artifact
                      ON artifact.face_observation_id = observation.face_observation_id
+                   LEFT JOIN face_quality_versions quality
+                     ON quality.face_observation_id = observation.face_observation_id
+                    AND quality.quality_revision = (
+                      SELECT MAX(quality2.quality_revision)
+                      FROM face_quality_versions quality2
+                      WHERE quality2.face_observation_id = quality.face_observation_id
+                    )
                    WHERE observation.observation_status = 'active'
                      AND COALESCE(review.review_crop_ref, artifact.crop_ref, '') <> ''
-                   ORDER BY CASE WHEN representative.face_observation_id IS NULL THEN 1 ELSE 0 END,
-                            observation.created_at DESC LIMIT 1""",
+                   ORDER BY
+                     CASE
+                       WHEN quality.quality_tier IN ('auto_eligible', 'review_eligible') THEN 0
+                       WHEN quality.quality_tier = 'quality_suppressed' THEN 1
+                       ELSE 2
+                     END,
+                     CASE
+                       WHEN COALESCE(quality.frontal_score, 0.0) >= 0.90 THEN 0
+                       WHEN COALESCE(quality.frontal_score, 0.0) >= 0.78 THEN 1
+                       WHEN COALESCE(quality.frontal_score, 0.0) >= 0.65 THEN 2
+                       ELSE 3
+                     END,
+                     (
+                       0.42 * COALESCE(quality.frontal_score, 0.0)
+                       + 0.22 * MIN(COALESCE(quality.sharpness_score, 0.0) / 240.0, 1.0)
+                       + 0.14 * COALESCE(quality.detector_score, 0.0)
+                       + 0.12 * MIN(COALESCE(quality.box_short_edge_px, 0) / 320.0, 1.0)
+                       + 0.10 * COALESCE(quality.exposure_score, 0.0)
+                       - 0.30 * COALESCE(quality.clipped_fraction, 0.0)
+                     ) DESC,
+                     CASE WHEN representative.face_observation_id IS NULL THEN 1 ELSE 0 END,
+                     observation.created_at DESC,
+                     observation.face_observation_id
+                   LIMIT 1""",
                 (person_identity_id,),
             ).fetchone()
         return dict(row) if row is not None else None
@@ -2127,6 +2162,13 @@ class PersonIdentityRepository:
                     )
                    LEFT JOIN face_artifact_refs artifact
                      ON artifact.face_observation_id = observation.face_observation_id
+                   LEFT JOIN face_quality_versions quality
+                     ON quality.face_observation_id = observation.face_observation_id
+                    AND quality.quality_revision = (
+                      SELECT MAX(quality2.quality_revision)
+                      FROM face_quality_versions quality2
+                      WHERE quality2.face_observation_id = quality.face_observation_id
+                    )
                    WHERE membership.person_identity_id = ?
                      AND membership.membership_state = 'candidate'
                      AND membership.membership_revision = (
@@ -2137,7 +2179,28 @@ class PersonIdentityRepository:
                      )
                      AND observation.observation_status = 'active'
                      AND COALESCE(review.review_crop_ref, artifact.crop_ref, '') <> ''
-                   ORDER BY observation.local_asset_id, observation.face_observation_id
+                   ORDER BY
+                     CASE
+                       WHEN quality.quality_tier IN ('auto_eligible', 'review_eligible') THEN 0
+                       WHEN quality.quality_tier = 'quality_suppressed' THEN 1
+                       ELSE 2
+                     END,
+                     CASE
+                       WHEN COALESCE(quality.frontal_score, 0.0) >= 0.90 THEN 0
+                       WHEN COALESCE(quality.frontal_score, 0.0) >= 0.78 THEN 1
+                       WHEN COALESCE(quality.frontal_score, 0.0) >= 0.65 THEN 2
+                       ELSE 3
+                     END,
+                     (
+                       0.42 * COALESCE(quality.frontal_score, 0.0)
+                       + 0.22 * MIN(COALESCE(quality.sharpness_score, 0.0) / 240.0, 1.0)
+                       + 0.14 * COALESCE(quality.detector_score, 0.0)
+                       + 0.12 * MIN(COALESCE(quality.box_short_edge_px, 0) / 320.0, 1.0)
+                       + 0.10 * COALESCE(quality.exposure_score, 0.0)
+                       - 0.30 * COALESCE(quality.clipped_fraction, 0.0)
+                     ) DESC,
+                     observation.local_asset_id,
+                     observation.face_observation_id
                    LIMIT ?""",
                 (person_identity_id, max(1, min(12, int(limit)))),
             ).fetchall()

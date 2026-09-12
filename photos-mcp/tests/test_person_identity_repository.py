@@ -426,6 +426,125 @@ def test_review_summary_counts_only_current_active_candidates(tmp_path: Path) ->
     assert "name" not in asdict(summary)
 
 
+def test_representative_face_prefers_confirmed_frontal_high_quality_crop(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    identity = repository.create_identity(
+        display_name="가족",
+        identity_status="user_confirmed",
+        name_status="user_confirmed",
+    )
+    observations = []
+    qualities = (
+        # This old, side-profile face simulates the formerly fixed representative.
+        ("old-profile", "quality_suppressed", 0.91, 280, 130.0, 0.92, 0.12, 0.0),
+        ("clear-front", "review_eligible", 0.90, 410, 105.0, 0.94, 0.96, 0.01),
+        ("clear-angle", "auto_eligible", 0.97, 230, 180.0, 0.95, 0.73, 0.0),
+    )
+    for crop, tier, detector, edge, sharpness, exposure, frontal, clipped in qualities:
+        observation = repository.register_face_observation(
+            _local_observation(f"asset-{crop}", crop=crop)
+        )
+        observations.append(observation)
+        repository.upsert_face_review_artifacts(
+            observation.face_observation_id,
+            review_crop_ref=f"review-crops/{crop}.jpg",
+            context_preview_ref=f"previews/{crop}.jpg",
+        )
+        repository.record_face_quality(
+            observation.face_observation_id,
+            quality_tier=tier,
+            reason_codes=("extreme_pose",) if tier == "quality_suppressed" else (),
+            detector_score=detector,
+            box_short_edge_px=edge,
+            sharpness_score=sharpness,
+            exposure_score=exposure,
+            frontal_score=frontal,
+            clipped_fraction=clipped,
+            policy_version="exception-only-v1",
+        )
+        current = repository.get_identity(identity.person_identity_id)
+        repository.set_membership(
+            observation.face_observation_id,
+            identity.person_identity_id,
+            membership_state="owner_confirmed",
+            provenance="owner",
+            decision_policy_version="owner-v1",
+            expected_identity_revision=current.identity_revision,
+        )
+
+    # Preserve the old representative marker to prove it is now only a final
+    # tie-breaker, not an override of visual quality.
+    with sqlite3.connect(repository.path) as connection:
+        connection.execute(
+            "INSERT INTO representative_face_versions VALUES (?, 1, ?, 'active', ?)",
+            (
+                identity.person_identity_id,
+                observations[0].face_observation_id,
+                NOW,
+            ),
+        )
+
+    representative = repository.representative_face_artifact(identity.person_identity_id)
+
+    assert representative is not None
+    assert representative["face_observation_id"] == observations[1].face_observation_id
+    assert representative["crop_ref"] == "review-crops/clear-front.jpg"
+
+
+def test_candidate_face_evidence_is_also_ordered_by_visual_quality(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    candidate = repository.create_identity(identity_status="candidate")
+    inputs = (
+        ("profile", "quality_suppressed", 0.15, 160.0),
+        ("front", "review_eligible", 0.97, 110.0),
+        ("angle", "auto_eligible", 0.74, 190.0),
+    )
+    current = candidate
+    for crop, tier, frontal, sharpness in inputs:
+        observation = repository.register_face_observation(
+            _local_observation(f"candidate-{crop}", crop=crop)
+        )
+        repository.upsert_face_review_artifacts(
+            observation.face_observation_id,
+            review_crop_ref=f"review-crops/{crop}.jpg",
+            context_preview_ref=f"previews/{crop}.jpg",
+        )
+        repository.record_face_quality(
+            observation.face_observation_id,
+            quality_tier=tier,
+            reason_codes=("extreme_pose",) if tier == "quality_suppressed" else (),
+            detector_score=0.95,
+            box_short_edge_px=220,
+            sharpness_score=sharpness,
+            exposure_score=0.92,
+            frontal_score=frontal,
+            clipped_fraction=0.0,
+            policy_version="exception-only-v1",
+        )
+        repository.set_membership(
+            observation.face_observation_id,
+            candidate.person_identity_id,
+            membership_state="candidate",
+            provenance="person-index",
+            decision_policy_version="person-index-v1",
+            expected_identity_revision=current.identity_revision,
+        )
+        current = repository.get_identity(candidate.person_identity_id)
+
+    evidence = repository.candidate_identity_face_artifacts(
+        candidate.person_identity_id,
+        limit=3,
+    )
+
+    assert [item["crop_ref"] for item in evidence] == [
+        "review-crops/front.jpg",
+        "review-crops/angle.jpg",
+        "review-crops/profile.jpg",
+    ]
+
+
 def test_review_summary_keeps_unresolved_lineage_and_counts_distinct_faces(
     tmp_path: Path,
 ) -> None:

@@ -314,10 +314,24 @@ def test_people_home_resolves_durable_representative_face_for_stable_identity(tm
     crop = tmp_path / "index-private" / "faces" / "representative.jpg"
     crop.parent.mkdir(parents=True)
     crop.write_bytes(b"representative")
+    job_crop = tmp_path / "job-profile.jpg"
+    job_crop.write_bytes(b"older-job-crop")
     identity = PersonIdentity(
         "stable-person",
         "가족",
-        (),
+        (
+            PersonFace(
+                face_id="older-profile",
+                job_id="job-one",
+                photo_id="photo-one",
+                face_index=0,
+                crop_path=str(job_crop),
+                preview_path="",
+                source_photo_path="",
+                embedding=(),
+                area=0.2,
+            ),
+        ),
         False,
         stable_identity_id="stable-person",
         stable_identity_status="user_confirmed",
