@@ -130,6 +130,22 @@ apply_stable_designated_requirement() {
 	codesign --force --sign - --requirements "=$DESIGNATED_REQUIREMENT" "$bundle_path"
 }
 
+smoke_person_runtime() {
+	local bundle_path="$1"
+	local resources="$bundle_path/Contents/Resources"
+	local runtime_pythonpath="$resources/lib/python$FRAMEWORK_VERSION:$resources/lib/python$FRAMEWORK_VERSION/lib-dynload:$resources/lib"
+
+	env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$runtime_pythonpath" \
+		"$bundle_path/Contents/MacOS/python" - <<'PY'
+from photos_mcp.application.person_indexing import face_runtime_status
+
+status = face_runtime_status()
+if status.status != "ready":
+    raise SystemExit(f"person runtime is not ready: {status.error_code}")
+print(f"person-runtime-ready:{status.model_fingerprint}")
+PY
+}
+
 FRAMEWORK_RUNTIME_DIR="${FRAMEWORK_RUNTIME_DIR_OVERRIDE:-$(find_framework_runtime_dir || true)}"
 BASE_PYTHON="$FRAMEWORK_RUNTIME_DIR/Python.framework/Versions/$FRAMEWORK_VERSION/bin/python$FRAMEWORK_VERSION"
 FRAMEWORK_LIB_DIR="$FRAMEWORK_RUNTIME_DIR/Python.framework/Versions/$FRAMEWORK_VERSION/lib"
@@ -188,6 +204,7 @@ codesign --verify --deep --strict "$APP_BUNDLE"
 PYTHONDONTWRITEBYTECODE=1 "$APP_BUNDLE/Contents/MacOS/PhotosMcp" --health
 PYTHONDONTWRITEBYTECODE=1 "$APP_BUNDLE/Contents/MacOS/PhotosMcp" --runtime-import-smoke
 PYTHONDONTWRITEBYTECODE=1 "$APP_BUNDLE/Contents/MacOS/PhotosMcp" --vendor-runtime-smoke
+smoke_person_runtime "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
 
 if [[ -n "$INSTALL_BUNDLE_PATH" ]]; then
@@ -198,6 +215,7 @@ if [[ -n "$INSTALL_BUNDLE_PATH" ]]; then
 	PYTHONDONTWRITEBYTECODE=1 "$INSTALL_BUNDLE_PATH/Contents/MacOS/PhotosMcp" --health
 	PYTHONDONTWRITEBYTECODE=1 "$INSTALL_BUNDLE_PATH/Contents/MacOS/PhotosMcp" --runtime-import-smoke
 	PYTHONDONTWRITEBYTECODE=1 "$INSTALL_BUNDLE_PATH/Contents/MacOS/PhotosMcp" --vendor-runtime-smoke
+	smoke_person_runtime "$INSTALL_BUNDLE_PATH"
 	codesign --verify --deep --strict "$INSTALL_BUNDLE_PATH"
 
 	if [[ -n "$PUBLIC_APPLICATION_LINK" ]]; then

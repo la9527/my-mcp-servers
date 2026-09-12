@@ -118,6 +118,16 @@ async def handle_query(
             "destination_receipt_count": len(receipts),
             "destination_receipts": receipts,
         }
+    if selected_action == "added":
+        return await photos_library(
+            state_store=state_store,
+            action=selected_action,
+            source=str(opts.get("source") or "apple"),
+            date_added_from=str(opts.get("date_added_from") or ""),
+            date_added_to=str(opts.get("date_added_to") or ""),
+            cursor=str(opts.get("cursor") or ""),
+            limit=int(opts.get("limit") or 100),
+        )
     if selected_action in {"list", "ready_only", "search", "inspect", "prefetch"}:
         return await photos_library(
             state_store=state_store,

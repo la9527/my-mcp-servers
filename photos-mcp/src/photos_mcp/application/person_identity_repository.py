@@ -21,7 +21,7 @@ import uuid
 from photos_mcp.infrastructure.runtime.paths import photos_mcp_home
 
 
-IDENTITY_REPOSITORY_SCHEMA_VERSION = 2
+IDENTITY_REPOSITORY_SCHEMA_VERSION = 6
 _MIGRATION_NAMESPACE = uuid.UUID("15b9642f-c077-4a9d-84d6-13637905eca8")
 _IDENTITY_STATES = {"candidate", "user_confirmed", "conflicted", "hidden", "deleted"}
 _NAME_STATES = {"unlabeled", "provider_asserted", "user_confirmed", "revoked"}
@@ -30,6 +30,10 @@ _AUDIENCES = {"owner", "family_share"}
 _OBSERVATION_STATES = {"active", "invalid", "missing"}
 _ALIAS_STATES = {"candidate", "owner_confirmed", "rejected"}
 _ASSET_ASSOCIATION_STATES = {"candidate", "owner_confirmed", "rejected", "unavailable"}
+_ASSET_FACE_INDEX_STATES = {"pending", "running", "completed", "no_face", "failed", "stale"}
+_FACE_REVIEW_STATES = {"pending", "resolved", "rejected", "deferred", "ignored"}
+_FACE_QUALITY_TIERS = {"auto_eligible", "review_eligible", "quality_suppressed"}
+_AUTOMATIC_ASSIGNMENT_STATES = {"auto_accepted", "revoked", "superseded"}
 
 
 class ConfirmedMembershipConflictError(ValueError):
@@ -149,6 +153,53 @@ class PeopleReadiness:
     confirmed_asset_association_count: int
     pending_alias_count: int
     pending_lineage_hold_count: int
+
+
+@dataclass(frozen=True)
+class FaceIndexRunRecord:
+    index_run_id: str
+    scope_kind: str
+    scope_fingerprint: str
+    model_family: str
+    model_version: str
+    model_fingerprint: str
+    asset_count: int
+    detected_face_count: int
+    embedding_count: int
+    candidate_count: int
+    review_count: int
+    failure_count: int
+    status: str
+    checkpoint_json: str
+    started_at: str
+    completed_at: str | None
+    error_code: str
+
+
+@dataclass(frozen=True)
+class FaceGeometryRecord:
+    face_observation_id: str
+    geometry_revision: int
+    x_norm: float
+    y_norm: float
+    width_norm: float
+    height_norm: float
+    oriented_source_width: int
+    oriented_source_height: int
+    orientation_revision: int
+    geometry_state: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class FaceReviewArtifactRecord:
+    face_observation_id: str
+    artifact_revision: int
+    review_crop_ref: str
+    context_preview_ref: str
+    highlighted_context_ref: str
+    artifact_state: str
+    created_at: str
 
 
 @dataclass(frozen=True)
@@ -404,6 +455,248 @@ class PersonIdentityRepository:
                     FOREIGN KEY (person_identity_id) REFERENCES person_identities(person_identity_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS face_index_runs (
+                    index_run_id TEXT PRIMARY KEY,
+                    scope_kind TEXT NOT NULL,
+                    scope_fingerprint TEXT NOT NULL,
+                    model_family TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    model_fingerprint TEXT NOT NULL,
+                    asset_count INTEGER NOT NULL DEFAULT 0,
+                    detected_face_count INTEGER NOT NULL DEFAULT 0,
+                    embedding_count INTEGER NOT NULL DEFAULT 0,
+                    candidate_count INTEGER NOT NULL DEFAULT 0,
+                    review_count INTEGER NOT NULL DEFAULT 0,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    checkpoint_json TEXT NOT NULL DEFAULT '{}',
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    error_code TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE INDEX IF NOT EXISTS face_index_runs_started_index
+                ON face_index_runs(started_at DESC, index_run_id);
+
+                CREATE TABLE IF NOT EXISTS person_review_item_versions (
+                    review_item_id TEXT NOT NULL,
+                    review_revision INTEGER NOT NULL,
+                    review_kind TEXT NOT NULL,
+                    candidate_person_identity_id TEXT,
+                    face_observation_id TEXT,
+                    suggested_person_identity_id TEXT,
+                    review_state TEXT NOT NULL,
+                    model_policy_version TEXT NOT NULL,
+                    index_run_id TEXT,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    PRIMARY KEY (review_item_id, review_revision),
+                    FOREIGN KEY (candidate_person_identity_id) REFERENCES person_identities(person_identity_id),
+                    FOREIGN KEY (face_observation_id) REFERENCES face_observations(face_observation_id),
+                    FOREIGN KEY (suggested_person_identity_id) REFERENCES person_identities(person_identity_id),
+                    FOREIGN KEY (index_run_id) REFERENCES face_index_runs(index_run_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS face_identity_suggestion_versions (
+                    face_observation_id TEXT NOT NULL,
+                    suggestion_revision INTEGER NOT NULL,
+                    person_identity_id TEXT NOT NULL,
+                    confidence_estimate REAL NOT NULL,
+                    top_similarity REAL NOT NULL,
+                    robust_similarity REAL NOT NULL,
+                    runner_up_similarity REAL,
+                    similarity_margin REAL,
+                    supporting_face_count INTEGER NOT NULL,
+                    supporting_asset_count INTEGER NOT NULL,
+                    suggestion_tier TEXT NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (face_observation_id, suggestion_revision),
+                    FOREIGN KEY (face_observation_id) REFERENCES face_observations(face_observation_id),
+                    FOREIGN KEY (person_identity_id) REFERENCES person_identities(person_identity_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS face_identity_suggestion_person_index
+                ON face_identity_suggestion_versions(person_identity_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS representative_face_versions (
+                    person_identity_id TEXT NOT NULL,
+                    representative_revision INTEGER NOT NULL,
+                    face_observation_id TEXT NOT NULL,
+                    representative_state TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (person_identity_id, representative_revision),
+                    FOREIGN KEY (person_identity_id) REFERENCES person_identities(person_identity_id),
+                    FOREIGN KEY (face_observation_id) REFERENCES face_observations(face_observation_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS face_artifact_refs (
+                    face_observation_id TEXT PRIMARY KEY,
+                    crop_ref TEXT NOT NULL,
+                    context_preview_ref TEXT NOT NULL,
+                    artifact_revision INTEGER NOT NULL,
+                    artifact_state TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (face_observation_id) REFERENCES face_observations(face_observation_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS asset_face_index_versions (
+                    local_asset_id TEXT NOT NULL,
+                    index_revision INTEGER NOT NULL,
+                    index_run_id TEXT,
+                    model_fingerprint TEXT NOT NULL,
+                    index_state TEXT NOT NULL,
+                    detected_face_count INTEGER NOT NULL DEFAULT 0,
+                    error_code TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    PRIMARY KEY (local_asset_id, index_revision),
+                    FOREIGN KEY (index_run_id) REFERENCES face_index_runs(index_run_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS asset_face_index_state_index
+                ON asset_face_index_versions(index_state, local_asset_id, index_revision DESC);
+
+                CREATE TABLE IF NOT EXISTS face_observation_geometry (
+                    face_observation_id TEXT NOT NULL,
+                    geometry_revision INTEGER NOT NULL,
+                    x_norm REAL NOT NULL,
+                    y_norm REAL NOT NULL,
+                    width_norm REAL NOT NULL,
+                    height_norm REAL NOT NULL,
+                    oriented_source_width INTEGER NOT NULL,
+                    oriented_source_height INTEGER NOT NULL,
+                    orientation_revision INTEGER NOT NULL DEFAULT 1,
+                    geometry_state TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (face_observation_id, geometry_revision),
+                    FOREIGN KEY (face_observation_id) REFERENCES face_observations(face_observation_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS face_review_artifact_versions (
+                    face_observation_id TEXT NOT NULL,
+                    artifact_revision INTEGER NOT NULL,
+                    review_crop_ref TEXT NOT NULL,
+                    context_preview_ref TEXT NOT NULL,
+                    highlighted_context_ref TEXT NOT NULL DEFAULT '',
+                    artifact_state TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (face_observation_id, artifact_revision),
+                    FOREIGN KEY (face_observation_id) REFERENCES face_observations(face_observation_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS provider_alias_face_assignment_versions (
+                    alias_id TEXT NOT NULL,
+                    assignment_revision INTEGER NOT NULL,
+                    reviewed_alias_revision INTEGER NOT NULL,
+                    face_observation_id TEXT NOT NULL,
+                    person_identity_id TEXT NOT NULL,
+                    assignment_state TEXT NOT NULL,
+                    provenance TEXT NOT NULL,
+                    decision_policy_version TEXT NOT NULL,
+                    decision_group_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    PRIMARY KEY (alias_id, assignment_revision),
+                    FOREIGN KEY (face_observation_id) REFERENCES face_observations(face_observation_id),
+                    FOREIGN KEY (person_identity_id) REFERENCES person_identities(person_identity_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS asset_people_review_state (
+                    local_asset_id TEXT PRIMARY KEY,
+                    review_revision INTEGER NOT NULL,
+                    review_state TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS identity_command_receipts (
+                    device_fingerprint TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    command_kind TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    PRIMARY KEY (device_fingerprint, idempotency_key)
+                );
+
+                CREATE TABLE IF NOT EXISTS story_people_refresh_outbox (
+                    outbox_id TEXT PRIMARY KEY,
+                    decision_group_id TEXT NOT NULL,
+                    affected_asset_ids_hash TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS people_decision_groups (
+                    decision_group_id TEXT PRIMARY KEY,
+                    local_asset_id TEXT NOT NULL,
+                    before_json TEXT NOT NULL,
+                    after_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    undone_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS face_quality_versions (
+                    face_observation_id TEXT NOT NULL,
+                    quality_revision INTEGER NOT NULL,
+                    quality_tier TEXT NOT NULL,
+                    reason_codes_json TEXT NOT NULL,
+                    detector_score REAL NOT NULL,
+                    box_short_edge_px INTEGER NOT NULL,
+                    sharpness_score REAL NOT NULL,
+                    exposure_score REAL NOT NULL,
+                    frontal_score REAL NOT NULL,
+                    clipped_fraction REAL NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (face_observation_id, quality_revision),
+                    FOREIGN KEY (face_observation_id) REFERENCES face_observations(face_observation_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS face_quality_tier_index
+                ON face_quality_versions(quality_tier, face_observation_id, quality_revision DESC);
+
+                CREATE TABLE IF NOT EXISTS identity_automation_profile_versions (
+                    person_identity_id TEXT NOT NULL,
+                    profile_revision INTEGER NOT NULL,
+                    auto_enabled INTEGER NOT NULL,
+                    suspended INTEGER NOT NULL,
+                    owner_confirmed_anchor_count INTEGER NOT NULL,
+                    independent_context_count INTEGER NOT NULL,
+                    maturity TEXT NOT NULL,
+                    model_fingerprint TEXT NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (person_identity_id, profile_revision),
+                    FOREIGN KEY (person_identity_id) REFERENCES person_identities(person_identity_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS automatic_identity_assignment_versions (
+                    face_observation_id TEXT NOT NULL,
+                    assignment_revision INTEGER NOT NULL,
+                    person_identity_id TEXT NOT NULL,
+                    assignment_state TEXT NOT NULL,
+                    top_similarity REAL NOT NULL,
+                    robust_similarity REAL NOT NULL,
+                    similarity_margin REAL,
+                    supporting_asset_count INTEGER NOT NULL,
+                    model_fingerprint TEXT NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    PRIMARY KEY (face_observation_id, assignment_revision),
+                    FOREIGN KEY (face_observation_id) REFERENCES face_observations(face_observation_id),
+                    FOREIGN KEY (person_identity_id) REFERENCES person_identities(person_identity_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS automatic_assignment_person_index
+                ON automatic_identity_assignment_versions(person_identity_id, created_at DESC);
+
                 CREATE TABLE IF NOT EXISTS identity_decisions (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_id TEXT NOT NULL UNIQUE,
@@ -490,6 +783,37 @@ class PersonIdentityRepository:
                 GROUP BY latest.face_observation_id
                 HAVING COUNT(*) = 1
                 """
+            )
+            # Schema v4 adds a photo-level projection over existing face rows.
+            # This is additive: historical observations, memberships, aliases,
+            # names, consent and audit rows remain untouched.
+            now = self._now_fn()
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO asset_people_review_state(
+                    local_asset_id, review_revision, review_state, updated_at, completed_at
+                )
+                SELECT DISTINCT local_asset_id, 1, 'pending', ?, NULL
+                FROM face_observations
+                WHERE local_asset_id IS NOT NULL
+                  AND observation_status = 'active'
+                """,
+                (now,),
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO asset_face_index_versions(
+                    local_asset_id, index_revision, index_run_id, model_fingerprint,
+                    index_state, detected_face_count, error_code, created_at, completed_at
+                )
+                SELECT local_asset_id, 1, NULL, MAX(model_fingerprint), 'completed',
+                       COUNT(*), '', ?, ?
+                FROM face_observations
+                WHERE local_asset_id IS NOT NULL
+                  AND observation_status = 'active'
+                GROUP BY local_asset_id
+                """,
+                (now, now),
             )
             connection.execute(
                 "INSERT OR REPLACE INTO repository_metadata(key, value) VALUES ('schema_version', ?)",
@@ -839,6 +1163,2407 @@ class PersonIdentityRepository:
             ).fetchall()
         return tuple(self._alias_record(row) for row in rows)
 
+    def get_provider_person_alias(self, alias_id: str) -> ProviderPersonAliasRecord:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM provider_person_alias_versions
+                   WHERE alias_id = ? ORDER BY alias_revision DESC LIMIT 1""",
+                (alias_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(alias_id)
+        return self._alias_record(row)
+
+    def review_provider_person_alias(
+        self,
+        alias_id: str,
+        *,
+        decision: Literal["rejected"],
+        actor: str = "owner",
+        request_id: str = "",
+    ) -> ProviderPersonAliasRecord:
+        """Resolve an alias without attaching it to a person.
+
+        Deferring intentionally performs no write so the current action handle
+        can expire while the candidate remains in the queue.
+        """
+
+        if decision != "rejected":
+            raise ValueError("invalid provider alias decision")
+        now = self._now_fn()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = connection.execute(
+                """SELECT * FROM provider_person_alias_versions
+                   WHERE alias_id = ? ORDER BY alias_revision DESC LIMIT 1""",
+                (alias_id,),
+            ).fetchone()
+            if latest is None:
+                raise KeyError(alias_id)
+            if str(latest["alias_state"]) != "candidate":
+                raise ValueError("provider alias is not pending review")
+            alias_revision = int(latest["alias_revision"]) + 1
+            connection.execute(
+                """INSERT INTO provider_person_alias_versions(
+                     alias_id, alias_revision, provider, alias_key_hash,
+                     alias_key_quality, private_display_label, local_asset_id,
+                     alias_state, person_identity_id, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'rejected', NULL, ?)""",
+                (
+                    alias_id,
+                    alias_revision,
+                    latest["provider"],
+                    latest["alias_key_hash"],
+                    latest["alias_key_quality"],
+                    latest["private_display_label"],
+                    latest["local_asset_id"],
+                    now,
+                ),
+            )
+            self._append_audit(
+                connection,
+                event_type="provider-alias-reject",
+                entity_id=alias_id,
+                entity_revision=alias_revision,
+                actor=actor,
+                request_id=request_id,
+                before={"alias_state": "candidate"},
+                after={"alias_state": "rejected"},
+                created_at=now,
+            )
+            row = connection.execute(
+                """SELECT * FROM provider_person_alias_versions
+                   WHERE alias_id = ? AND alias_revision = ?""",
+                (alias_id, alias_revision),
+            ).fetchone()
+        assert row is not None
+        return self._alias_record(row)
+
+    def create_identity_from_provider_alias(
+        self,
+        alias_id: str,
+        display_name: str,
+        *,
+        actor: str = "owner",
+        request_id: str = "",
+    ) -> PersonIdentityRecord:
+        """Atomically create an owner-confirmed identity from one exact alias asset."""
+
+        name = " ".join(display_name.split())[:80]
+        if not name:
+            raise ValueError("display_name is required")
+        now = self._now_fn()
+        identity_id = _opaque_person_id()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = connection.execute(
+                """SELECT * FROM provider_person_alias_versions
+                   WHERE alias_id = ? ORDER BY alias_revision DESC LIMIT 1""",
+                (alias_id,),
+            ).fetchone()
+            if latest is None:
+                raise KeyError(alias_id)
+            if str(latest["alias_state"]) != "candidate":
+                raise ValueError("provider alias is not pending review")
+            active_face_count = connection.execute(
+                """SELECT COUNT(*) FROM face_observations
+                   WHERE local_asset_id = ? AND observation_status = 'active'""",
+                (str(latest["local_asset_id"]),),
+            ).fetchone()
+            if active_face_count and int(active_face_count[0]) > 1:
+                raise ValueError("face_selection_required")
+            connection.execute(
+                "INSERT INTO person_identities VALUES (?, 'user_confirmed', 1, ?, ?)",
+                (identity_id, now, now),
+            )
+            connection.execute(
+                "INSERT INTO identity_state_versions VALUES (?, 1, 'user_confirmed', ?)",
+                (identity_id, now),
+            )
+            connection.execute(
+                "INSERT INTO name_state_versions VALUES (?, 1, ?, 'user_confirmed', ?)",
+                (identity_id, name, now),
+            )
+            connection.execute(
+                "INSERT INTO story_name_consent_versions VALUES (?, 'owner', 1, 1, ?)",
+                (identity_id, now),
+            )
+            local_asset_id = str(latest["local_asset_id"])
+            connection.execute(
+                """INSERT INTO asset_person_association_versions VALUES
+                   (?, ?, 1, 'owner_confirmed', ?, 'asset-person-v1', ?, NULL)""",
+                (
+                    local_asset_id,
+                    identity_id,
+                    f"provider_alias:{str(latest['provider'])}",
+                    now,
+                ),
+            )
+            alias_revision = int(latest["alias_revision"]) + 1
+            connection.execute(
+                """INSERT INTO provider_person_alias_versions(
+                     alias_id, alias_revision, provider, alias_key_hash,
+                     alias_key_quality, private_display_label, local_asset_id,
+                     alias_state, person_identity_id, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'owner_confirmed', ?, ?)""",
+                (
+                    alias_id,
+                    alias_revision,
+                    latest["provider"],
+                    latest["alias_key_hash"],
+                    latest["alias_key_quality"],
+                    latest["private_display_label"],
+                    local_asset_id,
+                    identity_id,
+                    now,
+                ),
+            )
+            self._append_audit(
+                connection,
+                event_type="identity-create-from-provider-alias",
+                entity_id=identity_id,
+                entity_revision=1,
+                actor=actor,
+                request_id=request_id,
+                before={},
+                after={
+                    "identity_status": "user_confirmed",
+                    "name": name,
+                    "name_status": "user_confirmed",
+                    "alias_id": alias_id,
+                    "local_asset_id": local_asset_id,
+                },
+                created_at=now,
+            )
+        return self.get_identity(identity_id)
+
+    def person_photo_count(self, person_identity_id: str) -> int:
+        """Count distinct currently linked local assets without returning paths."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(DISTINCT local_asset_id) FROM (
+                     SELECT a.local_asset_id
+                     FROM current_owner_confirmed_asset_people a
+                     WHERE a.person_identity_id = ?
+                     UNION
+                     SELECT o.local_asset_id
+                     FROM current_owner_confirmed_memberships m
+                     JOIN face_observations o
+                       ON o.face_observation_id = m.face_observation_id
+                     WHERE m.person_identity_id = ?
+                       AND o.observation_status = 'active'
+                       AND o.local_asset_id IS NOT NULL
+                     UNION
+                     SELECT o.local_asset_id
+                     FROM automatic_identity_assignment_versions auto
+                     JOIN face_observations o
+                       ON o.face_observation_id = auto.face_observation_id
+                     WHERE auto.person_identity_id = ?
+                       AND auto.assignment_state = 'auto_accepted'
+                       AND auto.assignment_revision = (
+                         SELECT MAX(auto2.assignment_revision)
+                         FROM automatic_identity_assignment_versions auto2
+                         WHERE auto2.face_observation_id = auto.face_observation_id
+                       )
+                       AND EXISTS (
+                         SELECT 1 FROM identity_automation_profile_versions profile
+                         WHERE profile.person_identity_id = auto.person_identity_id
+                           AND profile.profile_revision = (
+                             SELECT MAX(profile2.profile_revision)
+                             FROM identity_automation_profile_versions profile2
+                             WHERE profile2.person_identity_id = profile.person_identity_id
+                           )
+                           AND profile.auto_enabled = 1 AND profile.suspended = 0
+                           AND profile.maturity = 'auto_ready'
+                           AND profile.model_fingerprint = auto.model_fingerprint
+                           AND profile.policy_version = auto.policy_version
+                       )
+                       AND o.observation_status = 'active'
+                       AND o.local_asset_id IS NOT NULL
+                   )""",
+                (person_identity_id, person_identity_id, person_identity_id),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def create_face_index_run(
+        self,
+        *,
+        scope_kind: str,
+        scope_fingerprint: str,
+        model_family: str,
+        model_version: str,
+        model_fingerprint: str,
+    ) -> FaceIndexRunRecord:
+        now = self._now_fn()
+        run_id = f"pidx_{uuid.uuid4().hex}"
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO face_index_runs(
+                     index_run_id, scope_kind, scope_fingerprint,
+                     model_family, model_version, model_fingerprint,
+                     status, checkpoint_json, started_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, 'running', '{}', ?)""",
+                (
+                    run_id,
+                    scope_kind[:40],
+                    scope_fingerprint,
+                    model_family,
+                    model_version,
+                    model_fingerprint,
+                    now,
+                ),
+            )
+        return self.get_face_index_run(run_id)
+
+    def update_face_index_run(
+        self,
+        index_run_id: str,
+        *,
+        status: str,
+        counts: Mapping[str, int],
+        checkpoint: Mapping[str, Any] | None = None,
+        error_code: str = "",
+    ) -> FaceIndexRunRecord:
+        if status not in {"running", "completed", "failed", "cancelled", "paused"}:
+            raise ValueError("invalid face index status")
+        count_names = (
+            "asset_count",
+            "detected_face_count",
+            "embedding_count",
+            "candidate_count",
+            "review_count",
+            "failure_count",
+        )
+        values = {name: max(0, int(counts.get(name, 0))) for name in count_names}
+        now = self._now_fn()
+        completed_at = now if status in {"completed", "failed", "cancelled"} else None
+        with self._connect() as connection:
+            result = connection.execute(
+                """UPDATE face_index_runs SET
+                     asset_count = ?, detected_face_count = ?, embedding_count = ?,
+                     candidate_count = ?, review_count = ?, failure_count = ?,
+                     status = ?, checkpoint_json = ?, completed_at = ?, error_code = ?
+                   WHERE index_run_id = ?""",
+                (
+                    *(values[name] for name in count_names),
+                    status,
+                    json.dumps(checkpoint or {}, sort_keys=True, separators=(",", ":")),
+                    completed_at,
+                    error_code[:80],
+                    index_run_id,
+                ),
+            )
+        if result.rowcount != 1:
+            raise KeyError(index_run_id)
+        return self.get_face_index_run(index_run_id)
+
+    def get_face_index_run(self, index_run_id: str) -> FaceIndexRunRecord:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM face_index_runs WHERE index_run_id = ?",
+                (index_run_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(index_run_id)
+        return FaceIndexRunRecord(**dict(row))
+
+    def latest_face_index_run(self) -> FaceIndexRunRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM face_index_runs ORDER BY started_at DESC, index_run_id DESC LIMIT 1"
+            ).fetchone()
+        return FaceIndexRunRecord(**dict(row)) if row is not None else None
+
+    def current_membership_for_observation(
+        self,
+        face_observation_id: str,
+    ) -> tuple[str, str] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT person_identity_id, membership_state
+                   FROM membership_state_versions m
+                   WHERE face_observation_id = ?
+                     AND membership_revision = (
+                       SELECT MAX(m2.membership_revision)
+                       FROM membership_state_versions m2
+                       WHERE m2.face_observation_id = m.face_observation_id
+                         AND m2.person_identity_id = m.person_identity_id
+                     )
+                   ORDER BY CASE membership_state
+                     WHEN 'owner_confirmed' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END
+                   LIMIT 1""",
+                (face_observation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["person_identity_id"]), str(row["membership_state"])
+
+    def current_face_review_state(self, face_observation_id: str) -> str:
+        """Return the durable owner review state for one face observation."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT item.review_state
+                   FROM person_review_item_versions item
+                   WHERE item.face_observation_id = ?
+                   ORDER BY item.created_at DESC,
+                            item.review_revision DESC,
+                            item.rowid DESC
+                   LIMIT 1""",
+                (face_observation_id,),
+            ).fetchone()
+        return str(row["review_state"]) if row is not None else "pending"
+
+    def list_confirmed_embedding_anchors(
+        self,
+        *,
+        model_family: str,
+        model_fingerprint: str,
+    ) -> tuple[dict[str, Any], ...]:
+        """Return private embedding references backed by explicit owner labels.
+
+        Callers must keep this projection inside the local indexing boundary;
+        embedding references and similarities are never part of Story output.
+        """
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT o.face_observation_id, o.local_asset_id, o.embedding_ref,
+                          c.person_identity_id
+                   FROM current_owner_confirmed_memberships c
+                   JOIN face_observations o
+                     ON o.face_observation_id = c.face_observation_id
+                   JOIN person_identities i
+                     ON i.person_identity_id = c.person_identity_id
+                   JOIN name_state_versions n
+                     ON n.person_identity_id = i.person_identity_id
+                    AND n.name_revision = (
+                      SELECT MAX(n2.name_revision) FROM name_state_versions n2
+                      WHERE n2.person_identity_id = i.person_identity_id
+                    )
+                   WHERE o.observation_status = 'active'
+                     AND o.embedding_ref IS NOT NULL
+                     AND o.model_family = ?
+                     AND o.model_fingerprint = ?
+                     AND i.identity_status = 'user_confirmed'
+                     AND n.name_status = 'user_confirmed'
+                     AND n.display_name <> ''
+                   ORDER BY c.person_identity_id, o.local_asset_id,
+                            o.face_observation_id""",
+                (model_family, model_fingerprint),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def record_face_identity_suggestion(
+        self,
+        face_observation_id: str,
+        person_identity_id: str,
+        *,
+        confidence_estimate: float,
+        top_similarity: float,
+        robust_similarity: float,
+        runner_up_similarity: float | None,
+        similarity_margin: float | None,
+        supporting_face_count: int,
+        supporting_asset_count: int,
+        suggestion_tier: str,
+        policy_version: str,
+    ) -> int:
+        """Append one explainable model suggestion without confirming identity."""
+
+        if suggestion_tier not in {"insufficient", "suggested", "ready_to_confirm"}:
+            raise ValueError("invalid suggestion tier")
+        if not 0.0 <= float(confidence_estimate) <= 1.0:
+            raise ValueError("confidence estimate must be between zero and one")
+        if supporting_face_count < 0 or supporting_asset_count < 0:
+            raise ValueError("suggestion support counts must not be negative")
+        now = self._now_fn()
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT COALESCE(MAX(suggestion_revision), 0)
+                   FROM face_identity_suggestion_versions
+                   WHERE face_observation_id = ?""",
+                (face_observation_id,),
+            ).fetchone()
+            revision = int(row[0]) + 1
+            connection.execute(
+                """INSERT INTO face_identity_suggestion_versions VALUES
+                   (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    face_observation_id,
+                    revision,
+                    person_identity_id,
+                    float(confidence_estimate),
+                    float(top_similarity),
+                    float(robust_similarity),
+                    runner_up_similarity,
+                    similarity_margin,
+                    supporting_face_count,
+                    supporting_asset_count,
+                    suggestion_tier,
+                    policy_version,
+                    now,
+                ),
+            )
+        return revision
+
+    def record_face_quality(
+        self,
+        face_observation_id: str,
+        *,
+        quality_tier: str,
+        reason_codes: Iterable[str],
+        detector_score: float,
+        box_short_edge_px: int,
+        sharpness_score: float,
+        exposure_score: float,
+        frontal_score: float,
+        clipped_fraction: float,
+        policy_version: str,
+    ) -> int:
+        """Persist a reproducible quality decision without deleting the face."""
+
+        self._validate_state(quality_tier, _FACE_QUALITY_TIERS, "quality_tier")
+        reasons = tuple(sorted({str(value)[:48] for value in reason_codes if str(value)}))
+        values = {
+            "quality_tier": quality_tier,
+            "reason_codes_json": json.dumps(reasons, separators=(",", ":")),
+            "detector_score": max(0.0, min(1.0, float(detector_score))),
+            "box_short_edge_px": max(0, int(box_short_edge_px)),
+            "sharpness_score": max(0.0, float(sharpness_score)),
+            "exposure_score": max(0.0, min(1.0, float(exposure_score))),
+            "frontal_score": max(0.0, min(1.0, float(frontal_score))),
+            "clipped_fraction": max(0.0, min(1.0, float(clipped_fraction))),
+            "policy_version": policy_version[:80],
+        }
+        now = self._now_fn()
+        with self._connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM face_observations WHERE face_observation_id = ?",
+                (face_observation_id,),
+            ).fetchone() is None:
+                raise KeyError(face_observation_id)
+            current = connection.execute(
+                """SELECT * FROM face_quality_versions
+                   WHERE face_observation_id = ?
+                   ORDER BY quality_revision DESC LIMIT 1""",
+                (face_observation_id,),
+            ).fetchone()
+            if current is not None and all(current[key] == value for key, value in values.items()):
+                return int(current["quality_revision"])
+            revision = int(current["quality_revision"]) + 1 if current is not None else 1
+            connection.execute(
+                """INSERT INTO face_quality_versions(
+                     face_observation_id, quality_revision, quality_tier,
+                     reason_codes_json, detector_score, box_short_edge_px,
+                     sharpness_score, exposure_score, frontal_score,
+                     clipped_fraction, policy_version, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (face_observation_id, revision, *values.values(), now),
+            )
+        return revision
+
+    def current_face_quality(self, face_observation_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM face_quality_versions
+                   WHERE face_observation_id = ?
+                   ORDER BY quality_revision DESC LIMIT 1""",
+                (face_observation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        value = dict(row)
+        value["reason_codes"] = list(json.loads(value.pop("reason_codes_json") or "[]"))
+        return value
+
+    def list_latent_embedding_observations(
+        self,
+        *,
+        model_family: str,
+        model_fingerprint: str,
+        limit: int = 5000,
+    ) -> tuple[dict[str, Any], ...]:
+        """Return path references for unassigned, usable faces inside the local indexer."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT o.face_observation_id, o.local_asset_id, o.embedding_ref,
+                          q.quality_tier, q.detector_score
+                   FROM face_observations o
+                   JOIN face_quality_versions q ON q.face_observation_id = o.face_observation_id
+                    AND q.quality_revision = (
+                      SELECT MAX(q2.quality_revision) FROM face_quality_versions q2
+                      WHERE q2.face_observation_id = q.face_observation_id
+                    )
+                   WHERE o.observation_status = 'active'
+                     AND o.model_family = ? AND o.model_fingerprint = ?
+                     AND o.local_asset_id IS NOT NULL AND o.embedding_ref IS NOT NULL
+                     AND q.quality_tier IN ('auto_eligible', 'review_eligible')
+                     AND NOT EXISTS (
+                       SELECT 1 FROM current_owner_confirmed_memberships confirmed
+                       WHERE confirmed.face_observation_id = o.face_observation_id
+                     )
+                     AND NOT EXISTS (
+                       SELECT 1 FROM automatic_identity_assignment_versions auto
+                       WHERE auto.face_observation_id = o.face_observation_id
+                         AND auto.assignment_state = 'auto_accepted'
+                         AND auto.assignment_revision = (
+                           SELECT MAX(auto2.assignment_revision)
+                           FROM automatic_identity_assignment_versions auto2
+                           WHERE auto2.face_observation_id = auto.face_observation_id
+                         )
+                     )
+                     AND NOT EXISTS (
+                       SELECT 1 FROM membership_state_versions membership
+                       WHERE membership.face_observation_id = o.face_observation_id
+                         AND membership.membership_state IN ('candidate', 'conflicted')
+                         AND membership.membership_revision = (
+                           SELECT MAX(membership2.membership_revision)
+                           FROM membership_state_versions membership2
+                           WHERE membership2.face_observation_id = membership.face_observation_id
+                             AND membership2.person_identity_id = membership.person_identity_id
+                         )
+                     )
+                     AND COALESCE((
+                       SELECT review.review_state FROM person_review_item_versions review
+                       WHERE review.face_observation_id = o.face_observation_id
+                       ORDER BY review.created_at DESC, review.review_revision DESC,
+                                review.rowid DESC LIMIT 1
+                     ), 'deferred') NOT IN ('ignored', 'rejected', 'resolved')
+                   ORDER BY o.created_at, o.face_observation_id LIMIT ?""",
+                (model_family, model_fingerprint, max(1, min(10000, int(limit)))),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def refresh_identity_automation_profile(
+        self,
+        person_identity_id: str,
+        *,
+        model_fingerprint: str,
+        policy_version: str,
+    ) -> dict[str, Any]:
+        """Recompute maturity from owner-confirmed anchors only."""
+
+        from photos_mcp.application.people_automation_policy import identity_profile_maturity
+
+        with self._connect() as connection:
+            identity = connection.execute(
+                "SELECT identity_status FROM person_identities WHERE person_identity_id = ?",
+                (person_identity_id,),
+            ).fetchone()
+            if identity is None:
+                raise KeyError(person_identity_id)
+            current = connection.execute(
+                """SELECT * FROM identity_automation_profile_versions
+                   WHERE person_identity_id = ? ORDER BY profile_revision DESC LIMIT 1""",
+                (person_identity_id,),
+            ).fetchone()
+            evidence = connection.execute(
+                """SELECT COUNT(DISTINCT o.face_observation_id) AS anchors,
+                          COUNT(DISTINCT o.local_asset_id) AS contexts
+                   FROM current_owner_confirmed_memberships m
+                   JOIN face_observations o ON o.face_observation_id = m.face_observation_id
+                   WHERE m.person_identity_id = ?
+                     AND o.observation_status = 'active'
+                     AND o.model_fingerprint = ?""",
+                (person_identity_id, model_fingerprint),
+            ).fetchone()
+            auto_enabled = bool(current["auto_enabled"]) if current is not None else True
+            suspended = bool(current["suspended"]) if current is not None else False
+            profile = identity_profile_maturity(
+                owner_confirmed_anchor_count=int(evidence["anchors"] or 0),
+                independent_context_count=int(evidence["contexts"] or 0),
+                auto_enabled=auto_enabled,
+                suspended=suspended,
+            )
+            stored = {
+                "auto_enabled": int(profile.auto_enabled),
+                "suspended": int(profile.suspended),
+                "owner_confirmed_anchor_count": profile.owner_confirmed_anchor_count,
+                "independent_context_count": profile.independent_context_count,
+                "maturity": profile.maturity,
+                "model_fingerprint": model_fingerprint,
+                "policy_version": policy_version[:80],
+            }
+            if current is not None and all(current[key] == value for key, value in stored.items()):
+                return self._automation_profile_value(current)
+            revision = int(current["profile_revision"]) + 1 if current is not None else 1
+            now = self._now_fn()
+            connection.execute(
+                """INSERT INTO identity_automation_profile_versions(
+                     person_identity_id, profile_revision, auto_enabled, suspended,
+                     owner_confirmed_anchor_count, independent_context_count, maturity,
+                     model_fingerprint, policy_version, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (person_identity_id, revision, *stored.values(), now),
+            )
+            row = connection.execute(
+                """SELECT * FROM identity_automation_profile_versions
+                   WHERE person_identity_id = ? AND profile_revision = ?""",
+                (person_identity_id, revision),
+            ).fetchone()
+        assert row is not None
+        return self._automation_profile_value(row)
+
+    def set_identity_auto_enabled(
+        self,
+        person_identity_id: str,
+        *,
+        enabled: bool,
+        expected_profile_revision: int,
+        actor: str = "owner",
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        """Change only the per-person switch; evidence remains server-derived."""
+
+        now = self._now_fn()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                """SELECT * FROM identity_automation_profile_versions
+                   WHERE person_identity_id = ? ORDER BY profile_revision DESC LIMIT 1""",
+                (person_identity_id,),
+            ).fetchone()
+            if current is None:
+                raise KeyError(person_identity_id)
+            if int(current["profile_revision"]) != int(expected_profile_revision):
+                raise ValueError("stale automation profile revision")
+            if bool(current["auto_enabled"]) == bool(enabled):
+                return self._automation_profile_value(current)
+            revision = int(current["profile_revision"]) + 1
+            connection.execute(
+                """INSERT INTO identity_automation_profile_versions VALUES
+                   (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    person_identity_id,
+                    revision,
+                    int(bool(enabled)),
+                    current["suspended"],
+                    current["owner_confirmed_anchor_count"],
+                    current["independent_context_count"],
+                    current["maturity"],
+                    current["model_fingerprint"],
+                    current["policy_version"],
+                    now,
+                ),
+            )
+            self._append_audit(
+                connection,
+                event_type="identity-auto-toggle",
+                entity_id=person_identity_id,
+                entity_revision=revision,
+                actor=actor,
+                request_id=request_id,
+                before={"auto_enabled": bool(current["auto_enabled"])},
+                after={"auto_enabled": bool(enabled)},
+                created_at=now,
+            )
+            row = connection.execute(
+                """SELECT * FROM identity_automation_profile_versions
+                   WHERE person_identity_id = ? AND profile_revision = ?""",
+                (person_identity_id, revision),
+            ).fetchone()
+        assert row is not None
+        return self._automation_profile_value(row)
+
+    def record_automatic_assignment(
+        self,
+        face_observation_id: str,
+        person_identity_id: str,
+        *,
+        top_similarity: float,
+        robust_similarity: float,
+        similarity_margin: float | None,
+        supporting_asset_count: int,
+        model_fingerprint: str,
+        policy_version: str,
+        reason_code: str = "high_confidence_match",
+    ) -> int:
+        """Record an auto-accepted membership without turning it into an anchor."""
+
+        now = self._now_fn()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            face = connection.execute(
+                "SELECT local_asset_id FROM face_observations WHERE face_observation_id = ?",
+                (face_observation_id,),
+            ).fetchone()
+            identity = connection.execute(
+                "SELECT identity_status FROM person_identities WHERE person_identity_id = ?",
+                (person_identity_id,),
+            ).fetchone()
+            if face is None or identity is None:
+                raise KeyError(face_observation_id if face is None else person_identity_id)
+            if str(identity["identity_status"]) != "user_confirmed":
+                raise ValueError("automatic assignment requires a user-confirmed identity")
+            quality = connection.execute(
+                """SELECT * FROM face_quality_versions
+                   WHERE face_observation_id = ? ORDER BY quality_revision DESC LIMIT 1""",
+                (face_observation_id,),
+            ).fetchone()
+            if (
+                quality is None
+                or str(quality["quality_tier"]) != "auto_eligible"
+                or str(quality["policy_version"]) != policy_version
+            ):
+                raise ValueError("automatic assignment requires current auto-eligible face quality")
+            profile = connection.execute(
+                """SELECT * FROM identity_automation_profile_versions
+                   WHERE person_identity_id = ? ORDER BY profile_revision DESC LIMIT 1""",
+                (person_identity_id,),
+            ).fetchone()
+            if (
+                profile is None
+                or not bool(profile["auto_enabled"])
+                or bool(profile["suspended"])
+                or str(profile["maturity"]) != "auto_ready"
+                or str(profile["model_fingerprint"]) != model_fingerprint
+                or str(profile["policy_version"]) != policy_version
+            ):
+                raise ValueError("identity automation profile is not eligible")
+            owner = connection.execute(
+                "SELECT person_identity_id FROM current_owner_confirmed_memberships WHERE face_observation_id = ?",
+                (face_observation_id,),
+            ).fetchone()
+            if owner is not None:
+                if str(owner["person_identity_id"]) == person_identity_id:
+                    return 0
+                raise ConfirmedMembershipConflictError("face has a different owner-confirmed identity")
+            local_asset_id = str(face["local_asset_id"] or "")
+            duplicate = connection.execute(
+                """SELECT 1
+                   FROM face_observations o
+                   JOIN automatic_identity_assignment_versions a
+                     ON a.face_observation_id = o.face_observation_id
+                   WHERE o.local_asset_id = ? AND a.person_identity_id = ?
+                     AND a.assignment_state = 'auto_accepted'
+                     AND a.assignment_revision = (
+                       SELECT MAX(a2.assignment_revision)
+                       FROM automatic_identity_assignment_versions a2
+                       WHERE a2.face_observation_id = a.face_observation_id
+                     ) AND o.face_observation_id <> ?""",
+                (local_asset_id, person_identity_id, face_observation_id),
+            ).fetchone()
+            if duplicate is not None:
+                raise ConfirmedMembershipConflictError("identity already appears in this photo")
+            current = connection.execute(
+                """SELECT * FROM automatic_identity_assignment_versions
+                   WHERE face_observation_id = ? ORDER BY assignment_revision DESC LIMIT 1""",
+                (face_observation_id,),
+            ).fetchone()
+            signature = (
+                person_identity_id,
+                "auto_accepted",
+                float(top_similarity),
+                float(robust_similarity),
+                similarity_margin,
+                int(supporting_asset_count),
+                model_fingerprint,
+                policy_version,
+                reason_code,
+            )
+            if current is not None and tuple(current[key] for key in (
+                "person_identity_id", "assignment_state", "top_similarity",
+                "robust_similarity", "similarity_margin", "supporting_asset_count",
+                "model_fingerprint", "policy_version", "reason_code",
+            )) == signature:
+                return int(current["assignment_revision"])
+            revision = int(current["assignment_revision"]) + 1 if current is not None else 1
+            connection.execute(
+                """INSERT INTO automatic_identity_assignment_versions VALUES
+                   (?, ?, ?, 'auto_accepted', ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
+                (
+                    face_observation_id,
+                    revision,
+                    person_identity_id,
+                    float(top_similarity),
+                    float(robust_similarity),
+                    similarity_margin,
+                    int(supporting_asset_count),
+                    model_fingerprint,
+                    policy_version,
+                    reason_code[:80],
+                    now,
+                ),
+            )
+        return revision
+
+    def current_automatic_assignment(self, face_observation_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM automatic_identity_assignment_versions
+                   WHERE face_observation_id = ? ORDER BY assignment_revision DESC LIMIT 1""",
+                (face_observation_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def automatic_assignment_count(self, *, state: str = "auto_accepted") -> int:
+        self._validate_state(state, _AUTOMATIC_ASSIGNMENT_STATES, "automatic assignment state")
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*) FROM automatic_identity_assignment_versions a
+                   WHERE a.assignment_state = ? AND a.assignment_revision = (
+                     SELECT MAX(a2.assignment_revision)
+                     FROM automatic_identity_assignment_versions a2
+                     WHERE a2.face_observation_id = a.face_observation_id
+                   )""",
+                (state,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def quality_suppressed_face_count(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*) FROM face_quality_versions quality
+                   WHERE quality.quality_tier = 'quality_suppressed'
+                     AND quality.quality_revision = (
+                       SELECT MAX(quality2.quality_revision)
+                       FROM face_quality_versions quality2
+                       WHERE quality2.face_observation_id = quality.face_observation_id
+                     )"""
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def latest_identity_automation_profile(
+        self, person_identity_id: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM identity_automation_profile_versions
+                   WHERE person_identity_id = ? ORDER BY profile_revision DESC LIMIT 1""",
+                (person_identity_id,),
+            ).fetchone()
+        return self._automation_profile_value(row) if row is not None else None
+
+    def ensure_identity_automation_profile(
+        self,
+        person_identity_id: str,
+        *,
+        policy_version: str,
+    ) -> dict[str, Any] | None:
+        """Backfill a derived automation profile for pre-v6 confirmed people."""
+
+        current = self.latest_identity_automation_profile(person_identity_id)
+        if current is not None:
+            return current
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT observation.model_fingerprint, COUNT(*) AS anchor_count
+                   FROM current_owner_confirmed_memberships membership
+                   JOIN face_observations observation
+                     ON observation.face_observation_id = membership.face_observation_id
+                   WHERE membership.person_identity_id = ?
+                     AND observation.observation_status = 'active'
+                     AND COALESCE(observation.model_fingerprint, '') <> ''
+                   GROUP BY observation.model_fingerprint
+                   ORDER BY anchor_count DESC, observation.model_fingerprint
+                   LIMIT 1""",
+                (person_identity_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.refresh_identity_automation_profile(
+            person_identity_id,
+            model_fingerprint=str(row["model_fingerprint"]),
+            policy_version=policy_version,
+        )
+
+    def representative_face_artifact(self, person_identity_id: str) -> dict[str, Any] | None:
+        """Return one private crop reference for an owner-facing identity card."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT observation.face_observation_id,
+                          COALESCE(review.review_crop_ref, artifact.crop_ref) AS crop_ref
+                   FROM face_observations observation
+                   JOIN current_owner_confirmed_memberships membership
+                     ON membership.face_observation_id = observation.face_observation_id
+                    AND membership.person_identity_id = ?
+                   LEFT JOIN representative_face_versions representative
+                     ON representative.person_identity_id = membership.person_identity_id
+                    AND representative.face_observation_id = observation.face_observation_id
+                    AND representative.representative_state = 'active'
+                   LEFT JOIN face_review_artifact_versions review
+                     ON review.face_observation_id = observation.face_observation_id
+                    AND review.artifact_revision = (
+                      SELECT MAX(review2.artifact_revision)
+                      FROM face_review_artifact_versions review2
+                      WHERE review2.face_observation_id = review.face_observation_id
+                    )
+                   LEFT JOIN face_artifact_refs artifact
+                     ON artifact.face_observation_id = observation.face_observation_id
+                   WHERE observation.observation_status = 'active'
+                     AND COALESCE(review.review_crop_ref, artifact.crop_ref, '') <> ''
+                   ORDER BY CASE WHEN representative.face_observation_id IS NULL THEN 1 ELSE 0 END,
+                            observation.created_at DESC LIMIT 1""",
+                (person_identity_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def candidate_identity_face_artifacts(
+        self,
+        person_identity_id: str,
+        *,
+        limit: int = 3,
+    ) -> tuple[dict[str, Any], ...]:
+        """Return private review crops supporting one repeated-person candidate."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT observation.face_observation_id,
+                          observation.local_asset_id,
+                          COALESCE(review.review_crop_ref, artifact.crop_ref) AS crop_ref
+                   FROM membership_state_versions membership
+                   JOIN face_observations observation
+                     ON observation.face_observation_id = membership.face_observation_id
+                   LEFT JOIN face_review_artifact_versions review
+                     ON review.face_observation_id = observation.face_observation_id
+                    AND review.artifact_revision = (
+                      SELECT MAX(review2.artifact_revision)
+                      FROM face_review_artifact_versions review2
+                      WHERE review2.face_observation_id = review.face_observation_id
+                    )
+                   LEFT JOIN face_artifact_refs artifact
+                     ON artifact.face_observation_id = observation.face_observation_id
+                   WHERE membership.person_identity_id = ?
+                     AND membership.membership_state = 'candidate'
+                     AND membership.membership_revision = (
+                       SELECT MAX(membership2.membership_revision)
+                       FROM membership_state_versions membership2
+                       WHERE membership2.face_observation_id = membership.face_observation_id
+                         AND membership2.person_identity_id = membership.person_identity_id
+                     )
+                     AND observation.observation_status = 'active'
+                     AND COALESCE(review.review_crop_ref, artifact.crop_ref, '') <> ''
+                   ORDER BY observation.local_asset_id, observation.face_observation_id
+                   LIMIT ?""",
+                (person_identity_id, max(1, min(12, int(limit)))),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    @staticmethod
+    def _automation_profile_value(row: sqlite3.Row) -> dict[str, Any]:
+        value = dict(row)
+        value["auto_enabled"] = bool(value["auto_enabled"])
+        value["suspended"] = bool(value["suspended"])
+        return value
+
+    def upsert_face_artifact_refs(
+        self,
+        face_observation_id: str,
+        *,
+        crop_ref: str,
+        context_preview_ref: str,
+    ) -> None:
+        now = self._now_fn()
+        with self._connect() as connection:
+            previous = connection.execute(
+                "SELECT artifact_revision FROM face_artifact_refs WHERE face_observation_id = ?",
+                (face_observation_id,),
+            ).fetchone()
+            revision = (int(previous[0]) if previous else 0) + 1
+            connection.execute(
+                """INSERT INTO face_artifact_refs VALUES (?, ?, ?, ?, 'active', ?)
+                   ON CONFLICT(face_observation_id) DO UPDATE SET
+                     crop_ref=excluded.crop_ref,
+                     context_preview_ref=excluded.context_preview_ref,
+                     artifact_revision=excluded.artifact_revision,
+                     artifact_state='active',
+                     created_at=excluded.created_at""",
+                (face_observation_id, crop_ref, context_preview_ref, revision, now),
+            )
+
+    def record_asset_face_index(
+        self,
+        local_asset_id: str,
+        *,
+        index_run_id: str | None,
+        model_fingerprint: str,
+        index_state: str,
+        detected_face_count: int,
+        error_code: str = "",
+    ) -> int:
+        """Append one photo-level indexing state without replacing prior runs."""
+
+        self._validate_state(index_state, _ASSET_FACE_INDEX_STATES, "index_state")
+        asset_id = local_asset_id.strip()
+        if not asset_id or detected_face_count < 0:
+            raise ValueError("valid local_asset_id and face count are required")
+        now = self._now_fn()
+        terminal = index_state in {"completed", "no_face", "failed"}
+        with self._connect() as connection:
+            revision = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(index_revision), 0) + 1 "
+                    "FROM asset_face_index_versions WHERE local_asset_id = ?",
+                    (asset_id,),
+                ).fetchone()[0]
+            )
+            connection.execute(
+                """INSERT INTO asset_face_index_versions(
+                     local_asset_id, index_revision, index_run_id, model_fingerprint,
+                     index_state, detected_face_count, error_code, created_at, completed_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    asset_id,
+                    revision,
+                    index_run_id,
+                    model_fingerprint,
+                    index_state,
+                    detected_face_count,
+                    error_code[:80],
+                    now,
+                    now if terminal else None,
+                ),
+            )
+            asset_review_state = "pending"
+            if index_state == "no_face":
+                asset_review_state = "completed"
+            elif index_state == "completed":
+                unresolved = int(
+                    connection.execute(
+                        """SELECT COUNT(*) FROM face_observations o
+                           WHERE o.local_asset_id = ? AND o.observation_status = 'active'
+                             AND COALESCE((
+                               SELECT item.review_state
+                               FROM person_review_item_versions item
+                               WHERE item.face_observation_id = o.face_observation_id
+                               ORDER BY item.created_at DESC,
+                                        item.review_revision DESC,
+                                        item.rowid DESC
+                               LIMIT 1
+                             ), 'pending') = 'pending'""",
+                        (asset_id,),
+                    ).fetchone()[0]
+                )
+                if unresolved == 0:
+                    asset_review_state = "completed"
+            connection.execute(
+                """INSERT INTO asset_people_review_state(
+                     local_asset_id, review_revision, review_state, updated_at, completed_at
+                   ) VALUES (?, 1, ?, ?, ?)
+                   ON CONFLICT(local_asset_id) DO UPDATE SET
+                     review_revision = asset_people_review_state.review_revision + 1,
+                     review_state = excluded.review_state,
+                     updated_at = excluded.updated_at,
+                     completed_at = excluded.completed_at""",
+                (
+                    asset_id,
+                    asset_review_state,
+                    now,
+                    now if asset_review_state == "completed" else None,
+                ),
+            )
+        return revision
+
+    def upsert_face_geometry(
+        self,
+        face_observation_id: str,
+        *,
+        x_norm: float,
+        y_norm: float,
+        width_norm: float,
+        height_norm: float,
+        oriented_source_width: int,
+        oriented_source_height: int,
+        orientation_revision: int = 1,
+    ) -> FaceGeometryRecord:
+        values = (x_norm, y_norm, width_norm, height_norm)
+        if (
+            any(not 0.0 <= float(value) <= 1.0 for value in values)
+            or float(width_norm) <= 0.0
+            or float(height_norm) <= 0.0
+            or float(x_norm) + float(width_norm) > 1.000001
+            or float(y_norm) + float(height_norm) > 1.000001
+            or oriented_source_width <= 0
+            or oriented_source_height <= 0
+        ):
+            raise ValueError("invalid normalized face geometry")
+        now = self._now_fn()
+        with self._connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM face_observations WHERE face_observation_id = ?",
+                (face_observation_id,),
+            ).fetchone() is None:
+                raise KeyError(face_observation_id)
+            revision = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(geometry_revision), 0) + 1 "
+                    "FROM face_observation_geometry WHERE face_observation_id = ?",
+                    (face_observation_id,),
+                ).fetchone()[0]
+            )
+            connection.execute(
+                """INSERT INTO face_observation_geometry VALUES
+                   (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)""",
+                (
+                    face_observation_id,
+                    revision,
+                    float(x_norm),
+                    float(y_norm),
+                    float(width_norm),
+                    float(height_norm),
+                    int(oriented_source_width),
+                    int(oriented_source_height),
+                    int(orientation_revision),
+                    now,
+                ),
+            )
+            row = connection.execute(
+                """SELECT * FROM face_observation_geometry
+                   WHERE face_observation_id = ? AND geometry_revision = ?""",
+                (face_observation_id, revision),
+            ).fetchone()
+        assert row is not None
+        return FaceGeometryRecord(**dict(row))
+
+    def upsert_face_review_artifacts(
+        self,
+        face_observation_id: str,
+        *,
+        review_crop_ref: str,
+        context_preview_ref: str,
+        highlighted_context_ref: str = "",
+    ) -> FaceReviewArtifactRecord:
+        refs = (review_crop_ref.strip(), context_preview_ref.strip(), highlighted_context_ref.strip())
+        if not refs[0] or not refs[1] or any(value.startswith("/") or ".." in Path(value).parts for value in refs if value):
+            raise ValueError("artifact refs must be private relative paths")
+        now = self._now_fn()
+        with self._connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM face_observations WHERE face_observation_id = ?",
+                (face_observation_id,),
+            ).fetchone() is None:
+                raise KeyError(face_observation_id)
+            revision = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(artifact_revision), 0) + 1 "
+                    "FROM face_review_artifact_versions WHERE face_observation_id = ?",
+                    (face_observation_id,),
+                ).fetchone()[0]
+            )
+            connection.execute(
+                """INSERT INTO face_review_artifact_versions VALUES
+                   (?, ?, ?, ?, ?, 'active', ?)""",
+                (face_observation_id, revision, refs[0], refs[1], refs[2], now),
+            )
+            row = connection.execute(
+                """SELECT * FROM face_review_artifact_versions
+                   WHERE face_observation_id = ? AND artifact_revision = ?""",
+                (face_observation_id, revision),
+            ).fetchone()
+        assert row is not None
+        return FaceReviewArtifactRecord(**dict(row))
+
+    def active_face_count_for_asset(self, local_asset_id: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*) FROM face_observations
+                   WHERE local_asset_id = ? AND observation_status = 'active'""",
+                (local_asset_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def list_asset_people_review_ids(
+        self,
+        *,
+        state: str = "pending",
+        offset: int = 0,
+        limit: int = 50,
+    ) -> tuple[str, ...]:
+        if state not in {"pending", "completed", "all"}:
+            raise ValueError("invalid review state")
+        where = "" if state == "all" else "WHERE review_state = ?"
+        parameters: tuple[Any, ...] = () if state == "all" else (state,)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT local_asset_id FROM asset_people_review_state {where}
+                    ORDER BY updated_at DESC, local_asset_id LIMIT ? OFFSET ?""",
+                (*parameters, max(1, min(100, int(limit))), max(0, int(offset))),
+            ).fetchall()
+        return tuple(str(row["local_asset_id"]) for row in rows)
+
+    def list_actionable_asset_people_review_ids(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 24,
+    ) -> tuple[str, ...]:
+        """List assets with current exception-only review work.
+
+        Legacy one-off ``new_face_candidate`` rows deliberately remain durable
+        for audit/re-indexing, but are not owner-facing work under the current
+        repeated-sighting policy.
+        """
+
+        actionable_kinds = (
+            "quick_confirmation",
+            "ambiguous_identity_match",
+            "conflicted_identity_match",
+            "promoted_new_person",
+        )
+        placeholders = ",".join("?" for _ in actionable_kinds)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT review.local_asset_id
+                    FROM asset_people_review_state review
+                    WHERE EXISTS (
+                      SELECT 1
+                      FROM face_observations observation
+                      JOIN person_review_item_versions item
+                        ON item.rowid = (
+                          SELECT item2.rowid
+                          FROM person_review_item_versions item2
+                          WHERE item2.face_observation_id = observation.face_observation_id
+                          ORDER BY item2.created_at DESC, item2.review_revision DESC,
+                                   item2.rowid DESC LIMIT 1
+                        )
+                      LEFT JOIN face_quality_versions quality
+                        ON quality.face_observation_id = observation.face_observation_id
+                       AND quality.quality_revision = (
+                         SELECT MAX(quality2.quality_revision)
+                         FROM face_quality_versions quality2
+                         WHERE quality2.face_observation_id = quality.face_observation_id
+                       )
+                      LEFT JOIN current_owner_confirmed_memberships confirmed
+                        ON confirmed.face_observation_id = observation.face_observation_id
+                      WHERE observation.local_asset_id = review.local_asset_id
+                        AND observation.observation_status = 'active'
+                        AND item.review_state = 'pending'
+                        AND item.review_kind IN ({placeholders})
+                        AND COALESCE(quality.quality_tier, 'review_eligible')
+                            <> 'quality_suppressed'
+                        AND confirmed.face_observation_id IS NULL
+                    )
+                    ORDER BY review.updated_at DESC, review.local_asset_id
+                    LIMIT ? OFFSET ?""",
+                (
+                    *actionable_kinds,
+                    max(1, min(100, int(limit))),
+                    max(0, int(offset)),
+                ),
+            ).fetchall()
+        return tuple(str(row["local_asset_id"]) for row in rows)
+
+    def actionable_review_kind_counts(self) -> dict[str, int]:
+        """Count current exception items using the same predicate as the queue."""
+
+        actionable_kinds = (
+            "quick_confirmation",
+            "ambiguous_identity_match",
+            "conflicted_identity_match",
+            "promoted_new_person",
+        )
+        placeholders = ",".join("?" for _ in actionable_kinds)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT item.review_kind, COUNT(*) AS count
+                    FROM face_observations observation
+                    JOIN person_review_item_versions item
+                      ON item.rowid = (
+                        SELECT item2.rowid
+                        FROM person_review_item_versions item2
+                        WHERE item2.face_observation_id = observation.face_observation_id
+                        ORDER BY item2.created_at DESC, item2.review_revision DESC,
+                                 item2.rowid DESC LIMIT 1
+                      )
+                    LEFT JOIN face_quality_versions quality
+                      ON quality.face_observation_id = observation.face_observation_id
+                     AND quality.quality_revision = (
+                       SELECT MAX(quality2.quality_revision)
+                       FROM face_quality_versions quality2
+                       WHERE quality2.face_observation_id = quality.face_observation_id
+                     )
+                    LEFT JOIN current_owner_confirmed_memberships confirmed
+                      ON confirmed.face_observation_id = observation.face_observation_id
+                    WHERE observation.observation_status = 'active'
+                      AND item.review_state = 'pending'
+                      AND item.review_kind IN ({placeholders})
+                      AND COALESCE(quality.quality_tier, 'review_eligible')
+                          <> 'quality_suppressed'
+                      AND confirmed.face_observation_id IS NULL
+                    GROUP BY item.review_kind""",
+                actionable_kinds,
+            ).fetchall()
+        return {str(row["review_kind"]): int(row["count"]) for row in rows}
+
+    def asset_people_review_detail(self, local_asset_id: str) -> dict[str, Any]:
+        """Return a private internal projection; HTTP callers must replace ids with handles."""
+
+        with self._connect() as connection:
+            review = connection.execute(
+                "SELECT * FROM asset_people_review_state WHERE local_asset_id = ?",
+                (local_asset_id,),
+            ).fetchone()
+            if review is None:
+                raise KeyError(local_asset_id)
+            index_state = connection.execute(
+                """SELECT * FROM asset_face_index_versions
+                   WHERE local_asset_id = ? ORDER BY index_revision DESC LIMIT 1""",
+                (local_asset_id,),
+            ).fetchone()
+            faces = connection.execute(
+                """SELECT o.face_observation_id, o.quality_summary_json,
+                          quality.quality_tier,
+                          quality.reason_codes_json AS quality_reason_codes_json,
+                          g.x_norm, g.y_norm, g.width_norm, g.height_norm,
+                          g.oriented_source_width, g.oriented_source_height,
+                          a.review_crop_ref, a.context_preview_ref,
+                          a.highlighted_context_ref, a.artifact_revision,
+                          legacy.crop_ref AS legacy_crop_ref,
+                          legacy.context_preview_ref AS legacy_context_ref,
+                          item.review_item_id, item.review_revision AS face_review_revision,
+                          item.review_kind, item.review_state,
+                          item.candidate_person_identity_id,
+                          suggestion.person_identity_id AS suggested_person_identity_id,
+                          suggestion.confidence_estimate,
+                          suggestion.top_similarity,
+                          suggestion.robust_similarity,
+                          suggestion.runner_up_similarity,
+                          suggestion.similarity_margin,
+                          suggestion.supporting_face_count,
+                          suggestion.supporting_asset_count,
+                          suggestion.suggestion_tier,
+                          suggestion.policy_version AS suggestion_policy_version,
+                          suggested_name.display_name AS suggested_display_name,
+                          current.person_identity_id AS confirmed_person_identity_id
+                   FROM face_observations o
+                   LEFT JOIN face_observation_geometry g
+                     ON g.face_observation_id = o.face_observation_id
+                    AND g.geometry_revision = (
+                      SELECT MAX(g2.geometry_revision) FROM face_observation_geometry g2
+                      WHERE g2.face_observation_id = o.face_observation_id
+                    )
+                   LEFT JOIN face_review_artifact_versions a
+                     ON a.face_observation_id = o.face_observation_id
+                    AND a.artifact_revision = (
+                      SELECT MAX(a2.artifact_revision) FROM face_review_artifact_versions a2
+                      WHERE a2.face_observation_id = o.face_observation_id
+                    )
+                   LEFT JOIN face_artifact_refs legacy
+                     ON legacy.face_observation_id = o.face_observation_id
+                   LEFT JOIN person_review_item_versions item
+                     ON item.rowid = (
+                      SELECT item2.rowid FROM person_review_item_versions item2
+                      WHERE item2.face_observation_id = o.face_observation_id
+                      ORDER BY item2.created_at DESC, item2.review_revision DESC, item2.rowid DESC
+                      LIMIT 1
+                    )
+                   LEFT JOIN current_owner_confirmed_memberships current
+                     ON current.face_observation_id = o.face_observation_id
+                   LEFT JOIN face_quality_versions quality
+                     ON quality.face_observation_id = o.face_observation_id
+                    AND quality.quality_revision = (
+                      SELECT MAX(q2.quality_revision) FROM face_quality_versions q2
+                      WHERE q2.face_observation_id = o.face_observation_id
+                    )
+                   LEFT JOIN face_identity_suggestion_versions suggestion
+                     ON suggestion.face_observation_id = o.face_observation_id
+                    AND suggestion.suggestion_revision = (
+                      SELECT MAX(s2.suggestion_revision)
+                      FROM face_identity_suggestion_versions s2
+                      WHERE s2.face_observation_id = o.face_observation_id
+                    )
+                   LEFT JOIN name_state_versions suggested_name
+                     ON suggested_name.person_identity_id = suggestion.person_identity_id
+                    AND suggested_name.name_revision = (
+                      SELECT MAX(n2.name_revision) FROM name_state_versions n2
+                      WHERE n2.person_identity_id = suggestion.person_identity_id
+                    )
+                   WHERE o.local_asset_id = ? AND o.observation_status = 'active'
+                   ORDER BY COALESCE(g.y_norm, 2.0), COALESCE(g.x_norm, 2.0), o.face_observation_id""",
+                (local_asset_id,),
+            ).fetchall()
+            aliases = connection.execute(
+                """SELECT a.* FROM provider_person_alias_versions a
+                   WHERE a.local_asset_id = ?
+                     AND a.alias_revision = (
+                       SELECT MAX(a2.alias_revision) FROM provider_person_alias_versions a2
+                       WHERE a2.alias_id = a.alias_id
+                     )
+                     AND a.alias_state = 'candidate'
+                   ORDER BY a.alias_id""",
+                (local_asset_id,),
+            ).fetchall()
+        face_items: list[dict[str, Any]] = []
+        for row in faces:
+            item = dict(row)
+            item["quality_summary"] = json.loads(str(item.pop("quality_summary_json") or "{}"))
+            item["quality_reason_codes"] = list(
+                json.loads(str(item.pop("quality_reason_codes_json") or "[]"))
+            )
+            item["quality_tier"] = str(
+                item.get("quality_tier")
+                or item["quality_summary"].get("quality_tier")
+                or "review_eligible"
+            )
+            item["review_crop_ref"] = item.get("review_crop_ref") or item.pop("legacy_crop_ref", "")
+            item["context_preview_ref"] = item.get("context_preview_ref") or item.pop("legacy_context_ref", "")
+            item.pop("legacy_crop_ref", None)
+            item.pop("legacy_context_ref", None)
+            item["review_state"] = str(item.get("review_state") or "pending")
+            face_items.append(item)
+        return {
+            "local_asset_id": local_asset_id,
+            "review_revision": int(review["review_revision"]),
+            "review_state": str(review["review_state"]),
+            "index_state": str(index_state["index_state"]) if index_state else "pending",
+            "detected_face_count": int(index_state["detected_face_count"]) if index_state else len(face_items),
+            "faces": face_items,
+            "aliases": [dict(row) for row in aliases],
+        }
+
+    def identity_command_receipt(
+        self, device_fingerprint: str, idempotency_key: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT request_hash, result_json FROM identity_command_receipts
+                   WHERE device_fingerprint = ? AND idempotency_key = ?""",
+                (device_fingerprint, idempotency_key),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["request_hash"]), json.loads(str(row["result_json"]))
+
+    def apply_asset_people_review(
+        self,
+        *,
+        local_asset_id: str,
+        expected_review_revision: int,
+        assignments: Iterable[Mapping[str, Any]],
+        face_decisions: Iterable[Mapping[str, Any]],
+        device_fingerprint: str,
+        idempotency_key: str,
+        request_hash: str,
+        actor: str = "owner",
+    ) -> dict[str, Any]:
+        """Atomically apply independent decisions for several faces in one photo.
+
+        The public/mobile layer is responsible for replacing opaque handles with
+        the internal ids accepted here.  This transaction never creates the old
+        photo-wide association: confirmed membership is always tied to one face.
+        """
+
+        asset_id = local_asset_id.strip()
+        assignment_values = [dict(value) for value in assignments]
+        decision_values = [dict(value) for value in face_decisions]
+        if not asset_id or not (assignment_values or decision_values):
+            raise ValueError("at least one face decision is required")
+        all_face_ids = [
+            str(value.get("face_observation_id") or "")
+            for value in (*assignment_values, *decision_values)
+        ]
+        if any(not value for value in all_face_ids) or len(all_face_ids) != len(set(all_face_ids)):
+            raise ValueError("each face may be decided once per request")
+        if not device_fingerprint or not idempotency_key or not request_hash:
+            raise ValueError("command identity is required")
+
+        now = self._now_fn()
+        decision_group_id = f"pdg_{uuid.uuid4().hex}"
+        created_identity_ids: list[str] = []
+        confirmed_identity_ids: list[str] = []
+        confirmed_face_ids: set[str] = set()
+        affected_asset_ids: set[str] = {asset_id}
+        profile_refresh_targets: dict[str, str] = {}
+        promoted_cluster_face_count = 0
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            prior_receipt = connection.execute(
+                """SELECT request_hash, result_json FROM identity_command_receipts
+                   WHERE device_fingerprint = ? AND idempotency_key = ?""",
+                (device_fingerprint, idempotency_key),
+            ).fetchone()
+            if prior_receipt is not None:
+                if str(prior_receipt["request_hash"]) != request_hash:
+                    raise ValueError("idempotency_key_conflict")
+                return json.loads(str(prior_receipt["result_json"]))
+
+            review = connection.execute(
+                "SELECT * FROM asset_people_review_state WHERE local_asset_id = ?",
+                (asset_id,),
+            ).fetchone()
+            if review is None:
+                raise KeyError(asset_id)
+            if int(review["review_revision"]) != int(expected_review_revision):
+                raise ValueError("stale_review_revision")
+            placeholders = ",".join("?" for _ in all_face_ids)
+            rows = connection.execute(
+                f"""SELECT face_observation_id, observation_status
+                    FROM face_observations
+                    WHERE local_asset_id = ? AND face_observation_id IN ({placeholders})""",
+                (asset_id, *all_face_ids),
+            ).fetchall()
+            if len(rows) != len(all_face_ids) or any(
+                str(row["observation_status"]) != "active" for row in rows
+            ):
+                raise ValueError("face_observation_unavailable")
+
+            before = {
+                "review_revision": int(review["review_revision"]),
+                "faces": [
+                    dict(row)
+                    for row in connection.execute(
+                        f"""SELECT o.face_observation_id, o.observation_status,
+                                  c.person_identity_id
+                           FROM face_observations o
+                           LEFT JOIN current_owner_confirmed_memberships c
+                             ON c.face_observation_id = o.face_observation_id
+                           WHERE o.face_observation_id IN ({placeholders})
+                           ORDER BY o.face_observation_id""",
+                        tuple(all_face_ids),
+                    ).fetchall()
+                ],
+            }
+
+            requested_existing = [
+                str(value.get("person_identity_id") or "")
+                for value in assignment_values
+                if str(value.get("target_kind") or "") == "existing"
+            ]
+            if any(not value for value in requested_existing):
+                raise ValueError("existing identity is required")
+            if len(requested_existing) != len(set(requested_existing)):
+                raise ValueError("one identity cannot represent multiple faces in one photo")
+
+            for assignment in assignment_values:
+                face_id = str(assignment["face_observation_id"])
+                target_kind = str(assignment.get("target_kind") or "")
+                alias_id = str(assignment.get("alias_id") or "")
+                promoted_cluster_members: list[tuple[str, str]] = []
+                if target_kind == "new":
+                    display_name = " ".join(str(assignment.get("display_name") or "").split())
+                    if (
+                        not 1 <= len(display_name) <= 80
+                        or any(ord(character) < 32 for character in display_name)
+                    ):
+                        raise ValueError("invalid display name")
+                    candidate = connection.execute(
+                        """SELECT membership.person_identity_id,
+                                  identity.identity_revision
+                           FROM membership_state_versions membership
+                           JOIN person_identities identity
+                             ON identity.person_identity_id = membership.person_identity_id
+                           WHERE membership.face_observation_id = ?
+                             AND membership.membership_state = 'candidate'
+                             AND membership.membership_revision = (
+                               SELECT MAX(membership2.membership_revision)
+                               FROM membership_state_versions membership2
+                               WHERE membership2.face_observation_id = membership.face_observation_id
+                                 AND membership2.person_identity_id = membership.person_identity_id
+                             )
+                             AND identity.identity_status = 'candidate'
+                           ORDER BY membership.person_identity_id LIMIT 1""",
+                        (face_id,),
+                    ).fetchone()
+                    if candidate is None:
+                        person_id = _opaque_person_id()
+                        connection.execute(
+                            "INSERT INTO person_identities VALUES (?, 'user_confirmed', 1, ?, ?)",
+                            (person_id, now, now),
+                        )
+                        connection.execute(
+                            "INSERT INTO identity_state_versions VALUES (?, 1, 'user_confirmed', ?)",
+                            (person_id, now),
+                        )
+                        connection.execute(
+                            "INSERT INTO name_state_versions VALUES (?, 1, ?, 'user_confirmed', ?)",
+                            (person_id, display_name, now),
+                        )
+                    else:
+                        person_id = str(candidate["person_identity_id"])
+                        next_identity_revision = self._bump_identity_revision(
+                            connection,
+                            person_id,
+                            int(candidate["identity_revision"]),
+                            now,
+                            identity_status="user_confirmed",
+                        )
+                        next_state_revision = int(
+                            connection.execute(
+                                """SELECT COALESCE(MAX(state_revision), 0) + 1
+                                   FROM identity_state_versions
+                                   WHERE person_identity_id = ?""",
+                                (person_id,),
+                            ).fetchone()[0]
+                        )
+                        next_name_revision = int(
+                            connection.execute(
+                                """SELECT COALESCE(MAX(name_revision), 0) + 1
+                                   FROM name_state_versions
+                                   WHERE person_identity_id = ?""",
+                                (person_id,),
+                            ).fetchone()[0]
+                        )
+                        connection.execute(
+                            "INSERT INTO identity_state_versions VALUES (?, ?, 'user_confirmed', ?)",
+                            (person_id, next_state_revision, now),
+                        )
+                        connection.execute(
+                            "INSERT INTO name_state_versions VALUES (?, ?, ?, 'user_confirmed', ?)",
+                            (person_id, next_name_revision, display_name, now),
+                        )
+                        promoted_cluster_members = [
+                            (str(row["face_observation_id"]), str(row["local_asset_id"]))
+                            for row in connection.execute(
+                                """SELECT observation.face_observation_id,
+                                          observation.local_asset_id
+                                   FROM membership_state_versions membership
+                                   JOIN face_observations observation
+                                     ON observation.face_observation_id = membership.face_observation_id
+                                   WHERE membership.person_identity_id = ?
+                                     AND membership.membership_state = 'candidate'
+                                     AND membership.membership_revision = (
+                                       SELECT MAX(membership2.membership_revision)
+                                       FROM membership_state_versions membership2
+                                       WHERE membership2.face_observation_id = membership.face_observation_id
+                                         AND membership2.person_identity_id = membership.person_identity_id
+                                     )
+                                     AND observation.observation_status = 'active'
+                                   ORDER BY observation.local_asset_id,
+                                            observation.face_observation_id""",
+                                (person_id,),
+                            ).fetchall()
+                        ]
+                        self._append_audit(
+                            connection,
+                            event_type="candidate-identity-promote",
+                            entity_id=person_id,
+                            entity_revision=next_identity_revision,
+                            actor=actor,
+                            request_id=idempotency_key,
+                            before={"identity_status": "candidate"},
+                            after={
+                                "identity_status": "user_confirmed",
+                                "display_name": display_name,
+                                "cluster_face_count": len(promoted_cluster_members),
+                            },
+                            created_at=now,
+                        )
+                    created_identity_ids.append(person_id)
+                    connection.execute(
+                        "INSERT INTO story_name_consent_versions VALUES (?, 'owner', 1, 1, ?)",
+                        (person_id, now),
+                    )
+                elif target_kind == "existing":
+                    person_id = str(assignment.get("person_identity_id") or "")
+                    identity = connection.execute(
+                        """SELECT i.*, n.name_status, n.display_name
+                           FROM person_identities i
+                           JOIN name_state_versions n ON n.person_identity_id = i.person_identity_id
+                           WHERE i.person_identity_id = ?
+                             AND n.name_revision = (
+                               SELECT MAX(n2.name_revision) FROM name_state_versions n2
+                               WHERE n2.person_identity_id = i.person_identity_id
+                             )""",
+                        (person_id,),
+                    ).fetchone()
+                    if (
+                        identity is None
+                        or str(identity["identity_status"]) != "user_confirmed"
+                        or str(identity["name_status"]) != "user_confirmed"
+                        or not str(identity["display_name"]).strip()
+                    ):
+                        raise ValueError("identity is not available for owner assignment")
+                    self._bump_identity_revision(
+                        connection,
+                        person_id,
+                        int(identity["identity_revision"]),
+                        now,
+                    )
+                else:
+                    raise ValueError("invalid assignment target")
+
+                current = connection.execute(
+                    """SELECT person_identity_id FROM current_owner_confirmed_memberships
+                       WHERE face_observation_id = ?""",
+                    (face_id,),
+                ).fetchone()
+                if current is not None and str(current["person_identity_id"]) != person_id:
+                    raise ConfirmedMembershipConflictError(
+                        "face observation already has a confirmed identity"
+                    )
+                latest_memberships = connection.execute(
+                    """SELECT m.* FROM membership_state_versions m
+                       WHERE m.face_observation_id = ?
+                         AND m.membership_revision = (
+                           SELECT MAX(m2.membership_revision)
+                           FROM membership_state_versions m2
+                           WHERE m2.face_observation_id = m.face_observation_id
+                             AND m2.person_identity_id = m.person_identity_id
+                         )""",
+                    (face_id,),
+                ).fetchall()
+                for membership in latest_memberships:
+                    candidate_id = str(membership["person_identity_id"])
+                    if candidate_id == person_id and str(membership["membership_state"]) == "owner_confirmed":
+                        continue
+                    if str(membership["membership_state"]) in {"candidate", "conflicted"}:
+                        connection.execute(
+                            """INSERT INTO membership_state_versions VALUES
+                               (?, ?, ?, 'rejected', 'owner_face_review', NULL, 1,
+                                'face-review-v1', ?, NULL)""",
+                            (
+                                face_id,
+                                candidate_id,
+                                int(membership["membership_revision"]) + 1,
+                                now,
+                            ),
+                        )
+                if current is None:
+                    prior_target = connection.execute(
+                        """SELECT COALESCE(MAX(membership_revision), 0)
+                           FROM membership_state_versions
+                           WHERE face_observation_id = ? AND person_identity_id = ?""",
+                        (face_id, person_id),
+                    ).fetchone()
+                    membership_revision = int(prior_target[0]) + 1
+                    connection.execute(
+                        """INSERT INTO membership_state_versions VALUES
+                           (?, ?, ?, 'owner_confirmed', 'owner_face_review', NULL, 1,
+                            'face-review-v1', ?, NULL)""",
+                        (face_id, person_id, membership_revision, now),
+                    )
+                confirmed_identity_ids.append(person_id)
+                confirmed_face_ids.add(face_id)
+                observation_model = connection.execute(
+                    """SELECT model_fingerprint FROM face_observations
+                       WHERE face_observation_id = ?""",
+                    (face_id,),
+                ).fetchone()
+                if observation_model is not None:
+                    profile_refresh_targets[person_id] = str(
+                        observation_model["model_fingerprint"] or ""
+                    )
+                representative = connection.execute(
+                    """SELECT 1 FROM representative_face_versions
+                       WHERE person_identity_id = ? AND representative_state = 'active'
+                       LIMIT 1""",
+                    (person_id,),
+                ).fetchone()
+                if representative is None:
+                    connection.execute(
+                        """INSERT INTO representative_face_versions VALUES
+                           (?, 1, ?, 'active', ?)""",
+                        (person_id, face_id, now),
+                    )
+                self._append_face_review_state(
+                    connection, face_id, "resolved", now, decision_group_id
+                )
+
+                if alias_id:
+                    alias = connection.execute(
+                        """SELECT * FROM provider_person_alias_versions
+                           WHERE alias_id = ? ORDER BY alias_revision DESC LIMIT 1""",
+                        (alias_id,),
+                    ).fetchone()
+                    if (
+                        alias is None
+                        or str(alias["local_asset_id"]) != asset_id
+                        or str(alias["alias_state"]) != "candidate"
+                    ):
+                        raise ValueError("provider alias is unavailable")
+                    assignment_revision = int(
+                        connection.execute(
+                            """SELECT COALESCE(MAX(assignment_revision), 0) + 1
+                               FROM provider_alias_face_assignment_versions WHERE alias_id = ?""",
+                            (alias_id,),
+                        ).fetchone()[0]
+                    )
+                    connection.execute(
+                        """INSERT INTO provider_alias_face_assignment_versions VALUES
+                           (?, ?, ?, ?, ?, 'owner_confirmed', 'owner_face_review',
+                            'alias-face-v1', ?, ?, ?)""",
+                        (
+                            alias_id,
+                            assignment_revision,
+                            int(alias["alias_revision"]),
+                            face_id,
+                            person_id,
+                            decision_group_id,
+                            now,
+                            now,
+                        ),
+                    )
+                    connection.execute(
+                        """INSERT INTO provider_person_alias_versions(
+                             alias_id, alias_revision, provider, alias_key_hash,
+                             alias_key_quality, private_display_label, local_asset_id,
+                             alias_state, person_identity_id, created_at
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'owner_confirmed', ?, ?)""",
+                        (
+                            alias_id,
+                            int(alias["alias_revision"]) + 1,
+                            alias["provider"],
+                            alias["alias_key_hash"],
+                            alias["alias_key_quality"],
+                            alias["private_display_label"],
+                            asset_id,
+                            person_id,
+                            now,
+                        ),
+                    )
+
+                self._append_audit(
+                    connection,
+                    event_type="face-owner-assignment",
+                    entity_id=person_id,
+                    entity_revision=int(
+                        connection.execute(
+                            "SELECT identity_revision FROM person_identities WHERE person_identity_id = ?",
+                            (person_id,),
+                        ).fetchone()[0]
+                    ),
+                    actor=actor,
+                    request_id=idempotency_key,
+                    before={"face_observation_id": face_id},
+                    after={"face_observation_id": face_id, "decision_group_id": decision_group_id},
+                    created_at=now,
+                )
+
+                # A promoted-new-person review represents a cluster that already
+                # passed the independent-sighting gate.  One owner confirmation
+                # therefore confirms every eligible face in that cluster, rather
+                # than leaving hidden deferred members disconnected from the name.
+                for cluster_face_id, cluster_asset_id in promoted_cluster_members:
+                    if cluster_face_id == face_id:
+                        continue
+                    conflicting = connection.execute(
+                        """SELECT person_identity_id
+                           FROM current_owner_confirmed_memberships
+                           WHERE face_observation_id = ?""",
+                        (cluster_face_id,),
+                    ).fetchone()
+                    if conflicting is not None:
+                        continue
+                    duplicate_in_asset = connection.execute(
+                        """SELECT 1
+                           FROM current_owner_confirmed_memberships confirmed
+                           JOIN face_observations observation
+                             ON observation.face_observation_id = confirmed.face_observation_id
+                           WHERE confirmed.person_identity_id = ?
+                             AND observation.local_asset_id = ?
+                           LIMIT 1""",
+                        (person_id, cluster_asset_id),
+                    ).fetchone()
+                    if duplicate_in_asset is not None:
+                        continue
+                    latest_cluster_memberships = connection.execute(
+                        """SELECT membership.*
+                           FROM membership_state_versions membership
+                           WHERE membership.face_observation_id = ?
+                             AND membership.membership_revision = (
+                               SELECT MAX(membership2.membership_revision)
+                               FROM membership_state_versions membership2
+                               WHERE membership2.face_observation_id = membership.face_observation_id
+                                 AND membership2.person_identity_id = membership.person_identity_id
+                             )""",
+                        (cluster_face_id,),
+                    ).fetchall()
+                    for membership in latest_cluster_memberships:
+                        if str(membership["membership_state"]) not in {"candidate", "conflicted"}:
+                            continue
+                        connection.execute(
+                            """INSERT INTO membership_state_versions VALUES
+                               (?, ?, ?, 'rejected', 'owner_cluster_confirmation', NULL, 1,
+                                'face-review-v1', ?, NULL)""",
+                            (
+                                cluster_face_id,
+                                str(membership["person_identity_id"]),
+                                int(membership["membership_revision"]) + 1,
+                                now,
+                            ),
+                        )
+                    prior_target = connection.execute(
+                        """SELECT COALESCE(MAX(membership_revision), 0)
+                           FROM membership_state_versions
+                           WHERE face_observation_id = ? AND person_identity_id = ?""",
+                        (cluster_face_id, person_id),
+                    ).fetchone()
+                    connection.execute(
+                        """INSERT INTO membership_state_versions VALUES
+                           (?, ?, ?, 'owner_confirmed', 'owner_cluster_confirmation', NULL, 1,
+                            'face-review-v1', ?, NULL)""",
+                        (cluster_face_id, person_id, int(prior_target[0]) + 1, now),
+                    )
+                    self._append_face_review_state(
+                        connection,
+                        cluster_face_id,
+                        "resolved",
+                        now,
+                        decision_group_id,
+                    )
+                    confirmed_face_ids.add(cluster_face_id)
+                    affected_asset_ids.add(cluster_asset_id)
+                    promoted_cluster_face_count += 1
+                    self._append_audit(
+                        connection,
+                        event_type="face-owner-cluster-assignment",
+                        entity_id=person_id,
+                        entity_revision=int(
+                            connection.execute(
+                                """SELECT identity_revision FROM person_identities
+                                   WHERE person_identity_id = ?""",
+                                (person_id,),
+                            ).fetchone()[0]
+                        ),
+                        actor=actor,
+                        request_id=idempotency_key,
+                        before={"face_observation_id": cluster_face_id},
+                        after={
+                            "face_observation_id": cluster_face_id,
+                            "decision_group_id": decision_group_id,
+                            "cluster_confirmation": True,
+                        },
+                        created_at=now,
+                    )
+
+            ignored_face_count = 0
+            hidden_candidate_ids: set[str] = set()
+            for decision in decision_values:
+                face_id = str(decision["face_observation_id"])
+                state = str(decision.get("decision") or "")
+                if state == "not_a_face":
+                    connection.execute(
+                        """UPDATE face_observations SET observation_status = 'invalid', invalidated_at = ?
+                           WHERE face_observation_id = ? AND observation_status = 'active'""",
+                        (now, face_id),
+                    )
+                    self._append_face_review_state(
+                        connection, face_id, "rejected", now, decision_group_id
+                    )
+                elif state == "defer":
+                    self._append_face_review_state(
+                        connection, face_id, "deferred", now, decision_group_id
+                    )
+                elif state == "ignore_unknown":
+                    ignored_face_count += 1
+                    latest_memberships = connection.execute(
+                        """SELECT m.* FROM membership_state_versions m
+                           WHERE m.face_observation_id = ?
+                             AND m.membership_revision = (
+                               SELECT MAX(m2.membership_revision)
+                               FROM membership_state_versions m2
+                               WHERE m2.face_observation_id = m.face_observation_id
+                                 AND m2.person_identity_id = m.person_identity_id
+                             )""",
+                        (face_id,),
+                    ).fetchall()
+                    candidate_ids: set[str] = set()
+                    for membership in latest_memberships:
+                        membership_state = str(membership["membership_state"])
+                        if membership_state not in {"candidate", "conflicted", "owner_confirmed"}:
+                            continue
+                        person_id = str(membership["person_identity_id"])
+                        connection.execute(
+                            """INSERT INTO membership_state_versions VALUES
+                               (?, ?, ?, 'rejected', 'owner_ignore_unknown', NULL, 1,
+                                'face-review-v1', ?, NULL)""",
+                            (
+                                face_id,
+                                person_id,
+                                int(membership["membership_revision"]) + 1,
+                                now,
+                            ),
+                        )
+                        if membership_state in {"candidate", "conflicted"}:
+                            candidate_ids.add(person_id)
+                        elif membership_state == "owner_confirmed":
+                            identity = connection.execute(
+                                """SELECT identity_revision FROM person_identities
+                                   WHERE person_identity_id = ?""",
+                                (person_id,),
+                            ).fetchone()
+                            if identity is not None:
+                                self._bump_identity_revision(
+                                    connection, person_id, int(identity["identity_revision"]), now
+                                )
+                    self._append_face_review_state(
+                        connection, face_id, "ignored", now, decision_group_id
+                    )
+                    for person_id in candidate_ids:
+                        identity = connection.execute(
+                            """SELECT identity_revision, identity_status
+                               FROM person_identities WHERE person_identity_id = ?""",
+                            (person_id,),
+                        ).fetchone()
+                        if identity is None or str(identity["identity_status"]) != "candidate":
+                            continue
+                        remaining = int(
+                            connection.execute(
+                                """SELECT COUNT(*)
+                                   FROM membership_state_versions m
+                                   JOIN face_observations o
+                                     ON o.face_observation_id = m.face_observation_id
+                                   WHERE m.person_identity_id = ?
+                                     AND o.observation_status = 'active'
+                                     AND m.membership_revision = (
+                                       SELECT MAX(m2.membership_revision)
+                                       FROM membership_state_versions m2
+                                       WHERE m2.face_observation_id = m.face_observation_id
+                                         AND m2.person_identity_id = m.person_identity_id
+                                     )
+                                     AND m.membership_state IN
+                                       ('candidate', 'conflicted', 'owner_confirmed')""",
+                                (person_id,),
+                            ).fetchone()[0]
+                        )
+                        if remaining != 0:
+                            continue
+                        new_revision = self._bump_identity_revision(
+                            connection,
+                            person_id,
+                            int(identity["identity_revision"]),
+                            now,
+                            identity_status="hidden",
+                        )
+                        state_revision = int(
+                            connection.execute(
+                                """SELECT COALESCE(MAX(state_revision), 0) + 1
+                                   FROM identity_state_versions
+                                   WHERE person_identity_id = ?""",
+                                (person_id,),
+                            ).fetchone()[0]
+                        )
+                        connection.execute(
+                            "INSERT INTO identity_state_versions VALUES (?, ?, 'hidden', ?)",
+                            (person_id, state_revision, now),
+                        )
+                        hidden_candidate_ids.add(person_id)
+                        self._append_audit(
+                            connection,
+                            event_type="identity-hide-after-unknown-face",
+                            entity_id=person_id,
+                            entity_revision=new_revision,
+                            actor=actor,
+                            request_id=idempotency_key,
+                            before={"identity_status": "candidate"},
+                            after={"identity_status": "hidden", "decision_group_id": decision_group_id},
+                            created_at=now,
+                        )
+                    self._append_audit(
+                        connection,
+                        event_type="face-ignore-unknown-person",
+                        entity_id=face_id,
+                        entity_revision=int(review["review_revision"]) + 1,
+                        actor=actor,
+                        request_id=idempotency_key,
+                        before={"review_state": "pending"},
+                        after={"review_state": "ignored", "decision_group_id": decision_group_id},
+                        created_at=now,
+                    )
+                else:
+                    raise ValueError("invalid face decision")
+
+            for affected_asset_id in sorted(affected_asset_ids - {asset_id}):
+                affected_review = connection.execute(
+                    """SELECT review_revision FROM asset_people_review_state
+                       WHERE local_asset_id = ?""",
+                    (affected_asset_id,),
+                ).fetchone()
+                if affected_review is None:
+                    continue
+                affected_unresolved = int(
+                    connection.execute(
+                        """SELECT COUNT(*)
+                           FROM face_observations observation
+                           LEFT JOIN current_owner_confirmed_memberships confirmed
+                             ON confirmed.face_observation_id = observation.face_observation_id
+                           WHERE observation.local_asset_id = ?
+                             AND observation.observation_status = 'active'
+                             AND confirmed.face_observation_id IS NULL
+                             AND COALESCE((
+                               SELECT item.review_state
+                               FROM person_review_item_versions item
+                               WHERE item.face_observation_id = observation.face_observation_id
+                               ORDER BY item.created_at DESC, item.review_revision DESC,
+                                        item.rowid DESC LIMIT 1
+                             ), 'pending') = 'pending'""",
+                        (affected_asset_id,),
+                    ).fetchone()[0]
+                )
+                affected_state = "completed" if affected_unresolved == 0 else "pending"
+                connection.execute(
+                    """UPDATE asset_people_review_state
+                       SET review_revision = ?, review_state = ?, updated_at = ?, completed_at = ?
+                       WHERE local_asset_id = ?""",
+                    (
+                        int(affected_review["review_revision"]) + 1,
+                        affected_state,
+                        now,
+                        now if affected_state == "completed" else None,
+                        affected_asset_id,
+                    ),
+                )
+
+            unresolved_count = int(
+                connection.execute(
+                    """SELECT COUNT(*)
+                       FROM face_observations o
+                       LEFT JOIN current_owner_confirmed_memberships confirmed
+                         ON confirmed.face_observation_id = o.face_observation_id
+                       WHERE o.local_asset_id = ? AND o.observation_status = 'active'
+                         AND confirmed.face_observation_id IS NULL
+                         AND COALESCE((
+                           SELECT item.review_state FROM person_review_item_versions item
+                           WHERE item.face_observation_id = o.face_observation_id
+                           ORDER BY item.created_at DESC, item.review_revision DESC, item.rowid DESC LIMIT 1
+                         ), 'pending') = 'pending'""",
+                    (asset_id,),
+                ).fetchone()[0]
+            )
+            deferred_count = int(
+                connection.execute(
+                    """SELECT COUNT(*) FROM face_observations o
+                       WHERE o.local_asset_id = ? AND o.observation_status = 'active'
+                         AND COALESCE((
+                           SELECT item.review_state FROM person_review_item_versions item
+                           WHERE item.face_observation_id = o.face_observation_id
+                           ORDER BY item.created_at DESC, item.review_revision DESC, item.rowid DESC LIMIT 1
+                         ), '') = 'deferred'""",
+                    (asset_id,),
+                ).fetchone()[0]
+            )
+            next_revision = int(review["review_revision"]) + 1
+            review_state = "completed" if unresolved_count == 0 else "pending"
+            connection.execute(
+                """UPDATE asset_people_review_state
+                   SET review_revision = ?, review_state = ?, updated_at = ?, completed_at = ?
+                   WHERE local_asset_id = ?""",
+                (
+                    next_revision,
+                    review_state,
+                    now,
+                    now if review_state == "completed" else None,
+                    asset_id,
+                ),
+            )
+            result = {
+                "decision_group_id": decision_group_id,
+                "review_revision": next_revision,
+                "review_state": review_state,
+                "confirmed_face_count": len(confirmed_face_ids),
+                "promoted_cluster_face_count": promoted_cluster_face_count,
+                "pending_face_count": unresolved_count,
+                "deferred_face_count": deferred_count,
+                "ignored_face_count": ignored_face_count,
+                "created_identity_count": len(created_identity_ids),
+                "hidden_candidate_count": len(hidden_candidate_ids),
+            }
+            connection.execute(
+                "INSERT INTO people_decision_groups VALUES (?, ?, ?, ?, ?, NULL)",
+                (
+                    decision_group_id,
+                    asset_id,
+                    json.dumps(before, sort_keys=True, separators=(",", ":")),
+                    json.dumps(result, sort_keys=True, separators=(",", ":")),
+                    now,
+                ),
+            )
+            outbox_id = f"spo_{uuid.uuid4().hex}"
+            connection.execute(
+                """INSERT INTO story_people_refresh_outbox VALUES
+                   (?, ?, ?, 'pending', 0, '', ?, NULL)""",
+                (
+                    outbox_id,
+                    decision_group_id,
+                    _canonical_hash(sorted(affected_asset_ids)),
+                    now,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO identity_command_receipts VALUES
+                   (?, ?, ?, 'apply_asset_people_review', ?, ?)""",
+                (
+                    device_fingerprint,
+                    idempotency_key,
+                    request_hash,
+                    json.dumps(result, sort_keys=True, separators=(",", ":")),
+                    now,
+                ),
+            )
+        if profile_refresh_targets:
+            from photos_mcp.application.people_automation_policy import (
+                PEOPLE_AUTOMATION_POLICY_VERSION,
+            )
+
+            for person_id, model_fingerprint in profile_refresh_targets.items():
+                if model_fingerprint:
+                    self.refresh_identity_automation_profile(
+                        person_id,
+                        model_fingerprint=model_fingerprint,
+                        policy_version=PEOPLE_AUTOMATION_POLICY_VERSION,
+                    )
+        return result
+
+    @staticmethod
+    def _append_face_review_state(
+        connection: sqlite3.Connection,
+        face_observation_id: str,
+        review_state: str,
+        now: str,
+        decision_group_id: str,
+    ) -> None:
+        if review_state not in _FACE_REVIEW_STATES:
+            raise ValueError("invalid face review state")
+        rows = connection.execute(
+            """SELECT item.* FROM person_review_item_versions item
+               WHERE item.face_observation_id = ?
+                 AND item.review_revision = (
+                   SELECT MAX(item2.review_revision) FROM person_review_item_versions item2
+                   WHERE item2.review_item_id = item.review_item_id
+                 )""",
+            (face_observation_id,),
+        ).fetchall()
+        if not rows:
+            review_id = "prv_" + _canonical_hash(
+                {"kind": "owner_face_review", "face": face_observation_id}
+            )[:40]
+            connection.execute(
+                """INSERT INTO person_review_item_versions(
+                     review_item_id, review_revision, review_kind,
+                     candidate_person_identity_id, face_observation_id,
+                     suggested_person_identity_id, review_state,
+                     model_policy_version, index_run_id, created_at, resolved_at
+                   ) VALUES (?, 1, 'owner_face_review', NULL, ?, NULL, ?,
+                     'face-review-v1', NULL, ?, ?)""",
+                (
+                    review_id,
+                    face_observation_id,
+                    review_state,
+                    now,
+                    None if review_state in {"pending", "deferred"} else now,
+                ),
+            )
+            return
+        for row in rows:
+            connection.execute(
+                """INSERT INTO person_review_item_versions(
+                     review_item_id, review_revision, review_kind,
+                     candidate_person_identity_id, face_observation_id,
+                     suggested_person_identity_id, review_state,
+                     model_policy_version, index_run_id, created_at, resolved_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    row["review_item_id"],
+                    int(row["review_revision"]) + 1,
+                    row["review_kind"],
+                    row["candidate_person_identity_id"],
+                    face_observation_id,
+                    row["suggested_person_identity_id"],
+                    review_state,
+                    row["model_policy_version"],
+                    row["index_run_id"],
+                    now,
+                    None if review_state in {"pending", "deferred"} else now,
+                ),
+            )
+
+    def complete_story_refresh_outbox(
+        self, decision_group_id: str, *, error: str = ""
+    ) -> None:
+        now = self._now_fn()
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE story_people_refresh_outbox
+                   SET state = ?, attempt_count = attempt_count + 1,
+                       last_error = ?, completed_at = ?
+                   WHERE decision_group_id = ?""",
+                (
+                    "failed" if error else "completed",
+                    error[:160],
+                    None if error else now,
+                    decision_group_id,
+                ),
+            )
+
+    def register_person_review_item(
+        self,
+        *,
+        review_kind: str,
+        candidate_person_identity_id: str | None,
+        face_observation_id: str | None,
+        suggested_person_identity_id: str | None = None,
+        model_policy_version: str = "person-index-v1",
+        index_run_id: str | None = None,
+        review_state: str = "pending",
+    ) -> str:
+        """Idempotently register one owner review item for a stable face observation."""
+
+        if not review_kind.strip() or not (candidate_person_identity_id or face_observation_id):
+            raise ValueError("review kind and candidate or observation are required")
+        self._validate_state(review_state, _FACE_REVIEW_STATES, "face review state")
+        review_id = "prv_" + _canonical_hash(
+            {
+                "kind": review_kind,
+                "candidate": candidate_person_identity_id,
+                "face": face_observation_id,
+                "suggested": suggested_person_identity_id,
+                "policy": model_policy_version,
+            }
+        )[:40]
+        now = self._now_fn()
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM person_review_item_versions WHERE review_item_id = ?",
+                (review_id,),
+            ).fetchone()
+            if exists is None:
+                connection.execute(
+                    """INSERT INTO person_review_item_versions(
+                         review_item_id, review_revision, review_kind,
+                         candidate_person_identity_id, face_observation_id,
+                         suggested_person_identity_id, review_state,
+                         model_policy_version, index_run_id, created_at, resolved_at
+                       ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        review_id,
+                        review_kind,
+                        candidate_person_identity_id,
+                        face_observation_id,
+                        suggested_person_identity_id,
+                        review_state,
+                        model_policy_version,
+                        index_run_id,
+                        now,
+                        None if review_state in {"pending", "deferred"} else now,
+                    ),
+                )
+                if review_state == "pending" and face_observation_id:
+                    observation = connection.execute(
+                        "SELECT local_asset_id FROM face_observations WHERE face_observation_id = ?",
+                        (face_observation_id,),
+                    ).fetchone()
+                    if observation is not None and observation["local_asset_id"]:
+                        connection.execute(
+                            """INSERT INTO asset_people_review_state(
+                                 local_asset_id, review_revision, review_state,
+                                 updated_at, completed_at
+                               ) VALUES (?, 1, 'pending', ?, NULL)
+                               ON CONFLICT(local_asset_id) DO UPDATE SET
+                                 review_revision = asset_people_review_state.review_revision + 1,
+                                 review_state = 'pending', updated_at = excluded.updated_at,
+                                 completed_at = NULL""",
+                            (observation["local_asset_id"], now),
+                        )
+        return review_id
+
+    def face_review_item_count(self, *, state: str = "pending") -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*) FROM person_review_item_versions item
+                   WHERE item.review_state = ?
+                     AND item.review_revision = (
+                       SELECT MAX(item2.review_revision)
+                       FROM person_review_item_versions item2
+                       WHERE item2.review_item_id = item.review_item_id
+                     )""",
+                (state,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     def set_asset_person_association(
         self,
         *,
@@ -913,6 +3638,13 @@ class PersonIdentityRepository:
             if str(latest["alias_state"]) != "candidate":
                 raise ValueError("provider alias is not pending review")
             local_asset_id = str(latest["local_asset_id"])
+            active_face_count = connection.execute(
+                """SELECT COUNT(*) FROM face_observations
+                   WHERE local_asset_id = ? AND observation_status = 'active'""",
+                (local_asset_id,),
+            ).fetchone()
+            if active_face_count and int(active_face_count[0]) > 1:
+                raise ValueError("face_selection_required")
             prior_association = connection.execute(
                 """SELECT * FROM asset_person_association_versions
                    WHERE local_asset_id = ? AND person_identity_id = ?
@@ -1261,6 +3993,31 @@ class PersonIdentityRepository:
                         UNION
                         SELECT a.local_asset_id, a.person_identity_id
                         FROM current_owner_confirmed_asset_people a
+                        UNION
+                        SELECT o.local_asset_id, auto.person_identity_id
+                        FROM automatic_identity_assignment_versions auto
+                        JOIN face_observations o
+                          ON o.face_observation_id = auto.face_observation_id
+                        WHERE auto.assignment_state = 'auto_accepted'
+                          AND auto.assignment_revision = (
+                            SELECT MAX(auto2.assignment_revision)
+                            FROM automatic_identity_assignment_versions auto2
+                            WHERE auto2.face_observation_id = auto.face_observation_id
+                          )
+                          AND EXISTS (
+                            SELECT 1 FROM identity_automation_profile_versions profile
+                            WHERE profile.person_identity_id = auto.person_identity_id
+                              AND profile.profile_revision = (
+                                SELECT MAX(profile2.profile_revision)
+                                FROM identity_automation_profile_versions profile2
+                                WHERE profile2.person_identity_id = profile.person_identity_id
+                              )
+                              AND profile.auto_enabled = 1 AND profile.suspended = 0
+                              AND profile.maturity = 'auto_ready'
+                              AND profile.model_fingerprint = auto.model_fingerprint
+                              AND profile.policy_version = auto.policy_version
+                          )
+                          AND o.observation_status = 'active'
                     ) confirmed
                     JOIN person_identities i
                       ON i.person_identity_id = confirmed.person_identity_id

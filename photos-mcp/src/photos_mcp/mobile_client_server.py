@@ -122,6 +122,26 @@ class _LocalMcpPhotoSourcePort:
         items = payload.get("items") or []
         return [dict(item) for item in items if isinstance(item, dict)]
 
+    async def list_added_photos(self, source: str, **filters: Any) -> dict[str, Any]:
+        payload = await _call_local_photos_mcp(
+            "photos_query",
+            {
+                "action": "added",
+                "options": {
+                    "source": source,
+                    "date_added_from": str(filters.get("date_added_from") or ""),
+                    "date_added_to": str(filters.get("date_added_to") or ""),
+                    "cursor": str(filters.get("cursor") or ""),
+                    "limit": int(filters.get("limit") or 100),
+                },
+            },
+        )
+        items = payload.get("items") or []
+        return {
+            "items": [dict(item) for item in items if isinstance(item, dict)],
+            "next_cursor": str(payload.get("next_cursor") or ""),
+        }
+
 
 async def _start_apple_analysis_through_local_mcp(**kwargs: Any) -> dict[str, Any]:
     """Start the read-only Apple ranking job in the Photos-authorized app."""

@@ -14,10 +14,12 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import secrets
+import sqlite3
 from threading import RLock
 from typing import Any, Awaitable, Callable, Literal
 from zoneinfo import ZoneInfo
@@ -38,6 +40,7 @@ from photos_mcp.application.mobile_client import (
     mobile_envelope,
     mobile_events,
     mobile_people,
+    mobile_people_overview,
     mobile_people_readiness,
     mobile_person,
     mobile_people_review_summary,
@@ -46,6 +49,7 @@ from photos_mcp.application.mobile_client import (
     mobile_timeline,
 )
 from photos_mcp.application.person_identity_repository import PersonIdentityRepository
+from photos_mcp.application.people_workspace import PeopleWorkspaceService
 from photos_mcp.application.manual_curation import (
     ManualStarter,
     canonical_request_hash,
@@ -86,7 +90,7 @@ from photos_mcp.interfaces.http.story_web import (
 API_PREFIX = "/mobile-client/v1"
 STORY_PREFIX = "/mobile-client/story"
 DOWNLOAD_PREFIX = "/mobile-client/download"
-ANDROID_APP_VERSION = "0.7.3"
+ANDROID_APP_VERSION = "0.8.3"
 MOBILE_SESSION_COOKIE = "photos_mobile_story_session"
 MAX_BODY_BYTES = 32 * 1024
 SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{8,160}$")
@@ -105,6 +109,9 @@ IDENTITY_CONTROL_SCOPE = "identity:write"
 SAFE_COMMAND_VALUE = re.compile(r"^[A-Za-z0-9._:-]{8,180}$")
 IDENTITY_ACTION_HANDLE = re.compile(r"^pah_[A-Za-z0-9_-]{24,80}$")
 ALIAS_ACTION_HANDLE = re.compile(r"^aal_[A-Za-z0-9_-]{24,80}$")
+PHOTO_REVIEW_HANDLE = re.compile(r"^prp_[A-Za-z0-9_-]{24,80}$")
+FACE_ACTION_HANDLE = re.compile(r"^pra_[A-Za-z0-9_-]{24,80}$")
+PEOPLE_IMAGE_HANDLE = re.compile(r"^pim_[A-Za-z0-9_-]{24,80}$")
 IDENTITY_ACTION_TTL_SECONDS = 10 * 60
 ManualAdvancer = Callable[[], Awaitable[dict[str, int]]]
 
@@ -245,6 +252,22 @@ class PersonConsentPayload(BaseModel):
         return value
 
 
+class PersonAutomaticRecognitionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    schema_version: Literal[1] = 1
+    automatic_action_handle: str = Field(min_length=28, max_length=84)
+    expected_profile_revision: int = Field(ge=1)
+    enabled: StrictBool
+
+    @field_validator("automatic_action_handle")
+    @classmethod
+    def action_handle_is_safe(cls, value: str) -> str:
+        if not IDENTITY_ACTION_HANDLE.fullmatch(value):
+            raise ValueError("invalid action handle")
+        return value
+
+
 class PersonAliasConfirmPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -265,6 +288,96 @@ class PersonAliasConfirmPayload(BaseModel):
         if not IDENTITY_ACTION_HANDLE.fullmatch(value):
             raise ValueError("invalid identity action handle")
         return value
+
+
+class PersonAliasCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    schema_version: Literal[1] = 1
+    alias_action_handle: str = Field(min_length=28, max_length=84)
+    display_name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("alias_action_handle")
+    @classmethod
+    def alias_handle_is_safe(cls, value: str) -> str:
+        if not ALIAS_ACTION_HANDLE.fullmatch(value):
+            raise ValueError("invalid alias action handle")
+        return value
+
+
+class PersonAliasReviewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    schema_version: Literal[1] = 1
+    alias_action_handle: str = Field(min_length=28, max_length=84)
+    decision: Literal["rejected"]
+
+    @field_validator("alias_action_handle")
+    @classmethod
+    def alias_handle_is_safe(cls, value: str) -> str:
+        if not ALIAS_ACTION_HANDLE.fullmatch(value):
+            raise ValueError("invalid alias action handle")
+        return value
+
+
+class FaceAssignmentTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    kind: Literal["existing", "new"]
+    identity_action_handle: str = Field(default="", max_length=84)
+    display_name: str = Field(default="", max_length=80)
+
+    @field_validator("identity_action_handle")
+    @classmethod
+    def identity_handle_is_safe_or_empty(cls, value: str) -> str:
+        if value and not IDENTITY_ACTION_HANDLE.fullmatch(value):
+            raise ValueError("invalid identity action handle")
+        return value
+
+
+class FaceAssignmentPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    face_action_handle: str = Field(min_length=28, max_length=84)
+    alias_action_handle: str = Field(default="", max_length=84)
+    target: FaceAssignmentTarget
+
+    @field_validator("face_action_handle")
+    @classmethod
+    def face_handle_is_safe(cls, value: str) -> str:
+        if not FACE_ACTION_HANDLE.fullmatch(value):
+            raise ValueError("invalid face action handle")
+        return value
+
+    @field_validator("alias_action_handle")
+    @classmethod
+    def alias_handle_is_safe_or_empty(cls, value: str) -> str:
+        if value and not ALIAS_ACTION_HANDLE.fullmatch(value):
+            raise ValueError("invalid alias action handle")
+        return value
+
+
+class FaceDecisionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    face_action_handle: str = Field(min_length=28, max_length=84)
+    decision: Literal["not_a_face", "defer", "ignore_unknown"]
+
+    @field_validator("face_action_handle")
+    @classmethod
+    def face_handle_is_safe(cls, value: str) -> str:
+        if not FACE_ACTION_HANDLE.fullmatch(value):
+            raise ValueError("invalid face action handle")
+        return value
+
+
+class AssetPeopleReviewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    schema_version: Literal[1] = 1
+    expected_review_revision: int = Field(ge=1)
+    assignments: list[FaceAssignmentPayload] = Field(default_factory=list, max_length=64)
+    face_decisions: list[FaceDecisionPayload] = Field(default_factory=list, max_length=64)
 
 
 class ManualCurationPayload(BaseModel):
@@ -428,6 +541,9 @@ class MobileClientHttp:
             str, tuple[str, str, int, float]
         ] = {}
         self._alias_action_handles: dict[str, tuple[str, str, float]] = {}
+        self._photo_review_handles: dict[str, tuple[str, str, int, float]] = {}
+        self._face_action_handles: dict[str, tuple[str, str, str, int, float]] = {}
+        self._people_image_handles: dict[str, tuple[str, str, float]] = {}
         self._identity_consent_results: dict[
             tuple[str, str], tuple[str, dict[str, Any], float]
         ] = {}
@@ -638,6 +754,21 @@ class MobileClientHttp:
             for handle, binding in self._alias_action_handles.items()
             if binding[2] > now_timestamp
         }
+        self._photo_review_handles = {
+            handle: binding
+            for handle, binding in self._photo_review_handles.items()
+            if binding[3] > now_timestamp
+        }
+        self._face_action_handles = {
+            handle: binding
+            for handle, binding in self._face_action_handles.items()
+            if binding[4] > now_timestamp
+        }
+        self._people_image_handles = {
+            handle: binding
+            for handle, binding in self._people_image_handles.items()
+            if binding[2] > now_timestamp
+        }
         self._identity_consent_results = {
             key: result
             for key, result in self._identity_consent_results.items()
@@ -697,6 +828,93 @@ class MobileClientHttp:
             if binding is None or binding[0] != device_id:
                 return None
             return binding[1]
+
+    def _issue_photo_review_handle(
+        self, *, device_id: str, local_asset_id: str, review_revision: int
+    ) -> str:
+        now_timestamp = datetime.now(UTC).timestamp()
+        with self._lock:
+            self._prune_identity_commands_locked(now_timestamp)
+            handle = f"prp_{secrets.token_urlsafe(24)}"
+            self._photo_review_handles[handle] = (
+                device_id,
+                local_asset_id,
+                int(review_revision),
+                now_timestamp + IDENTITY_ACTION_TTL_SECONDS,
+            )
+        return handle
+
+    def _photo_review_binding(
+        self, *, device_id: str, handle: str
+    ) -> tuple[str, int] | None:
+        now_timestamp = datetime.now(UTC).timestamp()
+        with self._lock:
+            self._prune_identity_commands_locked(now_timestamp)
+            binding = self._photo_review_handles.get(handle)
+            if binding is None or binding[0] != device_id:
+                return None
+            return binding[1], binding[2]
+
+    def _issue_face_action_handle(
+        self,
+        *,
+        device_id: str,
+        local_asset_id: str,
+        face_observation_id: str,
+        review_revision: int,
+    ) -> str:
+        now_timestamp = datetime.now(UTC).timestamp()
+        with self._lock:
+            self._prune_identity_commands_locked(now_timestamp)
+            handle = f"pra_{secrets.token_urlsafe(24)}"
+            self._face_action_handles[handle] = (
+                device_id,
+                local_asset_id,
+                face_observation_id,
+                int(review_revision),
+                now_timestamp + IDENTITY_ACTION_TTL_SECONDS,
+            )
+        return handle
+
+    def _face_action_binding(
+        self, *, device_id: str, handle: str
+    ) -> tuple[str, str, int] | None:
+        now_timestamp = datetime.now(UTC).timestamp()
+        with self._lock:
+            self._prune_identity_commands_locked(now_timestamp)
+            binding = self._face_action_handles.get(handle)
+            if binding is None or binding[0] != device_id:
+                return None
+            return binding[1], binding[2], binding[3]
+
+    def _issue_people_image_handle(self, *, device_id: str, artifact_ref: str) -> str:
+        now_timestamp = datetime.now(UTC).timestamp()
+        with self._lock:
+            self._prune_identity_commands_locked(now_timestamp)
+            handle = f"pim_{secrets.token_urlsafe(24)}"
+            self._people_image_handles[handle] = (
+                device_id,
+                artifact_ref,
+                now_timestamp + IDENTITY_ACTION_TTL_SECONDS,
+            )
+        return handle
+
+    def _people_image_binding(self, *, device_id: str, handle: str) -> str | None:
+        now_timestamp = datetime.now(UTC).timestamp()
+        with self._lock:
+            self._prune_identity_commands_locked(now_timestamp)
+            binding = self._people_image_handles.get(handle)
+            if binding is None or binding[0] != device_id:
+                return None
+            return binding[1]
+
+    def _people_workspace(self) -> PeopleWorkspaceService:
+        if self._identity_repository is None:
+            raise RuntimeError("people unavailable")
+        return PeopleWorkspaceService(
+            self._identity_repository,
+            run_repository=self._repository(),
+        )
 
     async def _verify_owner_command(
         self,
@@ -765,6 +983,7 @@ class MobileClientHttp:
                         "story_delete": self._controls_enabled,
                         "people": self._identity_repository is not None,
                         "people_consent": self._identity_repository is not None,
+                        "people_automatic_recognition": self._identity_repository is not None,
                         "manual_cancel": False,
                         "push": False,
                     },
@@ -1158,10 +1377,454 @@ class MobileClientHttp:
                             identity_revision=revision,
                         )
                     ),
+                    representative_url_factory=lambda artifact_ref: (
+                        f"{API_PREFIX}/people/review-images/"
+                        + self._issue_people_image_handle(
+                            device_id=device.device_id, artifact_ref=artifact_ref
+                        )
+                    ),
                 )
             ),
             headers=API_HEADERS,
         )
+
+    def _mobile_face_review_detail(
+        self, *, device_id: str, detail: dict[str, Any]
+    ) -> dict[str, Any]:
+        review_revision = int(detail.get("review_revision") or 1)
+        photo_handle = self._issue_photo_review_handle(
+            device_id=device_id,
+            local_asset_id=str(detail["local_asset_id"]),
+            review_revision=review_revision,
+        )
+        aliases: list[dict[str, Any]] = []
+        for alias in detail.get("aliases") or []:
+            aliases.append(
+                {
+                    "display_label": str(alias.get("private_display_label") or "")[:80],
+                    "source_quality": str(alias.get("alias_key_quality") or "")[:32],
+                    "alias_action_handle": self._issue_alias_action_handle(
+                        device_id=device_id,
+                        alias_id=str(alias["alias_id"]),
+                    ),
+                }
+            )
+        faces: list[dict[str, Any]] = []
+        context_handle = ""
+        for index, face in enumerate(detail.get("faces") or []):
+            face_handle = self._issue_face_action_handle(
+                device_id=device_id,
+                local_asset_id=str(detail["local_asset_id"]),
+                face_observation_id=str(face["face_observation_id"]),
+                review_revision=review_revision,
+            )
+            crop_ref = str(face.get("review_crop_ref") or "")
+            context_ref = str(face.get("context_preview_ref") or "")
+            highlighted_ref = str(face.get("highlighted_context_ref") or "")
+            crop_handle = (
+                self._issue_people_image_handle(device_id=device_id, artifact_ref=crop_ref)
+                if crop_ref
+                else ""
+            )
+            if not context_handle and context_ref:
+                context_handle = self._issue_people_image_handle(
+                    device_id=device_id, artifact_ref=context_ref
+                )
+            highlighted_handle = (
+                self._issue_people_image_handle(
+                    device_id=device_id, artifact_ref=highlighted_ref
+                )
+                if highlighted_ref
+                else ""
+            )
+            box = None
+            if all(face.get(key) is not None for key in ("x_norm", "y_norm", "width_norm", "height_norm")):
+                box = {
+                    "x": round(float(face["x_norm"]), 6),
+                    "y": round(float(face["y_norm"]), 6),
+                    "w": round(float(face["width_norm"]), 6),
+                    "h": round(float(face["height_norm"]), 6),
+                }
+            state = str(face.get("review_state") or "pending")
+            if face.get("confirmed_person_identity_id"):
+                state = "resolved"
+            quality = dict(face.get("quality_summary") or {})
+            suggestion = None
+            suggested_person_id = str(face.get("suggested_person_identity_id") or "")
+            suggested_name = str(face.get("suggested_display_name") or "").strip()
+            if suggested_person_id and suggested_name:
+                try:
+                    suggested_identity = self._identity_repository.get_identity(
+                        suggested_person_id
+                    )
+                    estimate = max(
+                        0.0,
+                        min(1.0, float(face.get("confidence_estimate") or 0.0)),
+                    )
+                    tier = str(face.get("suggestion_tier") or "suggested")
+                    suggestion = {
+                        "display_name": suggested_name[:80],
+                        "match_likelihood_percent": int(round(estimate * 100.0)),
+                        "likelihood_kind": "model_estimate",
+                        "tier": tier,
+                        "supporting_face_count": int(
+                            face.get("supporting_face_count") or 0
+                        ),
+                        "supporting_photo_count": int(
+                            face.get("supporting_asset_count") or 0
+                        ),
+                        "identity_action_handle": self._issue_identity_action_handle(
+                            device_id=device_id,
+                            person_identity_id=suggested_person_id,
+                            identity_revision=suggested_identity.identity_revision,
+                        ),
+                        "explanation": (
+                            "확정 얼굴이 충분해 추천을 미리 선택했습니다. 저장 전 변경할 수 있습니다."
+                            if tier == "ready_to_confirm"
+                            else "확정한 얼굴을 기준으로 계산한 후보입니다."
+                        ),
+                    }
+                except KeyError:
+                    suggestion = None
+            faces.append(
+                {
+                    "position_label": f"얼굴 {index + 1}",
+                    "review_kind": str(face.get("review_kind") or "quick_confirmation")[:40],
+                    "state": state,
+                    "box": box,
+                    "face_action_handle": face_handle,
+                    "crop_image_url": (
+                        f"{API_PREFIX}/people/review-images/{crop_handle}" if crop_handle else ""
+                    ),
+                    "highlighted_image_url": (
+                        f"{API_PREFIX}/people/review-images/{highlighted_handle}"
+                        if highlighted_handle
+                        else ""
+                    ),
+                    "quality": (
+                        "low"
+                        if float(quality.get("detector_score") or 1.0) < 0.75
+                        else "normal"
+                    ),
+                    "quality_tier": str(face.get("quality_tier") or "review_eligible")[:32],
+                    "quality_reason_codes": [
+                        str(value)[:48]
+                        for value in (face.get("quality_reason_codes") or [])[:8]
+                    ],
+                    "cluster_evidence_urls": [
+                        f"{API_PREFIX}/people/review-images/"
+                        + self._issue_people_image_handle(
+                            device_id=device_id,
+                            artifact_ref=str(item.get("review_crop_ref") or ""),
+                        )
+                        for item in (face.get("cluster_evidence") or [])[:3]
+                        if str(item.get("review_crop_ref") or "")
+                    ],
+                    "identity_suggestion": suggestion,
+                }
+            )
+        identity_choices = []
+        for choice in self._people_workspace().identity_choices():
+            representative_ref = str(choice.get("representative_face_ref") or "")
+            representative_url = ""
+            if representative_ref:
+                representative_url = (
+                    f"{API_PREFIX}/people/review-images/"
+                    + self._issue_people_image_handle(
+                        device_id=device_id, artifact_ref=representative_ref
+                    )
+                )
+            identity_choices.append(
+                {
+                    "display_name": str(choice["display_name"])[:80],
+                    "linked_photo_count": int(choice["linked_photo_count"]),
+                    "identity_action_handle": self._issue_identity_action_handle(
+                        device_id=device_id,
+                        person_identity_id=str(choice["person_identity_id"]),
+                        identity_revision=int(choice["identity_revision"]),
+                    ),
+                    "representative_face_url": representative_url,
+                    "automatic_recognition": dict(choice.get("automation_profile") or {}),
+                }
+            )
+        return {
+            "photo_review_handle": photo_handle,
+            "review_revision": review_revision,
+            "review_state": str(detail.get("review_state") or "pending"),
+            "index_state": str(detail.get("index_state") or "pending"),
+            "capture_date_local": str(detail.get("capture_date_local") or "")[:10],
+            "detected_face_count": int(detail.get("detected_face_count") or len(faces)),
+            "context_image_url": (
+                f"{API_PREFIX}/people/review-images/{context_handle}" if context_handle else ""
+            ),
+            "aliases": aliases,
+            "faces": faces,
+            "identity_choices": identity_choices,
+        }
+
+    async def people_face_review_photos(self, request: Request) -> Response:
+        device = self._session(request, scope="status:read")
+        if device is None:
+            return _json_error(401, "unauthorized")
+        if self._identity_repository is None:
+            return _json_error(503, "people_unavailable")
+        try:
+            offset = max(0, int(request.query_params.get("cursor") or "0"))
+            limit = max(1, min(50, int(request.query_params.get("limit") or "24")))
+            state = str(request.query_params.get("state") or "pending")
+            page = self._people_workspace().list_asset_reviews(
+                state=state, offset=offset, limit=limit
+            )
+        except (ValueError, TypeError):
+            return _json_error(400, "invalid_cursor")
+        items = [
+            self._mobile_face_review_detail(device_id=device.device_id, detail=detail)
+            for detail in page.items
+        ]
+        return JSONResponse(
+            mobile_envelope(
+                items,
+                next_cursor=str(page.next_offset) if page.next_offset is not None else None,
+            ),
+            headers=API_HEADERS,
+        )
+
+    async def people_face_review_photo(self, request: Request) -> Response:
+        device = self._session(request, scope="status:read")
+        if device is None:
+            return _json_error(401, "unauthorized")
+        handle = str(request.path_params.get("photo_review_handle") or "")
+        if not PHOTO_REVIEW_HANDLE.fullmatch(handle):
+            return Response(status_code=404, headers=API_HEADERS)
+        binding = self._photo_review_binding(device_id=device.device_id, handle=handle)
+        if binding is None:
+            return Response(status_code=404, headers=API_HEADERS)
+        local_asset_id, issued_revision = binding
+        try:
+            detail = self._people_workspace().asset_review_detail(local_asset_id)
+        except (KeyError, RuntimeError):
+            return Response(status_code=404, headers=API_HEADERS)
+        if int(detail.get("review_revision") or 0) != issued_revision:
+            return _json_error(409, "stale_review_revision")
+        return JSONResponse(
+            mobile_envelope(
+                self._mobile_face_review_detail(device_id=device.device_id, detail=detail)
+            ),
+            headers=API_HEADERS,
+        )
+
+    async def people_review_image(self, request: Request) -> Response:
+        device = self._session(request, scope="derivative:read")
+        if device is None:
+            return _json_error(401, "unauthorized")
+        handle = str(request.path_params.get("image_handle") or "")
+        if not PEOPLE_IMAGE_HANDLE.fullmatch(handle):
+            return Response(status_code=404, headers=API_HEADERS)
+        artifact_ref = self._people_image_binding(device_id=device.device_id, handle=handle)
+        if artifact_ref is None:
+            return Response(status_code=404, headers=API_HEADERS)
+        try:
+            path = self._people_workspace().artifact_path(artifact_ref)
+        except (ValueError, FileNotFoundError, RuntimeError):
+            return Response(status_code=404, headers=API_HEADERS)
+        return FileResponse(path, media_type="image/jpeg", headers=API_HEADERS)
+
+    async def people_face_review_apply(self, request: Request) -> Response:
+        device = self._session(request, scope=IDENTITY_CONTROL_SCOPE)
+        if device is None:
+            return _json_error(401, "unauthorized")
+        repository = self._repository()
+        if repository is None or self._identity_repository is None:
+            return _json_error(503, "people_unavailable")
+        photo_handle = str(request.path_params.get("photo_review_handle") or "")
+        if not PHOTO_REVIEW_HANDLE.fullmatch(photo_handle):
+            return Response(status_code=404, headers=API_HEADERS)
+        parsed = await _bounded_json(request, AssetPeopleReviewPayload, max_body_bytes=16 * 1024)
+        if not isinstance(parsed, AssetPeopleReviewPayload):
+            return _json_error(400, "invalid_request")
+        path = f"{API_PREFIX}/people/face-review/photos/{photo_handle}/assignments"
+        try:
+            idempotency_key, nonce = await self._verify_owner_command(
+                request, device=device, path=path
+            )
+        except ValueError as exc:
+            code = str(exc)
+            return _json_error(401 if code == "stale_command" else 400, code[:48])
+        except (InvalidSignature, UnsupportedAlgorithm, binascii.Error, TypeError):
+            return _json_error(401, "command_verification_failed")
+        photo_binding = self._photo_review_binding(
+            device_id=device.device_id, handle=photo_handle
+        )
+        if photo_binding is None:
+            return Response(status_code=404, headers=API_HEADERS)
+        local_asset_id, issued_revision = photo_binding
+        if (
+            issued_revision != parsed.expected_review_revision
+            or issued_revision <= 0
+        ):
+            return _json_error(409, "stale_review_revision")
+
+        assignments: list[dict[str, Any]] = []
+        decisions: list[dict[str, Any]] = []
+        for item in parsed.assignments:
+            face_binding = self._face_action_binding(
+                device_id=device.device_id, handle=item.face_action_handle
+            )
+            if (
+                face_binding is None
+                or face_binding[0] != local_asset_id
+                or face_binding[2] != issued_revision
+            ):
+                return _json_error(404, "face_action_unavailable")
+            assignment: dict[str, Any] = {
+                "face_observation_id": face_binding[1],
+                "target_kind": item.target.kind,
+            }
+            if item.target.kind == "existing":
+                identity_binding = self._identity_action_binding(
+                    device_id=device.device_id,
+                    handle=item.target.identity_action_handle,
+                )
+                if identity_binding is None:
+                    return _json_error(404, "identity_action_unavailable")
+                assignment["person_identity_id"] = identity_binding[0]
+            else:
+                assignment["display_name"] = item.target.display_name
+            if item.alias_action_handle:
+                alias_id = self._alias_action_binding(
+                    device_id=device.device_id, handle=item.alias_action_handle
+                )
+                if alias_id is None:
+                    return _json_error(404, "alias_action_unavailable")
+                assignment["alias_id"] = alias_id
+            assignments.append(assignment)
+        for item in parsed.face_decisions:
+            face_binding = self._face_action_binding(
+                device_id=device.device_id, handle=item.face_action_handle
+            )
+            if (
+                face_binding is None
+                or face_binding[0] != local_asset_id
+                or face_binding[2] != issued_revision
+            ):
+                return _json_error(404, "face_action_unavailable")
+            decisions.append(
+                {"face_observation_id": face_binding[1], "decision": item.decision}
+            )
+        body_hash = hashlib.sha256(await request.body()).hexdigest()
+        device_fingerprint = hashlib.sha256(device.device_id.encode("utf-8")).hexdigest()[:24]
+        prior = self._identity_repository.identity_command_receipt(
+            device_fingerprint, idempotency_key
+        )
+        if prior is None and not repository.consume_curation_command_nonce(
+            device_fingerprint=device_fingerprint,
+            nonce=nonce,
+            request_hash=body_hash,
+        ):
+            return _json_error(409, "command_replay")
+        try:
+            result = self._people_workspace().apply_asset_review(
+                local_asset_id=local_asset_id,
+                expected_review_revision=parsed.expected_review_revision,
+                assignments=assignments,
+                face_decisions=decisions,
+                device_fingerprint=device_fingerprint,
+                idempotency_key=idempotency_key,
+                request_hash=body_hash,
+                actor="owner:mobile",
+            )
+        except KeyError:
+            return _json_error(404, "face_review_unavailable")
+        except ValueError as exc:
+            code = str(exc)
+            if code in {"stale_review_revision", "idempotency_key_conflict"}:
+                return _json_error(409, code)
+            return _json_error(409, "face_review_rejected")
+        except sqlite3.IntegrityError:
+            return _json_error(409, "face_review_conflict")
+        refresh_incomplete = False
+        try:
+            refresh_all_story_location_projections(
+                repository, identity_repository=self._identity_repository
+            )
+            self._identity_repository.complete_story_refresh_outbox(
+                str(result["decision_group_id"])
+            )
+        except Exception as error:
+            refresh_incomplete = True
+            self._identity_repository.complete_story_refresh_outbox(
+                str(result["decision_group_id"]), error=type(error).__name__
+            )
+        safe_result = {
+            key: value
+            for key, value in result.items()
+            if key != "decision_group_id"
+        }
+        safe_result["story_refresh_incomplete"] = refresh_incomplete
+        return JSONResponse(mobile_envelope(safe_result), headers=API_HEADERS)
+
+    async def people_overview(self, request: Request) -> Response:
+        device = self._session(request, scope="status:read")
+        if device is None:
+            return _json_error(401, "unauthorized")
+        repository = self._repository()
+        if self._identity_repository is None or repository is None:
+            return _json_error(503, "people_unavailable")
+        overview = mobile_people_overview(
+            self._identity_repository,
+            action_handle_factory=lambda identity_id, revision: (
+                self._issue_identity_action_handle(
+                    device_id=device.device_id,
+                    person_identity_id=identity_id,
+                    identity_revision=revision,
+                )
+            ),
+            representative_url_factory=lambda artifact_ref: (
+                f"{API_PREFIX}/people/review-images/"
+                + self._issue_people_image_handle(
+                    device_id=device.device_id, artifact_ref=artifact_ref
+                )
+            ),
+        )
+        aliases = []
+        for alias in self._identity_repository.list_provider_person_aliases():
+            asset = repository.get_local_recommendation_asset_by_id(alias.local_asset_id) or {}
+            handle = self._issue_alias_action_handle(
+                device_id=device.device_id,
+                alias_id=alias.alias_id,
+            )
+            aliases.append(
+                {
+                    "provider": alias.provider,
+                    "display_label": alias.private_display_label,
+                    "source_quality": alias.alias_key_quality,
+                    "capture_date_local": str(asset.get("capture_date_local") or "")[:10],
+                    "alias_action_handle": handle,
+                    "thumbnail_url": f"{API_PREFIX}/people/review-assets/{handle}/thumb",
+                    "preview_url": f"{API_PREFIX}/people/review-assets/{handle}/preview",
+                }
+            )
+        overview["aliases"] = aliases
+        overview["overview_revision"] = hashlib.sha256(
+            json.dumps(
+                {
+                    "base_revision": overview.get("overview_revision"),
+                    "aliases": [
+                        {
+                            "provider": item["provider"],
+                            "display_label": item["display_label"],
+                            "source_quality": item["source_quality"],
+                            "capture_date_local": item["capture_date_local"],
+                        }
+                        for item in aliases
+                    ],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:20]
+        return JSONResponse(mobile_envelope(overview), headers=API_HEADERS)
 
     async def people_review_summary(self, request: Request) -> Response:
         if self._session(request, scope="status:read") is None:
@@ -1203,6 +1866,33 @@ class MobileClientHttp:
         ]
         return JSONResponse(mobile_envelope(items), headers=API_HEADERS)
 
+    async def people_review_asset(self, request: Request) -> Response:
+        device = self._session(request, scope="derivative:read")
+        if device is None:
+            return _json_error(401, "unauthorized")
+        if self._identity_repository is None or self._repository() is None:
+            return _json_error(503, "people_unavailable")
+        handle = str(request.path_params.get("asset_handle") or "")
+        kind = str(request.path_params.get("kind") or "")
+        if not ALIAS_ACTION_HANDLE.fullmatch(handle) or kind not in {"thumb", "preview"}:
+            return Response(status_code=404, headers=API_HEADERS)
+        alias_id = self._alias_action_binding(device_id=device.device_id, handle=handle)
+        if alias_id is None:
+            return Response(status_code=404, headers=API_HEADERS)
+        try:
+            alias = self._identity_repository.get_provider_person_alias(alias_id)
+            if alias.alias_state != "candidate":
+                return Response(status_code=404, headers=API_HEADERS)
+            path = self.image_service.derivative(
+                share_id="people-review",
+                public_asset_id=handle,
+                local_asset_id=alias.local_asset_id,
+                kind=kind,
+            )
+        except (KeyError, ShareImageError, RuntimeError):
+            return Response(status_code=404, headers=API_HEADERS)
+        return FileResponse(path, media_type="image/jpeg", headers=API_HEADERS)
+
     async def people_alias_confirm(self, request: Request) -> Response:
         device = self._session(request, scope=IDENTITY_CONTROL_SCOPE)
         if device is None:
@@ -1243,6 +1933,15 @@ class MobileClientHttp:
         )
         if alias_id is None or identity_binding is None:
             return _json_error(404, "alias_action_unavailable")
+        try:
+            alias = self._identity_repository.get_provider_person_alias(alias_id)
+            face_count = self._identity_repository.active_face_count_for_asset(
+                alias.local_asset_id
+            )
+        except KeyError:
+            return _json_error(404, "alias_action_unavailable")
+        if face_count > 1:
+            return _json_error(409, "face_selection_required")
         person_identity_id, expected_revision = identity_binding
         device_fingerprint = hashlib.sha256(device.device_id.encode("utf-8")).hexdigest()[:24]
         if not repository.consume_curation_command_nonce(
@@ -1259,22 +1958,177 @@ class MobileClientHttp:
                 actor="owner:mobile",
                 request_id=idempotency_key,
             )
-            refreshed = refresh_all_story_location_projections(
-                repository,
-                identity_repository=self._identity_repository,
-            )
         except KeyError:
             return _json_error(404, "alias_action_unavailable")
         except ValueError as exc:
             if str(exc).startswith("stale identity revision"):
                 return _json_error(409, "stale_identity_revision")
             return _json_error(409, "alias_confirmation_rejected")
+        refreshed: dict[str, Any] = {}
+        refresh_incomplete = False
+        try:
+            refreshed = refresh_all_story_location_projections(
+                repository,
+                identity_repository=self._identity_repository,
+            )
         except Exception:
-            return _json_error(503, "story_refresh_incomplete")
+            # The owner decision is already durable. A presentation refresh must
+            # never turn a successful identity mutation into a retryable failure.
+            refresh_incomplete = True
         result = {
             **mobile_people_readiness(self._identity_repository),
             "refreshed_story_count": int(refreshed.get("refreshed") or 0),
+            "story_refresh_incomplete": refresh_incomplete,
         }
+        with self._lock:
+            self._identity_consent_results[cache_key] = (
+                body_hash,
+                result,
+                now_timestamp + IDENTITY_ACTION_TTL_SECONDS,
+            )
+        return JSONResponse(mobile_envelope(result), headers=API_HEADERS)
+
+    async def people_alias_create(self, request: Request) -> Response:
+        device = self._session(request, scope=IDENTITY_CONTROL_SCOPE)
+        if device is None:
+            return _json_error(401, "unauthorized")
+        repository = self._repository()
+        if repository is None or self._identity_repository is None:
+            return _json_error(503, "people_unavailable")
+        parsed = await _bounded_json(request, PersonAliasCreatePayload, max_body_bytes=2048)
+        if not isinstance(parsed, PersonAliasCreatePayload):
+            return _json_error(400, "invalid_request")
+        path = f"{API_PREFIX}/people/alias/create"
+        try:
+            idempotency_key, nonce = await self._verify_owner_command(
+                request, device=device, path=path
+            )
+        except ValueError as exc:
+            code = str(exc)
+            return _json_error(401 if code == "stale_command" else 400, code[:48])
+        except (InvalidSignature, UnsupportedAlgorithm, binascii.Error, TypeError):
+            return _json_error(401, "command_verification_failed")
+        body_hash = hashlib.sha256(await request.body()).hexdigest()
+        cache_key = (device.device_id, idempotency_key)
+        now_timestamp = datetime.now(UTC).timestamp()
+        with self._lock:
+            self._prune_identity_commands_locked(now_timestamp)
+            prior = self._identity_consent_results.get(cache_key)
+            if prior is not None:
+                if prior[0] != body_hash:
+                    return _json_error(409, "idempotency_key_conflict")
+                return JSONResponse(mobile_envelope(prior[1]), headers=API_HEADERS)
+        alias_id = self._alias_action_binding(
+            device_id=device.device_id,
+            handle=parsed.alias_action_handle,
+        )
+        if alias_id is None:
+            return _json_error(404, "alias_action_unavailable")
+        try:
+            alias = self._identity_repository.get_provider_person_alias(alias_id)
+            face_count = self._identity_repository.active_face_count_for_asset(
+                alias.local_asset_id
+            )
+        except KeyError:
+            return _json_error(404, "alias_action_unavailable")
+        if face_count > 1:
+            return _json_error(409, "face_selection_required")
+        device_fingerprint = hashlib.sha256(device.device_id.encode("utf-8")).hexdigest()[:24]
+        if not repository.consume_curation_command_nonce(
+            device_fingerprint=device_fingerprint,
+            nonce=nonce,
+            request_hash=body_hash,
+        ):
+            return _json_error(409, "command_replay")
+        try:
+            identity = self._identity_repository.create_identity_from_provider_alias(
+                alias_id,
+                parsed.display_name,
+                actor="owner:mobile",
+                request_id=idempotency_key,
+            )
+        except KeyError:
+            return _json_error(404, "alias_action_unavailable")
+        except ValueError:
+            return _json_error(409, "alias_creation_rejected")
+        refreshed: dict[str, Any] = {}
+        refresh_incomplete = False
+        try:
+            refreshed = refresh_all_story_location_projections(
+                repository,
+                identity_repository=self._identity_repository,
+            )
+        except Exception:
+            refresh_incomplete = True
+        result = {
+            **mobile_people_readiness(self._identity_repository),
+            "created_display_name": identity.display_name,
+            "refreshed_story_count": int(refreshed.get("refreshed") or 0),
+            "story_refresh_incomplete": refresh_incomplete,
+        }
+        with self._lock:
+            self._identity_consent_results[cache_key] = (
+                body_hash,
+                result,
+                now_timestamp + IDENTITY_ACTION_TTL_SECONDS,
+            )
+        return JSONResponse(mobile_envelope(result), headers=API_HEADERS)
+
+    async def people_alias_review(self, request: Request) -> Response:
+        device = self._session(request, scope=IDENTITY_CONTROL_SCOPE)
+        if device is None:
+            return _json_error(401, "unauthorized")
+        repository = self._repository()
+        if repository is None or self._identity_repository is None:
+            return _json_error(503, "people_unavailable")
+        parsed = await _bounded_json(request, PersonAliasReviewPayload, max_body_bytes=2048)
+        if not isinstance(parsed, PersonAliasReviewPayload):
+            return _json_error(400, "invalid_request")
+        path = f"{API_PREFIX}/people/alias/review"
+        try:
+            idempotency_key, nonce = await self._verify_owner_command(
+                request, device=device, path=path
+            )
+        except ValueError as exc:
+            code = str(exc)
+            return _json_error(401 if code == "stale_command" else 400, code[:48])
+        except (InvalidSignature, UnsupportedAlgorithm, binascii.Error, TypeError):
+            return _json_error(401, "command_verification_failed")
+        body_hash = hashlib.sha256(await request.body()).hexdigest()
+        cache_key = (device.device_id, idempotency_key)
+        now_timestamp = datetime.now(UTC).timestamp()
+        with self._lock:
+            self._prune_identity_commands_locked(now_timestamp)
+            prior = self._identity_consent_results.get(cache_key)
+            if prior is not None:
+                if prior[0] != body_hash:
+                    return _json_error(409, "idempotency_key_conflict")
+                return JSONResponse(mobile_envelope(prior[1]), headers=API_HEADERS)
+        alias_id = self._alias_action_binding(
+            device_id=device.device_id,
+            handle=parsed.alias_action_handle,
+        )
+        if alias_id is None:
+            return _json_error(404, "alias_action_unavailable")
+        device_fingerprint = hashlib.sha256(device.device_id.encode("utf-8")).hexdigest()[:24]
+        if not repository.consume_curation_command_nonce(
+            device_fingerprint=device_fingerprint,
+            nonce=nonce,
+            request_hash=body_hash,
+        ):
+            return _json_error(409, "command_replay")
+        try:
+            self._identity_repository.review_provider_person_alias(
+                alias_id,
+                decision=parsed.decision,
+                actor="owner:mobile",
+                request_id=idempotency_key,
+            )
+        except KeyError:
+            return _json_error(404, "alias_action_unavailable")
+        except ValueError:
+            return _json_error(409, "alias_review_rejected")
+        result = mobile_people_readiness(self._identity_repository)
         with self._lock:
             self._identity_consent_results[cache_key] = (
                 body_hash,
@@ -1403,6 +2257,88 @@ class MobileClientHttp:
                     )
                 ),
             )
+            self._identity_consent_results[cache_key] = (
+                body_hash,
+                result,
+                now_timestamp + IDENTITY_ACTION_TTL_SECONDS,
+            )
+        return JSONResponse(mobile_envelope(result), headers=API_HEADERS)
+
+    async def people_automatic_recognition(self, request: Request) -> Response:
+        device = self._session(request, scope=IDENTITY_CONTROL_SCOPE)
+        if device is None:
+            return _json_error(401, "unauthorized")
+        repository = self._repository()
+        if repository is None or self._identity_repository is None:
+            return _json_error(503, "people_unavailable")
+        parsed = await _bounded_json(
+            request, PersonAutomaticRecognitionPayload, max_body_bytes=2048
+        )
+        if not isinstance(parsed, PersonAutomaticRecognitionPayload):
+            return _json_error(400, "invalid_request")
+        path = f"{API_PREFIX}/people/automatic-recognition"
+        try:
+            idempotency_key, nonce = await self._verify_owner_command(
+                request, device=device, path=path
+            )
+        except ValueError as exc:
+            code = str(exc)
+            return _json_error(401 if code == "stale_command" else 400, code[:48])
+        except (InvalidSignature, UnsupportedAlgorithm, binascii.Error, TypeError):
+            return _json_error(401, "command_verification_failed")
+        body_hash = hashlib.sha256(await request.body()).hexdigest()
+        cache_key = (device.device_id, idempotency_key)
+        now_timestamp = datetime.now(UTC).timestamp()
+        with self._lock:
+            self._prune_identity_commands_locked(now_timestamp)
+            prior = self._identity_consent_results.get(cache_key)
+            if prior is not None:
+                if prior[0] != body_hash:
+                    return _json_error(409, "idempotency_key_conflict")
+                return JSONResponse(mobile_envelope(prior[1]), headers=API_HEADERS)
+        binding = self._identity_action_binding(
+            device_id=device.device_id, handle=parsed.automatic_action_handle
+        )
+        if binding is None:
+            return _json_error(404, "automatic_action_unavailable")
+        person_identity_id, expected_identity_revision = binding
+        try:
+            identity = self._identity_repository.get_identity(person_identity_id)
+        except KeyError:
+            return _json_error(404, "automatic_action_unavailable")
+        if (
+            identity.identity_status != "user_confirmed"
+            or identity.identity_revision != expected_identity_revision
+        ):
+            return _json_error(409, "stale_identity_revision")
+        device_fingerprint = hashlib.sha256(device.device_id.encode("utf-8")).hexdigest()[:24]
+        if not repository.consume_curation_command_nonce(
+            device_fingerprint=device_fingerprint,
+            nonce=nonce,
+            request_hash=body_hash,
+        ):
+            return _json_error(409, "command_replay")
+        try:
+            profile = self._identity_repository.set_identity_auto_enabled(
+                person_identity_id,
+                enabled=parsed.enabled,
+                expected_profile_revision=parsed.expected_profile_revision,
+                actor="owner:mobile",
+                request_id=idempotency_key,
+            )
+        except KeyError:
+            return _json_error(404, "automatic_profile_unavailable")
+        except ValueError:
+            return _json_error(409, "stale_automatic_profile")
+        result = {
+            "enabled": bool(profile["auto_enabled"]),
+            "suspended": bool(profile["suspended"]),
+            "maturity": str(profile["maturity"]),
+            "confirmed_anchor_count": int(profile["owner_confirmed_anchor_count"]),
+            "independent_context_count": int(profile["independent_context_count"]),
+            "profile_revision": int(profile["profile_revision"]),
+        }
+        with self._lock:
             self._identity_consent_results[cache_key] = (
                 body_hash,
                 result,
@@ -1798,6 +2734,9 @@ class MobileClientHttp:
                 self.manual_operation,
             ),
             MobileRouteSpec(f"{API_PREFIX}/dashboard", ("GET",), self.dashboard),
+            MobileRouteSpec(
+                f"{API_PREFIX}/people/overview", ("GET",), self.people_overview
+            ),
             MobileRouteSpec(f"{API_PREFIX}/people", ("GET",), self.people),
             MobileRouteSpec(
                 f"{API_PREFIX}/people/review-summary",
@@ -1815,14 +2754,54 @@ class MobileClientHttp:
                 self.people_aliases,
             ),
             MobileRouteSpec(
+                f"{API_PREFIX}/people/face-review/photos",
+                ("GET",),
+                self.people_face_review_photos,
+            ),
+            MobileRouteSpec(
+                f"{API_PREFIX}/people/face-review/photos/{{photo_review_handle}}",
+                ("GET",),
+                self.people_face_review_photo,
+            ),
+            MobileRouteSpec(
+                f"{API_PREFIX}/people/face-review/photos/{{photo_review_handle}}/assignments",
+                ("POST",),
+                self.people_face_review_apply,
+            ),
+            MobileRouteSpec(
+                f"{API_PREFIX}/people/review-images/{{image_handle}}",
+                ("GET",),
+                self.people_review_image,
+            ),
+            MobileRouteSpec(
                 f"{API_PREFIX}/people/alias/confirm",
                 ("POST",),
                 self.people_alias_confirm,
             ),
             MobileRouteSpec(
+                f"{API_PREFIX}/people/alias/create",
+                ("POST",),
+                self.people_alias_create,
+            ),
+            MobileRouteSpec(
+                f"{API_PREFIX}/people/alias/review",
+                ("POST",),
+                self.people_alias_review,
+            ),
+            MobileRouteSpec(
+                f"{API_PREFIX}/people/review-assets/{{asset_handle}}/{{kind}}",
+                ("GET",),
+                self.people_review_asset,
+            ),
+            MobileRouteSpec(
                 f"{API_PREFIX}/people/consent",
                 ("POST",),
                 self.people_consent,
+            ),
+            MobileRouteSpec(
+                f"{API_PREFIX}/people/automatic-recognition",
+                ("POST",),
+                self.people_automatic_recognition,
             ),
             MobileRouteSpec(f"{API_PREFIX}/runs", ("GET",), self.runs),
             MobileRouteSpec(f"{API_PREFIX}/runs/{{run_id}}", ("GET",), self.run_detail),

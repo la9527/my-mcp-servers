@@ -360,6 +360,8 @@ https://byoungyoung-macmini.tail53bcc7.ts.net:9119/*
 
 Android Companion은 Tailnet HTTPS Story를 WebView로 여는 구조이므로 이 키에 Android package/SHA-1 제한을 적용하지 않는다. 브라우저 제한 키에는 한 종류의 application restriction만 적용할 수 있고, 이 호출의 실제 client는 Android SDK가 아니라 Story 웹 origin이다.
 
+macOS 앱의 내장 Story도 `PHOTOS_MCP_OWNER_STORY_URL`의 Tailnet HTTPS 주소를 우선 사용한다. 따라서 지도 요청의 referrer는 운영 허용 목록과 같아지고, 임의 포트의 `127.0.0.1` 때문에 Embed API가 거부되는 문제를 피한다. 해당 환경값이 명시적으로 빈 경우에만 daemon의 loopback Story를 fallback으로 사용한다. loopback 주소를 직접 지도 표시용으로 쓸 운영 요구가 생기면 `http://127.0.0.1:18791/*`를 Embed 키 허용 referrer에 별도로 추가해야 한다.
+
 ### 10.5 Mac Keychain에 임시 보관
 
 키를 채팅, Telegram, 문서, shell history에 붙여 넣지 않는다. 발급 직후 Mac 터미널에서 아래 명령을 실행하면 `security`가 값을 숨겨서 입력받는다.

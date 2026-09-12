@@ -12,6 +12,7 @@ from photos_mcp.operations.packaging.contract import (
 )
 from photos_mcp.operations.packaging.builder import (
     build_app_packages,
+    build_face_model_resources,
     build_py2app_setup_kwargs,
     build_site_packages_resources,
     build_ui_resources,
@@ -36,6 +37,7 @@ def test_build_py2app_setup_kwargs_uses_photos_mcp_bundle_defaults() -> None:
     assert "bitarray" in kwargs["options"]["py2app"]["packages"]
     assert "bitstring" in kwargs["options"]["py2app"]["packages"]
     assert "cryptography" in kwargs["options"]["py2app"]["packages"]
+    assert "cv2" in kwargs["options"]["py2app"]["packages"]
     assert "uvicorn" in kwargs["options"]["py2app"]["packages"]
     assert "anyio._backends._asyncio" in kwargs["options"]["py2app"]["includes"]
     assert "uvicorn.protocols.http.h11_impl" in kwargs["options"]["py2app"]["includes"]
@@ -48,6 +50,18 @@ def test_build_app_packages_discovers_nested_photos_packages() -> None:
     assert "photos_mcp" in packages
     assert "photos_mcp.interfaces.mcp.facade" in packages
     assert "apple_terminal_helper" in packages
+
+
+def test_build_face_model_resources_requires_both_models(tmp_path: Path) -> None:
+    assert build_face_model_resources(tmp_path) == []
+    detector = tmp_path / "face_detection_yunet_2023mar.onnx"
+    recognizer = tmp_path / "face_recognition_sface_2021dec.onnx"
+    detector.write_bytes(b"detector")
+    assert build_face_model_resources(tmp_path) == []
+    recognizer.write_bytes(b"recognizer")
+    assert build_face_model_resources(tmp_path) == [
+        ("person-models", [str(detector), str(recognizer)])
+    ]
 
 
 def test_ui_uses_native_symbols_without_packaged_raster_icons() -> None:

@@ -770,6 +770,7 @@ async def advance_google_first_curations(
                 "terminal": True,
                 "error_code": "child_start_failed",
                 "error_type": type(exc).__name__,
+                "error_detail": str(exc)[:500],
                 "created_at": observed.isoformat(),
             }
         child = _persist_child_run(

@@ -43,6 +43,10 @@ STALE_STAGE_ROOTS = (
 )
 CANONICAL_APP_BUNDLE_NAME = "PhotosMcp.app"
 LEGACY_APP_BUNDLE_NAMES = ("photos-mcp.app",)
+FACE_MODEL_NAMES = (
+    "face_detection_yunet_2023mar.onnx",
+    "face_recognition_sface_2021dec.onnx",
+)
 class Py2AppDistribution(Distribution):
     def __init__(self, attrs=None):
         super().__init__(attrs)
@@ -194,6 +198,21 @@ def build_ui_resources() -> list[tuple[str, list[str]]]:
     return []
 
 
+def build_face_model_resources(source_root: Path | None = None) -> list[tuple[str, list[str]]]:
+    """Bundle the locally cached, pinned face models when they are available."""
+
+    configured = os.environ.get("PHOTOS_MCP_PERSON_MODEL_ROOT", "").strip()
+    root = source_root or (
+        Path(configured).expanduser()
+        if configured
+        else Path.home() / ".photos-mcp" / "cache" / "models" / "person-shadow"
+    )
+    paths = [root / name for name in FACE_MODEL_NAMES]
+    if not all(path.is_file() and path.stat().st_size > 0 for path in paths):
+        return []
+    return [("person-models", [str(path) for path in paths])]
+
+
 def build_app_packages() -> list[str]:
     includes: list[str] = []
     for package_name in APP_PACKAGES:
@@ -207,7 +226,12 @@ def build_app_packages() -> list[str]:
 
 
 def build_py2app_setup_kwargs() -> dict:
-    resources = build_vendor_resources() + build_site_packages_resources() + build_ui_resources()
+    resources = (
+        build_vendor_resources()
+        + build_site_packages_resources()
+        + build_ui_resources()
+        + build_face_model_resources()
+    )
 
     return {
         "name": "PhotosMcp",

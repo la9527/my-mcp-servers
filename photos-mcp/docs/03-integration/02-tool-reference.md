@@ -24,6 +24,7 @@
 | `photos_query` | `list` | 없음 | 사진 목록 조회 |
 | `photos_query` | `prefetch` | 없음 | 원본의 로컬 준비 요청 |
 | `photos_query` | `ready_only` | 없음 | 로컬 분석 준비가 끝난 사진만 조회 |
+| `photos_query` | `added` | 없음 | Apple Photos 보관함 추가 시각 기준 증분 페이지 조회 |
 | `photos_query` | `result_detail` | 없음 | 실행 결과 상세 조회 |
 | `photos_query` | `result_summary` | 없음 | 실행 결과 요약 조회 |
 | `photos_query` | `resume_plan` | `run_id` | 재개 전에 저장된 요청 확인 |

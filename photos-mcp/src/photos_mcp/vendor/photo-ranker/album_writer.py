@@ -38,7 +38,10 @@ class AlbumWriter:
         if timeout_value is None:
             timeout_value = os.getenv("PHOTO_RANKER_TERMINAL_TIMEOUT_SECS")
         if timeout_value is None:
-            timeout_value = "240"
+            # Importing a Google recommendation batch can make Photos wait for
+            # iCloud/database work. Keep this bounded, but give a normal batch
+            # enough time to finish instead of killing it after four minutes.
+            timeout_value = "600"
         self._terminal_timeout_secs = float(timeout_value)
 
     def _should_use_terminal_helper(self) -> bool:

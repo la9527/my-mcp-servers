@@ -76,6 +76,42 @@ async def test_local_mcp_source_port_keeps_apple_access_in_authorized_app(
 
 
 @pytest.mark.asyncio
+async def test_local_mcp_source_port_lists_incremental_apple_assets(
+    monkeypatch,
+) -> None:
+    observed = {}
+
+    async def fake_call(tool_name, arguments, **_kwargs):
+        observed.update({"tool_name": tool_name, "arguments": arguments})
+        return {"items": [{"id": "apple-new"}], "next_cursor": "cursor-two"}
+
+    monkeypatch.setattr(mobile_client_server, "_call_local_photos_mcp", fake_call)
+
+    page = await mobile_client_server._LocalMcpPhotoSourcePort().list_added_photos(
+        "apple",
+        date_added_from="2026-09-10T00:00:00+00:00",
+        date_added_to="2026-09-12T00:00:00+00:00",
+        cursor="cursor-one",
+        limit=100,
+    )
+
+    assert page == {"items": [{"id": "apple-new"}], "next_cursor": "cursor-two"}
+    assert observed == {
+        "tool_name": "photos_query",
+        "arguments": {
+            "action": "added",
+            "options": {
+                "source": "apple",
+                "date_added_from": "2026-09-10T00:00:00+00:00",
+                "date_added_to": "2026-09-12T00:00:00+00:00",
+                "cursor": "cursor-one",
+                "limit": 100,
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_apple_manual_analysis_is_delegated_to_local_mcp(monkeypatch) -> None:
     observed = {}
 

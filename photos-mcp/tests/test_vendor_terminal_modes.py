@@ -65,7 +65,7 @@ def test_photo_ranker_album_writer_uses_longer_default_terminal_timeout(monkeypa
 
     writer = album_writer_module.AlbumWriter()
 
-    assert writer._terminal_timeout_secs == 240.0
+    assert writer._terminal_timeout_secs == 600.0
 
 
 def test_photo_ranker_album_writer_prefers_album_timeout_override(monkeypatch) -> None:

@@ -9,6 +9,7 @@ from photos_mcp.infrastructure.vision.runtime import resolve_vision_runtime_sett
 
 
 logger = logging.getLogger(__name__)
+_RUNTIME_PREPARE_LOCK = asyncio.Lock()
 
 
 class VisionRuntimePort(Protocol):
@@ -77,7 +78,12 @@ class CommandRuntimeBrokerClient:
     async def acquire(self) -> None:
         if not self.command.strip():
             raise RuntimeError("Vision runtime prepare command is empty")
-        await self._run_command(self.command)
+        # Multiple Apple/Google jobs can enter WAITING_MODEL together. The
+        # prepare script owns one fixed loopback SSH forward, so only one
+        # caller may create or validate that forward at a time. The next
+        # caller then observes and reuses the healthy endpoint.
+        async with _RUNTIME_PREPARE_LOCK:
+            await self._run_command(self.command)
         logger.info("Vision runtime prepare command completed: %s", self.command)
 
     async def mark_used(self) -> None:

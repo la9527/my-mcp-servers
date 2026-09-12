@@ -35,7 +35,7 @@ Photos MCP는 별도 설정 파일보다 환경 변수를 우선 사용한다. �
 | --- | --- | --- |
 | `PHOTOS_MCP_RECOMMENDATION_ROOT` | `/Volumes/ExtData/02_Services/PhotosMcp/recommendations` | 촬영일별 추천 primary 파일과 manifest를 보존하는 비공개 관리 root |
 | `PHOTO_RANKER_APPLE_EVENTS_MODE` | `terminal` | Apple Photos 앨범 쓰기를 제한시간이 있는 Terminal helper로 격리. 진단 목적 외에는 `direct` 사용 금지 |
-| `PHOTO_RANKER_ALBUM_TERMINAL_TIMEOUT_SECS` | `240` | Apple Photos 앨범 생성·가져오기 helper의 최대 대기 시간 |
+| `PHOTO_RANKER_ALBUM_TERMINAL_TIMEOUT_SECS` | `600` | Apple Photos 앨범 생성·가져오기 helper의 최대 대기 시간 |
 | `PHOTOS_MCP_RECOMMENDATION_DEFAULT_DESTINATION` | `apple_photos` | 새 월별 그룹의 2차 목적지: `apple_photos`, `google_photos`, `local_only` |
 | `PHOTOS_MCP_RECOMMENDATION_APPLE_FOLDER` | `Photos MCP` | Apple Photos에 생성하는 관리 앨범의 상위 folder |
 

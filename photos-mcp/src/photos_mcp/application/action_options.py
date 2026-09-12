@@ -104,6 +104,19 @@ _register(ActionSpec(
 ))
 _register(ActionSpec(
     tool="photos_query",
+    action="added",
+    allowed=_set("source", "date_added_from", "date_added_to", "cursor", "limit"),
+    defaults={
+        "source": "apple",
+        "date_added_from": "",
+        "date_added_to": "",
+        "cursor": "",
+        "limit": 100,
+    },
+    usage_hint="Read one stable Apple Photos page ordered by library-ingest time.",
+))
+_register(ActionSpec(
+    tool="photos_query",
     action="ready_only",
     allowed=_set("source", "album", "person", "date_from", "date_to", "limit", "include_thumbnail", "include_metadata", "max_size"),
     defaults={"source": "apple", "limit": 20, "include_thumbnail": False, "include_metadata": False, "max_size": 512},

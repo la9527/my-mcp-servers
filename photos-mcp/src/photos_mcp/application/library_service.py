@@ -88,6 +88,17 @@ def _library_response(
     return response
 
 
+def _added_library_response(
+    *,
+    source: str,
+    items: list[dict[str, Any]],
+    next_cursor: str,
+) -> dict[str, Any]:
+    response = _library_response(action="added", source=source, items=items)
+    response["next_cursor"] = next_cursor
+    return response
+
+
 def _prefetch_response(*, source: str, payload: dict[str, Any]) -> dict[str, Any]:
     attempted_count = int(payload.get("attempted_count") or 0)
     already_local_count = int(payload.get("already_local_count") or 0)
@@ -165,6 +176,9 @@ async def photos_library(
     person: str = "",
     date_from: str = "",
     date_to: str = "",
+    date_added_from: str = "",
+    date_added_to: str = "",
+    cursor: str = "",
     limit: int = 20,
     include_thumbnail: bool = False,
     include_metadata: bool = False,
@@ -173,6 +187,26 @@ async def photos_library(
 ) -> dict[str, Any]:
     normalized_action = (action or "list").strip().lower()
     port = source_port or VendorPhotoSourcePort()
+
+    if normalized_action == "added":
+        page = await asyncio.wait_for(
+            port.list_added_photos(
+                source,
+                date_added_from=date_added_from,
+                date_added_to=date_added_to,
+                cursor=cursor,
+                limit=limit,
+            ),
+            timeout=DEFAULT_LIBRARY_LIST_TIMEOUT_SECONDS,
+        )
+        raw_items = page.get("items") if isinstance(page, dict) else []
+        items = _normalize_library_items(raw_items, source=source)
+        _remember_assets(state_store, items)
+        return _added_library_response(
+            source=source,
+            items=items,
+            next_cursor=str(page.get("next_cursor") or "") if isinstance(page, dict) else "",
+        )
 
     if normalized_action == "prefetch":
         payload = await port.prefetch_photos(

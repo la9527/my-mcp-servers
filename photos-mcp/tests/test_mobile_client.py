@@ -25,6 +25,7 @@ from photos_mcp.infrastructure.mobile_client import MobileClientRepository
 from photos_mcp.infrastructure.mobile_location import MobileLocationLedger
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
+from photos_mcp.interfaces.http import mobile_client as mobile_client_http
 from photos_mcp.interfaces.http.mobile_client import build_mobile_client_app
 from photos_mcp.interfaces.http.mobile_location import build_mobile_location_app
 
@@ -402,8 +403,9 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         )
 
         assert capabilities.status_code == 200
-        assert capabilities.json()["data"]["latest_android_app_version"] == "0.7.3"
-        assert capabilities.json()["data"]["minimum_android_app_version"] == "0.7.3"
+        assert capabilities.json()["data"]["latest_android_app_version"] == "0.8.3"
+        assert capabilities.json()["data"]["minimum_android_app_version"] == "0.8.3"
+        assert capabilities.json()["data"]["features"]["people_automatic_recognition"] is False
         assert dashboard.status_code == 200
         assert dashboard.json()["data"]["daemon_status"] == "ready"
         assert runs.json()["data"][0]["run_id"] == "combined-mobile-test"
@@ -425,8 +427,8 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         assert events.status_code == 200
         assert len(events.json()["data"]) == 1
         assert download_page.status_code == 200
-        assert "PhotosMcp 앨범 0.7.3" in download_page.text
-        assert 'download="PhotosMcp-Album-0.7.3.apk"' in download_page.text
+        assert "PhotosMcp 앨범 0.8.3" in download_page.text
+        assert 'download="PhotosMcp-Album-0.8.3.apk"' in download_page.text
         assert "Chrome으로 열기" in download_page.text
         assert download_apk.status_code == 200
         assert download_apk.content == b"signed-test-apk"
@@ -701,7 +703,7 @@ def test_people_endpoints_require_owner_session_and_hide_unconfirmed_names(
             "민지",
             "owner-name-without-consent",
         }
-        assert sum(item["identity_status"] == "candidate" for item in people) == 1
+        assert sum(item["identity_status"] == "candidate" for item in people) == 0
         assert sum(item["identity_status"] == "conflicted" for item in people) == 1
         assert all("person_identity_id" not in item for item in people)
         confirmed_people = [
@@ -813,6 +815,382 @@ def test_signed_provider_alias_confirmation_links_exact_asset_and_refreshes_stor
         assert evidence["person_refs"][0]["display_name"] == "민지"
 
 
+def test_people_overview_is_atomic_private_and_serves_review_derivatives(
+    tmp_path,
+) -> None:
+    identities = PersonIdentityRepository(tmp_path / "person-overview-identities.db")
+    person = identities.create_identity(
+        person_identity_id="person_overview_mobile_001",
+        display_name="민지",
+        identity_status="user_confirmed",
+        name_status="user_confirmed",
+    )
+    identities.set_story_name_consent(
+        person.person_identity_id,
+        "owner",
+        True,
+        expected_identity_revision=person.identity_revision,
+    )
+    identities.register_provider_person_alias(
+        provider="apple_photos",
+        private_display_label="Apple의 민지",
+        local_asset_id="local-asset-mobile-000001",
+    )
+    app, ingest_device, ingest_key, _repository = _fixture(
+        tmp_path,
+        identity_repository=identities,
+    )
+
+    with TestClient(app, base_url="https://photos.example") as client:
+        assert client.get("/mobile-client/v1/people/overview").status_code == 401
+        token, _owner_key_id, _owner_key, _challenge = _owner_session(
+            client, ingest_device, ingest_key
+        )
+        auth = {"Authorization": f"Bearer {token}"}
+        response = client.get("/mobile-client/v1/people/overview", headers=auth)
+
+        assert response.status_code == 200, response.text
+        overview = response.json()["data"]
+        assert len(overview["overview_revision"]) == 20
+        assert overview["readiness"]["status"] == "needs_photo_link"
+        assert overview["review"]["face_review_item_count"] == 0
+        assert overview["people"][0]["display_name"] == "민지"
+        assert overview["people"][0]["linked_photo_count"] == 0
+        alias = overview["aliases"][0]
+        assert alias["display_label"] == "Apple의 민지"
+        assert alias["capture_date_local"] == "2026-09-08"
+        assert "alias_id" not in alias
+        assert "local_asset_id" not in alias
+        preview = client.get(alias["preview_url"], headers=auth)
+        assert preview.status_code == 200
+        assert preview.headers["content-type"] == "image/jpeg"
+        assert preview.headers["cache-control"] == "no-store, private"
+        assert client.get(alias["preview_url"]).status_code == 401
+        serialized = json.dumps(response.json(), ensure_ascii=False)
+        assert "person_overview_mobile_001" not in serialized
+        assert "/private/" not in serialized
+        repeated = client.get("/mobile-client/v1/people/overview", headers=auth)
+        assert repeated.status_code == 200
+        assert repeated.json()["data"]["overview_revision"] == overview["overview_revision"]
+
+
+def test_signed_provider_alias_can_create_identity_or_be_rejected(
+    tmp_path, monkeypatch
+) -> None:
+    identities = PersonIdentityRepository(tmp_path / "person-alias-actions.db")
+    identities.register_provider_person_alias(
+        provider="apple_photos",
+        private_display_label="새 인물 후보",
+        local_asset_id="local-asset-mobile-000001",
+        provider_alias_key="candidate-create",
+    )
+    identities.register_provider_person_alias(
+        provider="apple_photos",
+        private_display_label="제외할 후보",
+        local_asset_id="local-asset-mobile-000001",
+        provider_alias_key="candidate-reject",
+    )
+    app, ingest_device, ingest_key, _repository = _fixture(
+        tmp_path,
+        identity_repository=identities,
+    )
+    monkeypatch.setattr(
+        mobile_client_http,
+        "refresh_all_story_location_projections",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("refresh failed")),
+    )
+
+    with TestClient(app, base_url="https://photos.example") as client:
+        token, _owner_key_id, owner_key, _challenge = _owner_session(
+            client, ingest_device, ingest_key
+        )
+        auth = {"Authorization": f"Bearer {token}"}
+        initial_overview = client.get(
+            "/mobile-client/v1/people/overview", headers=auth
+        ).json()["data"]
+        aliases = initial_overview["aliases"]
+        create_alias = next(item for item in aliases if item["display_label"] == "새 인물 후보")
+        create_path = "/mobile-client/v1/people/alias/create"
+        create_body = json.dumps(
+            {
+                "schema_version": 1,
+                "alias_action_handle": create_alias["alias_action_handle"],
+                "display_name": " 새 가족 ",
+            },
+            separators=(",", ":"),
+        )
+        created = client.post(
+            create_path,
+            content=create_body,
+            headers=_signed_command_headers(
+                token,
+                owner_key,
+                path=create_path,
+                body=create_body,
+                prefix="person-create",
+            ),
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["data"]["created_display_name"] == "새 가족"
+        assert created.json()["data"]["story_refresh_incomplete"] is True
+
+        remaining = client.get(
+            "/mobile-client/v1/people/overview", headers=auth
+        ).json()["data"]["aliases"]
+        reject_alias = next(item for item in remaining if item["display_label"] == "제외할 후보")
+        reject_path = "/mobile-client/v1/people/alias/review"
+        reject_body = json.dumps(
+            {
+                "schema_version": 1,
+                "alias_action_handle": reject_alias["alias_action_handle"],
+                "decision": "rejected",
+            },
+            separators=(",", ":"),
+        )
+        rejected = client.post(
+            reject_path,
+            content=reject_body,
+            headers=_signed_command_headers(
+                token,
+                owner_key,
+                path=reject_path,
+                body=reject_body,
+                prefix="person-reject",
+            ),
+        )
+        assert rejected.status_code == 200, rejected.text
+        assert rejected.json()["data"]["pending_alias_count"] == 0
+        final_overview = client.get(
+            "/mobile-client/v1/people/overview", headers=auth
+        ).json()["data"]
+        assert final_overview["aliases"] == []
+        assert final_overview["overview_revision"] != initial_overview["overview_revision"]
+        assert identities.person_photo_count(
+            next(
+                identity.person_identity_id
+                for identity in identities.list_identities()
+                if identity.display_name == "새 가족"
+            )
+        ) == 1
+
+
+def test_mobile_face_review_supports_multiple_people_crops_and_atomic_names(
+    tmp_path,
+) -> None:
+    identities = PersonIdentityRepository(tmp_path / "people" / "person-face-mobile.db")
+    existing = identities.create_identity(
+        display_name="엄마",
+        identity_status="user_confirmed",
+        name_status="user_confirmed",
+    )
+    identities.set_story_name_consent(
+        existing.person_identity_id,
+        "owner",
+        True,
+        expected_identity_revision=existing.identity_revision,
+    )
+    alias = identities.register_provider_person_alias(
+        provider="apple_photos",
+        private_display_label="엄마",
+        local_asset_id="local-asset-mobile-000001",
+    )
+    private_root = identities.path.parent / "index-private"
+    (private_root / "review-crops").mkdir(parents=True)
+    (private_root / "previews").mkdir(parents=True)
+    (private_root / "highlights").mkdir(parents=True)
+    Image.new("RGB", (800, 600), "#325c4e").save(private_root / "previews/group.jpg")
+    observations = []
+    for index in range(4):
+        observation = identities.register_face_observation(
+            FaceObservationInput(
+                provider=None,
+                provider_asset_id=None,
+                local_asset_id="local-asset-mobile-000001",
+                model_family="test",
+                model_version="v1",
+                embedding_dimension=4,
+                model_fingerprint="model-v1",
+                bbox_fingerprint=f"bbox-mobile-{index}",
+                crop_fingerprint=f"crop-mobile-{index}",
+            )
+        )
+        identities.register_person_review_item(
+            review_kind="quick_confirmation",
+            candidate_person_identity_id=None,
+            face_observation_id=observation.face_observation_id,
+        )
+        identities.upsert_face_geometry(
+            observation.face_observation_id,
+            x_norm=0.1 + index * 0.18,
+            y_norm=0.2,
+            width_norm=0.16,
+            height_norm=0.3,
+            oriented_source_width=800,
+            oriented_source_height=600,
+        )
+        crop_ref = f"review-crops/{index}.jpg"
+        highlight_ref = f"highlights/{index}.jpg"
+        Image.new("RGB", (320, 320), (80 + index * 40, 120, 100)).save(
+            private_root / crop_ref
+        )
+        Image.new("RGB", (800, 600), (40, 80 + index * 30, 60)).save(
+            private_root / highlight_ref
+        )
+        identities.upsert_face_review_artifacts(
+            observation.face_observation_id,
+            review_crop_ref=crop_ref,
+            context_preview_ref="previews/group.jpg",
+            highlighted_context_ref=highlight_ref,
+        )
+        observations.append(observation)
+    identities.record_face_identity_suggestion(
+        observations[0].face_observation_id,
+        existing.person_identity_id,
+        confidence_estimate=0.96,
+        top_similarity=0.88,
+        robust_similarity=0.84,
+        runner_up_similarity=0.62,
+        similarity_margin=0.26,
+        supporting_face_count=4,
+        supporting_asset_count=4,
+        suggestion_tier="ready_to_confirm",
+        policy_version="confirmed-anchor-v1",
+    )
+    identities.record_asset_face_index(
+        "local-asset-mobile-000001",
+        index_run_id=None,
+        model_fingerprint="model-v1",
+        index_state="completed",
+        detected_face_count=4,
+    )
+    app, ingest_device, ingest_key, _repository = _fixture(
+        tmp_path,
+        identity_repository=identities,
+    )
+
+    with TestClient(app, base_url="https://photos.example") as client:
+        token, _owner_key_id, owner_key, _challenge = _owner_session(
+            client, ingest_device, ingest_key
+        )
+        auth = {"Authorization": f"Bearer {token}"}
+        response = client.get(
+            "/mobile-client/v1/people/face-review/photos", headers=auth
+        )
+        assert response.status_code == 200, response.text
+        photo = response.json()["data"][0]
+        assert photo["detected_face_count"] == 4
+        assert len(photo["faces"]) == 4
+        suggestion_handle = photo["faces"][0]["identity_suggestion"].pop(
+            "identity_action_handle"
+        )
+        assert suggestion_handle.startswith("pah_")
+        assert photo["faces"][0]["identity_suggestion"] == {
+            "display_name": "엄마",
+            "match_likelihood_percent": 96,
+            "likelihood_kind": "model_estimate",
+            "tier": "ready_to_confirm",
+            "supporting_face_count": 4,
+            "supporting_photo_count": 4,
+            "explanation": "확정 얼굴이 충분해 추천을 미리 선택했습니다. 저장 전 변경할 수 있습니다.",
+        }
+        assert photo["aliases"][0]["display_label"] == "엄마"
+        serialized = json.dumps(response.json(), ensure_ascii=False)
+        assert "face_observation_id" not in serialized
+        assert "local_asset_id" not in serialized
+        assert existing.person_identity_id not in serialized
+        crop = client.get(photo["faces"][0]["crop_image_url"], headers=auth)
+        assert crop.status_code == 200
+        assert crop.headers["cache-control"] == "no-store, private"
+        assert client.get(photo["faces"][0]["crop_image_url"]).status_code == 401
+
+        legacy_path = "/mobile-client/v1/people/alias/confirm"
+        legacy_body = json.dumps(
+            {
+                "schema_version": 1,
+                "alias_action_handle": photo["aliases"][0]["alias_action_handle"],
+                "identity_action_handle": photo["identity_choices"][0][
+                    "identity_action_handle"
+                ],
+            },
+            separators=(",", ":"),
+        )
+        legacy = client.post(
+            legacy_path,
+            content=legacy_body,
+            headers=_signed_command_headers(
+                token,
+                owner_key,
+                path=legacy_path,
+                body=legacy_body,
+                prefix="legacy-group-face",
+            ),
+        )
+        assert legacy.status_code == 409
+        assert legacy.json()["error"] == "face_selection_required"
+
+        path = (
+            "/mobile-client/v1/people/face-review/photos/"
+            + photo["photo_review_handle"]
+            + "/assignments"
+        )
+        body = json.dumps(
+            {
+                "schema_version": 1,
+                "expected_review_revision": photo["review_revision"],
+                "assignments": [
+                    {
+                        "face_action_handle": photo["faces"][0]["face_action_handle"],
+                        "alias_action_handle": photo["aliases"][0]["alias_action_handle"],
+                        "target": {
+                            "kind": "existing",
+                            "identity_action_handle": suggestion_handle,
+                        },
+                    },
+                    {
+                        "face_action_handle": photo["faces"][1]["face_action_handle"],
+                        "target": {"kind": "new", "display_name": "아빠"},
+                    },
+                ],
+                "face_decisions": [
+                    {
+                        "face_action_handle": photo["faces"][2]["face_action_handle"],
+                        "decision": "defer",
+                    },
+                    {
+                        "face_action_handle": photo["faces"][3]["face_action_handle"],
+                        "decision": "ignore_unknown",
+                    },
+                ],
+            },
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        saved = client.post(
+            path,
+            content=body.encode("utf-8"),
+            headers=_signed_command_headers(
+                token,
+                owner_key,
+                path=path,
+                body=body,
+                prefix="face-review",
+            ),
+        )
+
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["data"]["confirmed_face_count"] == 2
+        assert saved.json()["data"]["deferred_face_count"] == 1
+        assert saved.json()["data"]["ignored_face_count"] == 1
+        evidence = identities.build_story_person_evidence(
+            ["local-asset-mobile-000001"]
+        )
+        assert {item["display_name"] for item in evidence["person_refs"]} == {
+            "엄마",
+            "아빠",
+        }
+        assert identities.get_provider_person_alias(alias.alias_id).alias_state == "owner_confirmed"
+
+
 def test_signed_person_consent_is_idempotent_and_revision_safe(tmp_path) -> None:
     identities = PersonIdentityRepository(tmp_path / "person-consent-identities.db")
     person = identities.create_identity(
@@ -842,14 +1220,11 @@ def test_signed_person_consent_is_idempotent_and_revision_safe(tmp_path) -> None
         confirmed = next(
             item for item in people if item.get("display_name") == "소유자 확인 이름"
         )
-        candidate = next(
-            item for item in people if item["identity_status"] == "candidate"
-        )
         assert confirmed["story_name_consent"] == {
             "personal_story": False,
             "family_share": False,
         }
-        assert "consent_action_handle" not in candidate
+        assert all(item["identity_status"] != "candidate" for item in people)
         assert "provider-name-must-stay-private" not in json.dumps(people)
 
         original_handle = confirmed["consent_action_handle"]
@@ -970,6 +1345,96 @@ def test_signed_person_consent_is_idempotent_and_revision_safe(tmp_path) -> None
         assert unsigned.status_code == 400
         oversized_or_extra = {**family_payload, "person_identity_id": person.person_identity_id}
         assert client.post(path, json=oversized_or_extra, headers=auth).status_code == 400
+
+
+def test_signed_person_automatic_recognition_updates_shared_overview(tmp_path) -> None:
+    identities = PersonIdentityRepository(tmp_path / "person-auto-identities.db")
+    person = identities.create_identity(
+        person_identity_id="person_auto_mobile_001",
+        display_name="가족",
+        identity_status="user_confirmed",
+        name_status="user_confirmed",
+    )
+    current = person
+    for index in range(5):
+        observation = identities.register_face_observation(
+            FaceObservationInput(
+                provider=None,
+                provider_asset_id=None,
+                local_asset_id=f"auto-mobile-asset-{index}",
+                model_family="test",
+                model_version="v1",
+                embedding_dimension=4,
+                model_fingerprint="model-auto-v1",
+                bbox_fingerprint=f"bbox-auto-mobile-{index}",
+                crop_fingerprint=f"crop-auto-mobile-{index}",
+            )
+        )
+        identities.set_membership(
+            observation.face_observation_id,
+            current.person_identity_id,
+            membership_state="owner_confirmed",
+            provenance="owner",
+            decision_policy_version="owner-v1",
+            expected_identity_revision=current.identity_revision,
+        )
+        current = identities.get_identity(current.person_identity_id)
+    profile = identities.refresh_identity_automation_profile(
+        person.person_identity_id,
+        model_fingerprint="model-auto-v1",
+        policy_version="exception-only-v1",
+    )
+    assert profile["maturity"] == "auto_ready"
+
+    app, ingest_device, ingest_key, _repository = _fixture(
+        tmp_path,
+        identity_repository=identities,
+    )
+    path = "/mobile-client/v1/people/automatic-recognition"
+    with TestClient(app, base_url="https://photos.example") as client:
+        token, _owner_key_id, owner_key, _challenge = _owner_session(
+            client, ingest_device, ingest_key
+        )
+        auth = {"Authorization": f"Bearer {token}"}
+        capabilities = client.get("/mobile-client/v1/capabilities").json()["data"]
+        assert capabilities["features"]["people_automatic_recognition"] is True
+        before = client.get(
+            "/mobile-client/v1/people/overview", headers=auth
+        ).json()["data"]
+        projected = before["people"][0]
+        assert projected["automatic_recognition"]["enabled"] is True
+        payload = {
+            "schema_version": 1,
+            "automatic_action_handle": projected["automatic_action_handle"],
+            "expected_profile_revision": projected["automatic_recognition"][
+                "profile_revision"
+            ],
+            "enabled": False,
+        }
+        body = json.dumps(payload, separators=(",", ":"))
+        command_headers = _signed_command_headers(
+            token,
+            owner_key,
+            path=path,
+            body=body,
+            prefix="person-auto-toggle",
+        )
+        response = client.post(
+            path,
+            content=body,
+            headers=command_headers,
+        )
+        duplicate = client.post(path, content=body, headers=command_headers)
+
+        assert response.status_code == 200, response.text
+        assert duplicate.status_code == 200, duplicate.text
+        assert duplicate.json()["data"] == response.json()["data"]
+        assert response.json()["data"]["enabled"] is False
+        after = client.get(
+            "/mobile-client/v1/people/overview", headers=auth
+        ).json()["data"]
+        assert after["overview_revision"] != before["overview_revision"]
+        assert after["people"][0]["automatic_recognition"]["enabled"] is False
 
 
 def test_owner_consent_withdrawal_immediately_refreshes_persisted_stories(

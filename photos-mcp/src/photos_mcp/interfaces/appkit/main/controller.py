@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from threading import Thread
 import time
 from typing import Any
@@ -40,6 +41,7 @@ from photos_mcp.interfaces.appkit.menu.presentation import (
     build_menu_view_model,
 )
 from photos_mcp.interfaces.appkit.people.controller import PhotosMcpPeopleManagerController
+from photos_mcp.application.recommendation_storage import DEFAULT_OWNER_STORY_URL
 from photos_mcp.interfaces.appkit.shared.theme import (
     ICON_SIZE,
     accent_color,
@@ -406,6 +408,12 @@ class PhotosMcpMainWindowController(NSWindowController):
 
     @objc.python_method
     def _story_url(self) -> str:
+        configured = os.getenv(
+            "PHOTOS_MCP_OWNER_STORY_URL",
+            DEFAULT_OWNER_STORY_URL,
+        ).strip()
+        if configured:
+            return configured
         return f"http://127.0.0.1:{int(self._menu_controller._config.port)}/photos"
 
     @objc.python_method

@@ -20,6 +20,9 @@
 - [삭제·재분석·추천 앨범 수명주기 재설계](14-deletion-reanalysis-and-recommendation-lifecycle-plan-2026-09-10.md): 작업 목록·Story·처리 원장·추천 archive·현재 추천·외부 앨범·인물·GPS의 삭제 경계를 분리한다. 수동 재분석은 exact collection Story와 로컬 결과를 먼저 만들고, 기존 앨범 추가와 새 버전 앨범 게시를 구분한 뒤 generation/current-head와 provider membership 정합화로 단계적으로 전환한다.
 - [Google Photos 검색·분할 수집 개선안](15-picker-search-and-batched-acquisition-plan-2026-09-11.md): Picker 날짜·앨범 검색과 다중 화면 매크로를 결합하고, 최대 1,000장을 100장 단위로 내구 다운로드·분석한 뒤 Google·Apple 추천과 Story를 하나로 통합한다. 여러 Picker 세션은 날짜 범위의 완전 소진 또는 안정적인 이어선택이 검증된 경우에만 사용한다.
 - [인물 이름 연계 Story·인물별 사진 탐색 개선 계획](16-person-linked-story-and-people-gallery-plan-2026-09-11.md): 보존된 인물 이름과 최신 추천 자산 사이의 association 단절을 복구하고, Apple alias 확인·안정 얼굴 lineage·인물별 사진 필터·오인식 수정·검증 가능한 Story v4 인물 서사를 단계적으로 연결한다.
+- [운영 인물 인덱싱·재검증·통합 관리 UX 계획](17-operational-people-indexing-and-review-ux-plan-2026-09-12.md): 첫 수직 기능과 20장 운영 파일럿을 완료했다. Apple 후보 사진 검수, 설치 앱의 YuNet·SFace 인물 인덱싱, macOS·Android의 stable overview를 연결했으며 사용자 인물 확인과 최대 1,000장용 helper·checkpoint, 고급 병합·분리 UX를 다음 단계로 남긴다.
+- [얼굴 단위 다인물 사진 검토·Android 이름 입력 구현 계획](18-face-level-multi-person-review-plan-2026-09-12.md): 첫 운영 수직 기능을 완료했다. schema v5, Apple alias 우선 얼굴 색인, 109개 bbox·검토 crop·highlight, 사진별 원자적 다인물 결정, 확정 얼굴 기반 이름 후보와 일치 가능성, macOS 정확 얼굴 선택, Android 0.8.2 얼굴별 기존 인물·새 이름·모르는 사람 무시·얼굴 아님·나중에를 배포했다. 높은 신뢰도 후보는 저장 전 자동 선택되며 무인 확정은 calibration gate 통과 전까지 비활성이다.
+- [예외 중심 인물 자동 인식·Mac/Android 통합 계획](19-exception-only-people-recognition-mac-android-plan-2026-09-12.md): 모든 얼굴을 수동 분류하지 않고 품질 미달과 1~2회 등장 얼굴을 숨긴다. 독립적으로 3회 이상 등장한 새 인물과 애매한 기존 인물만 검토하며, 사용자 확정 anchor가 충분한 인물의 초고신뢰 얼굴은 별도 자동 상태로 연결한다. 자동 결과는 Story에 사용할 수 있지만 다음 인식 anchor에는 사용하지 않고 Mac·Android에서 같은 예외 큐·최근 자동 정리·교정·undo를 제공한다.
 
 ## 선호 학습
 

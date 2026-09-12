@@ -1,5 +1,7 @@
 # 실행 검증 보고서
 
+- [2026-09-12 예외 중심 인물 인식 Mac/Android 구현](49-exception-only-people-recognition-mac-android-implementation-2026-09-12.md): schema v6 예외 큐, 반복 새 인물 묶음 확정, 자동 인식 profile, macOS/Android 동등 UI, 0.8.3 실기기 설치와 Tailnet Google 지도 경로를 검증했다.
+
 - [2026-09-11 macOS 인물 관리 영구 저장소 통합](48-mac-people-stable-repository-integration-2026-09-11.md): 작업 기록과 얼굴 캐시가 비어도 영구 인물 DB의 이름·Story 동의를 표시하도록 맥 앱을 연결했다. 레거시 중복 방지, 사진 미연결 안전 상태, 이름·동의 편집을 추가하고 1,006개 회귀와 운영 번들 재배포를 검증했다.
 - [2026-09-11 Android 0.7.3 재분석 범위·버전 표시 교정](47-android-073-reanalysis-scope-and-version-status-2026-09-11.md): 휴대폰 GPS 70건이 정상 수신됐는데도 Story 표시 날짜와 원래 분석 범위가 달라 428로 거절되던 원인을 교정했다. 설정 하단의 설치/최신 버전 상태와 원인별 오류 안내를 추가하고 0.7.3 APK를 배포했다.
 - [2026-09-10 추천 버전·현재 결과와 읽기 전용 진단](43-recommendation-generation-and-readonly-audit-2026-09-10.md): 수동 전체 재분석의 복수 provider snapshot과 원자적 current 전환, 실패·증분·동시 실행 보호를 구현했다. 운영 로컬 파일 96개의 hash를 검증하고 과거 집계 차이 한 건을 자동 변경 없이 식별했다.

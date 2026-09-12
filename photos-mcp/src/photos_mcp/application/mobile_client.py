@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import hashlib
+import json
 from typing import Any, Callable
 
 from photos_mcp.application.combined_curation import combined_curation_status
@@ -454,6 +455,7 @@ def mobile_dashboard(
 
 
 IdentityActionHandleFactory = Callable[[str, int], str]
+PeopleImageUrlFactory = Callable[[str], str]
 
 
 def _mobile_person(
@@ -461,6 +463,7 @@ def _mobile_person(
     person_identity_id: str,
     *,
     action_handle_factory: IdentityActionHandleFactory | None = None,
+    representative_url_factory: PeopleImageUrlFactory | None = None,
 ) -> dict[str, Any]:
     identity = repository.get_identity(person_identity_id)
     personal_allowed = repository.current_consent(
@@ -471,6 +474,9 @@ def _mobile_person(
     )
     item: dict[str, Any] = {
         "identity_status": _text(identity.identity_status, 32),
+        "linked_photo_count": _bounded_int(
+            repository.person_photo_count(identity.person_identity_id)
+        ),
     }
     may_show_name = (
         identity.identity_status == "user_confirmed"
@@ -481,15 +487,36 @@ def _mobile_person(
         if display_name:
             item["display_name"] = display_name
     if identity.identity_status == "user_confirmed":
+        profile = repository.latest_identity_automation_profile(identity.person_identity_id)
+        if profile is not None:
+            item["automatic_recognition"] = {
+                "enabled": bool(profile["auto_enabled"]),
+                "suspended": bool(profile["suspended"]),
+                "maturity": _text(profile["maturity"], 32),
+                "confirmed_anchor_count": _bounded_int(
+                    profile["owner_confirmed_anchor_count"]
+                ),
+                "independent_context_count": _bounded_int(
+                    profile["independent_context_count"]
+                ),
+                "profile_revision": _bounded_int(profile["profile_revision"]),
+            }
+        representative = repository.representative_face_artifact(identity.person_identity_id)
+        if representative and representative_url_factory is not None:
+            item["representative_face_url"] = representative_url_factory(
+                str(representative["crop_ref"])
+            )
         item["story_name_consent"] = {
             "personal_story": personal_allowed,
             "family_share": family_allowed,
         }
         if action_handle_factory is not None:
-            item["consent_action_handle"] = action_handle_factory(
+            action_handle = action_handle_factory(
                 identity.person_identity_id,
                 identity.identity_revision,
             )
+            item["consent_action_handle"] = action_handle
+            item["automatic_action_handle"] = action_handle
     return item
 
 
@@ -498,6 +525,7 @@ def mobile_person(
     person_identity_id: str,
     *,
     action_handle_factory: IdentityActionHandleFactory | None = None,
+    representative_url_factory: PeopleImageUrlFactory | None = None,
 ) -> dict[str, Any]:
     """Project one identity without exposing its repository identifier."""
 
@@ -505,6 +533,7 @@ def mobile_person(
         repository,
         person_identity_id,
         action_handle_factory=action_handle_factory,
+        representative_url_factory=representative_url_factory,
     )
 
 
@@ -512,6 +541,7 @@ def mobile_people(
     repository: PersonIdentityRepository,
     *,
     action_handle_factory: IdentityActionHandleFactory | None = None,
+    representative_url_factory: PeopleImageUrlFactory | None = None,
 ) -> list[dict[str, Any]]:
     """Build a minimal, path-free projection for the owner mobile app.
 
@@ -522,12 +552,15 @@ def mobile_people(
     """
 
     people: list[dict[str, Any]] = []
-    for identity in repository.list_identities():
+    for identity in repository.list_identities(
+        identity_statuses={"user_confirmed", "conflicted"}
+    ):
         people.append(
             _mobile_person(
                 repository,
                 identity.person_identity_id,
                 action_handle_factory=action_handle_factory,
+                representative_url_factory=representative_url_factory,
             )
         )
     return people
@@ -574,6 +607,107 @@ def mobile_people_readiness(repository: PersonIdentityRepository) -> dict[str, i
         payload["status"] = "ready"
         payload["message"] = "인물 Story 연결 상태가 준비되었습니다."
     return payload
+
+
+def mobile_people_overview(
+    repository: PersonIdentityRepository,
+    *,
+    action_handle_factory: IdentityActionHandleFactory | None = None,
+    representative_url_factory: PeopleImageUrlFactory | None = None,
+) -> dict[str, Any]:
+    """Return one revision-consistent owner projection for the People hub."""
+
+    from photos_mcp.application.person_indexing import face_runtime_payload
+
+    people = mobile_people(
+        repository,
+        action_handle_factory=action_handle_factory,
+        representative_url_factory=representative_url_factory,
+    )
+    readiness = mobile_people_readiness(repository)
+    review = mobile_people_review_summary(repository)
+    from photos_mcp.application.people_workspace import PeopleWorkspaceService
+
+    exception_dashboard = PeopleWorkspaceService(repository).dashboard()
+    runtime = face_runtime_payload()
+    latest_run = repository.latest_face_index_run()
+    index_run = None
+    if latest_run is not None:
+        index_run = {
+            "status": _text(latest_run.status, 24),
+            "scope": _text(latest_run.scope_kind, 40),
+            "asset_count": _bounded_int(latest_run.asset_count),
+            "detected_face_count": _bounded_int(latest_run.detected_face_count),
+            "candidate_count": _bounded_int(latest_run.candidate_count),
+            "review_count": _bounded_int(latest_run.review_count),
+            "failure_count": _bounded_int(latest_run.failure_count),
+            "started_at": _text(latest_run.started_at, 40),
+            "completed_at": _text(latest_run.completed_at, 40),
+            "error_code": _text(latest_run.error_code, 80),
+        }
+    revision_source = {
+        "people": [
+            {
+                "status": item.get("identity_status"),
+                "name": item.get("display_name"),
+                "photos": item.get("linked_photo_count"),
+                "consent": item.get("story_name_consent"),
+                "automatic_recognition": item.get("automatic_recognition"),
+            }
+            for item in people
+        ],
+        "readiness": readiness,
+        "review": review,
+        "exception_dashboard": {
+            key: exception_dashboard.get(key)
+            for key in (
+                "exception_count",
+                "quick_confirmation_count",
+                "ambiguous_match_count",
+                "promoted_new_person_count",
+                "automatic_assignment_count",
+                "quality_suppressed_count",
+                "policy_version",
+            )
+        },
+        "runtime": runtime,
+        "index_run": index_run,
+    }
+    overview_revision = hashlib.sha256(
+        json.dumps(
+            revision_source,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:20]
+    return {
+        "overview_revision": overview_revision,
+        "readiness": readiness,
+        "review": {
+            **review,
+            "face_review_item_count": _bounded_int(exception_dashboard["exception_count"]),
+            "quick_confirmation_count": _bounded_int(
+                exception_dashboard["quick_confirmation_count"]
+            ),
+            "ambiguous_match_count": _bounded_int(
+                exception_dashboard["ambiguous_match_count"]
+            ),
+            "promoted_new_person_count": _bounded_int(
+                exception_dashboard["promoted_new_person_count"]
+            ),
+            "automatic_assignment_count": _bounded_int(
+                exception_dashboard["automatic_assignment_count"]
+            ),
+            "quality_suppressed_count": _bounded_int(
+                exception_dashboard["quality_suppressed_count"]
+            ),
+            "policy_version": _text(exception_dashboard["policy_version"], 40),
+        },
+        "runtime": runtime,
+        "latest_index_run": index_run,
+        "people": people,
+    }
 
 
 def mobile_events(

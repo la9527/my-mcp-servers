@@ -61,6 +61,67 @@ final class OwnerApiClient {
         return getJson(API + "/people/aliases");
     }
 
+    JSONObject getPeopleOverview() throws Exception {
+        return getJson(API + "/people/overview");
+    }
+
+    JSONObject getFaceReviewPhotos() throws Exception {
+        return getJson(API + "/people/face-review/photos?state=pending&limit=50");
+    }
+
+    JSONObject getFaceReviewPhoto(String photoReviewHandle) throws Exception {
+        if (photoReviewHandle == null
+                || !photoReviewHandle.matches("prp_[A-Za-z0-9_-]{24,80}")) {
+            throw new IllegalArgumentException("invalid photo review handle");
+        }
+        return getJson(API + "/people/face-review/photos/" + photoReviewHandle);
+    }
+
+    byte[] getFaceReviewImage(String relativePath) throws Exception {
+        if (relativePath == null
+                || !relativePath.matches(
+                "/mobile-client/v1/people/review-images/pim_[A-Za-z0-9_-]{24,80}")) {
+            throw new IllegalArgumentException("invalid face review image request");
+        }
+        BinaryHttpResult response = authorizedBinary(relativePath, true);
+        if (!response.contentType.startsWith("image/jpeg")) {
+            throw new IllegalStateException("unexpected face review image type");
+        }
+        return response.body;
+    }
+
+    JSONObject applyFaceReview(
+            String photoReviewHandle, int expectedReviewRevision,
+            org.json.JSONArray assignments, org.json.JSONArray faceDecisions) throws Exception {
+        if (photoReviewHandle == null
+                || !photoReviewHandle.matches("prp_[A-Za-z0-9_-]{24,80}")) {
+            throw new IllegalArgumentException("invalid photo review handle");
+        }
+        String path = API + "/people/face-review/photos/" + photoReviewHandle
+                + "/assignments";
+        JSONObject payload = new JSONObject();
+        payload.put("schema_version", 1);
+        payload.put("expected_review_revision", expectedReviewRevision);
+        payload.put("assignments", assignments == null ? new org.json.JSONArray() : assignments);
+        payload.put("face_decisions", faceDecisions == null
+                ? new org.json.JSONArray() : faceDecisions);
+        return signedPeopleCommand(path, "face-review-", payload);
+    }
+
+    byte[] getPeopleReviewImage(String aliasActionHandle, String kind) throws Exception {
+        if (aliasActionHandle == null
+                || !aliasActionHandle.matches("aal_[A-Za-z0-9_-]{24,80}")
+                || !("thumb".equals(kind) || "preview".equals(kind))) {
+            throw new IllegalArgumentException("invalid people review image request");
+        }
+        BinaryHttpResult response = authorizedBinary(
+                API + "/people/review-assets/" + aliasActionHandle + "/" + kind, true);
+        if (!response.contentType.startsWith("image/jpeg")) {
+            throw new IllegalStateException("unexpected people review image type");
+        }
+        return response.body;
+    }
+
     JSONObject confirmPersonAlias(
             String aliasActionHandle, String identityActionHandle) throws Exception {
         if (aliasActionHandle == null
@@ -81,6 +142,72 @@ final class OwnerApiClient {
                 MessageDigest.getInstance("SHA-256").digest(
                         body.getBytes(StandardCharsets.UTF_8)));
         String idempotencyKey = "person-alias-" + UUID.randomUUID();
+        String nonce = "nonce-" + UUID.randomUUID();
+        String createdAt = Instant.now().toString();
+        String message = "OWNER-COMMAND-V1\nPOST\n" + path + "\n" + bodyHash + "\n"
+                + nonce + "\n" + idempotencyKey + "\n" + createdAt;
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Idempotency-Key", idempotencyKey);
+        headers.put("X-Command-Nonce", nonce);
+        headers.put("X-Command-Created-At", createdAt);
+        headers.put("X-Device-Signature", BridgeKeys.signOwner(
+                message.getBytes(StandardCharsets.UTF_8)));
+        return authorized("POST", path, body, true, headers);
+    }
+
+    JSONObject createPersonFromAlias(String aliasActionHandle, String displayName)
+            throws Exception {
+        String name = displayName == null ? "" : displayName.trim();
+        if (name.isEmpty() || name.length() > 80) {
+            throw new IllegalArgumentException("invalid person name");
+        }
+        JSONObject payload = new JSONObject();
+        payload.put("schema_version", 1);
+        payload.put("alias_action_handle", aliasActionHandle);
+        payload.put("display_name", name);
+        return signedAliasCommand("/people/alias/create", "person-create-", payload);
+    }
+
+    JSONObject rejectPersonAlias(String aliasActionHandle) throws Exception {
+        JSONObject payload = new JSONObject();
+        payload.put("schema_version", 1);
+        payload.put("alias_action_handle", aliasActionHandle);
+        payload.put("decision", "rejected");
+        return signedAliasCommand("/people/alias/review", "person-review-", payload);
+    }
+
+    private JSONObject signedAliasCommand(
+            String endpoint, String idempotencyPrefix, JSONObject payload) throws Exception {
+        String aliasActionHandle = payload.optString("alias_action_handle", "");
+        if (!aliasActionHandle.matches("aal_[A-Za-z0-9_-]{24,80}")) {
+            throw new IllegalArgumentException("invalid alias action handle");
+        }
+        String path = API + endpoint;
+        String body = payload.toString();
+        String bodyHash = BridgeKeys.hex(
+                MessageDigest.getInstance("SHA-256").digest(
+                        body.getBytes(StandardCharsets.UTF_8)));
+        String idempotencyKey = idempotencyPrefix + UUID.randomUUID();
+        String nonce = "nonce-" + UUID.randomUUID();
+        String createdAt = Instant.now().toString();
+        String message = "OWNER-COMMAND-V1\nPOST\n" + path + "\n" + bodyHash + "\n"
+                + nonce + "\n" + idempotencyKey + "\n" + createdAt;
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Idempotency-Key", idempotencyKey);
+        headers.put("X-Command-Nonce", nonce);
+        headers.put("X-Command-Created-At", createdAt);
+        headers.put("X-Device-Signature", BridgeKeys.signOwner(
+                message.getBytes(StandardCharsets.UTF_8)));
+        return authorized("POST", path, body, true, headers);
+    }
+
+    private JSONObject signedPeopleCommand(
+            String path, String idempotencyPrefix, JSONObject payload) throws Exception {
+        String body = payload.toString();
+        String bodyHash = BridgeKeys.hex(
+                MessageDigest.getInstance("SHA-256").digest(
+                        body.getBytes(StandardCharsets.UTF_8)));
+        String idempotencyKey = idempotencyPrefix + UUID.randomUUID();
         String nonce = "nonce-" + UUID.randomUUID();
         String createdAt = Instant.now().toString();
         String message = "OWNER-COMMAND-V1\nPOST\n" + path + "\n" + bodyHash + "\n"
@@ -125,6 +252,25 @@ final class OwnerApiClient {
         headers.put("X-Device-Signature", BridgeKeys.signOwner(
                 message.getBytes(StandardCharsets.UTF_8)));
         return authorized("POST", path, body, true, headers);
+    }
+
+    JSONObject setPersonAutomaticRecognition(
+            String actionHandle, int expectedProfileRevision, boolean enabled) throws Exception {
+        if (actionHandle == null || !actionHandle.matches("pah_[A-Za-z0-9_-]{24,80}")) {
+            throw new IllegalArgumentException("invalid automatic recognition action handle");
+        }
+        if (expectedProfileRevision < 1) {
+            throw new IllegalArgumentException("invalid automatic recognition profile revision");
+        }
+        JSONObject payload = new JSONObject();
+        payload.put("schema_version", 1);
+        payload.put("automatic_action_handle", actionHandle);
+        payload.put("expected_profile_revision", expectedProfileRevision);
+        payload.put("enabled", enabled);
+        return signedPeopleCommand(
+                API + "/people/automatic-recognition",
+                "person-auto-",
+                payload);
     }
 
     JSONObject getRuns() throws Exception {

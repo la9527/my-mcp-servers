@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import sqlite3
+from threading import Thread
 from typing import Any
+import uuid
 
 import objc
 from AppKit import (
@@ -16,6 +19,7 @@ from AppKit import (
     NSControlStateValueOn,
     NSEventModifierFlagCommand,
     NSImage,
+    NSImageAbove,
     NSImageOnly,
     NSImageScaleProportionallyUpOrDown,
     NSImageView,
@@ -36,6 +40,10 @@ from photos_mcp.application.person_identity_management import (
     build_people_catalog,
     merge_stable_people_catalog,
 )
+from photos_mcp.application.person_indexing import PersonIndexingService, face_runtime_status
+from photos_mcp.application.people_workspace import PeopleWorkspaceService
+from photos_mcp.application.share_image_service import ShareImageError, ShareImageService
+from photos_mcp.application.story_generation import refresh_all_story_location_projections
 from photos_mcp.interfaces.appkit.results.collection_item import cached_image
 from photos_mcp.interfaces.appkit.results.photo_viewer import PhotosMcpPhotoViewerController
 from photos_mcp.interfaces.appkit.shared.theme import accent_color, app_font, panel_background_color, subtle_border_color
@@ -79,6 +87,14 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._name_selection_range: tuple[int, int] | None = None
         self._name_restore_pending_identity_id = ""
         self._move_popup = None
+        self._alias_identity_popup = None
+        self._aliases = ()
+        self._selected_alias_id = ""
+        self._selected_alias_face_id = ""
+        self._deferred_alias_ids: set[str] = set()
+        self._face_runtime = face_runtime_status()
+        self._index_running = False
+        self._index_message = ""
         self._move_target_identity_id = ""
         self._identity_scroll_view = None
         self._gallery_scroll_view = None
@@ -88,6 +104,7 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._undo_snapshot: dict[str, Any] | None = None
         self._stable_name_undo: tuple[str, str, str] | None = None
         self._undo_message = ""
+        self._people_dashboard: dict[str, Any] = {}
         self._viewer_controller = PhotosMcpPhotoViewerController.alloc().init()
         self._load_catalog()
         return self
@@ -104,28 +121,67 @@ class PhotosMcpPeopleManagerController(NSObject):
         parent.setWantsLayer_(True)
         parent.layer().setBackgroundColor_(NSColor.windowBackgroundColor().CGColor())
         usable = width - (_MARGIN * 2.0)
-        self._label(parent, _MARGIN, height - 58.0, usable - 132.0, 36.0, "인물 관리", 27.0, True)
+        self._label(parent, _MARGIN, height - 58.0, usable - 330.0, 36.0, "인물 관리", 27.0, True)
         self._label(
             parent,
             _MARGIN,
             height - 84.0,
             usable - 132.0,
             20.0,
-            "얼굴 묶음을 직접 확인하고 이름, 병합, 분리를 로컬에서 관리합니다.",
+            "자주 등장하는 사람은 자동으로 정리하고, 애매한 경우만 확인합니다.",
             11.0,
             False,
             secondary=True,
         )
-        self._button(parent, width - _MARGIN - 110.0, height - 66.0, 110.0, 32.0, "새로 고침", "refreshCatalog:")
+        self._button(
+            parent,
+            width - _MARGIN - 326.0,
+            height - 66.0,
+            112.0,
+            32.0,
+            "빠르게 확인",
+            "reviewFirstException:",
+            enabled=bool(self._people_dashboard.get("exception_count")),
+        )
+        self._button(
+            parent,
+            width - _MARGIN - 206.0,
+            height - 66.0,
+            112.0,
+            32.0,
+            "인물 찾기",
+            "indexPeople:",
+            primary=True,
+            enabled=not self._index_running and self._face_runtime.status == "ready",
+        )
+        self._button(parent, width - _MARGIN - 86.0, height - 66.0, 86.0, 32.0, "새로 고침", "refreshCatalog:")
 
-        status = f"{len(self._catalog.identities)}명 · 연결된 얼굴 {self._catalog.face_count}개 · 최근 작업 {self._catalog.source_job_count}개"
+        confirmed_count = sum(
+            identity.stable_identity_status == "user_confirmed"
+            for identity in self._catalog.identities
+        )
+        candidate_count = sum(
+            identity.stable_identity_status == "candidate"
+            for identity in self._catalog.identities
+        )
+        exception_count = int(self._people_dashboard.get("exception_count") or 0)
+        auto_count = int(self._people_dashboard.get("automatic_assignment_count") or 0)
+        suppressed_count = int(self._people_dashboard.get("quality_suppressed_count") or 0)
+        status = (
+            f"확인할 내용 {exception_count}개 · 관리 인물 {confirmed_count}명 · "
+            f"자동 정리 {auto_count}개 · 품질 제외 {suppressed_count}개"
+        )
         if self._catalog.pending_alias_count:
             status += f" · 이름 확인 대기 {self._catalog.pending_alias_count}건"
         if self._catalog.pending_lineage_hold_count:
             status += f" · 사진 연결 대기 {self._catalog.pending_lineage_hold_count}건"
         if self._catalog.excluded_face_count:
             status += f" · 제외 {self._catalog.excluded_face_count}개"
+        runtime_label = "인물 모델 준비됨" if self._face_runtime.status == "ready" else "인물 모델 준비 필요"
+        status += f" · {runtime_label}"
         self._label(parent, _MARGIN, height - 112.0, usable, 18.0, status, 9.8, False, secondary=True)
+        if self._index_message:
+            self._label(parent, _MARGIN, height - 132.0, usable, 18.0, self._index_message, 9.2, False, secondary=True)
         content_y = 26.0
         content_height = max(260.0, height - 150.0)
         list_width = min(340.0, max(258.0, usable * 0.28))
@@ -133,6 +189,356 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._detail_panel(parent, _MARGIN + list_width + 18.0, content_y, usable - list_width - 18.0, content_height)
 
     def refreshCatalog_(self, _sender) -> None:
+        self._load_catalog()
+        self._main_controller.rebuild()
+
+    def showFirstAlias_(self, _sender) -> None:
+        if not self._aliases:
+            return
+        self._deferred_alias_ids.clear()
+        self._selected_alias_id = self._aliases[0].alias_id
+        self._selected_alias_face_id = ""
+        self._selected_identity_id = ""
+        self._main_controller.rebuild()
+
+    def reviewFirstException_(self, _sender) -> None:
+        if self._identity_repository is None:
+            return
+        workspace = PeopleWorkspaceService(
+            self._identity_repository,
+            run_repository=self._menu_controller._state_store.run_repository,
+        )
+        try:
+            page = workspace.list_asset_reviews(state="pending", limit=1)
+        except (OSError, sqlite3.Error, ValueError):
+            self._alert("확인할 내용을 불러오지 못했습니다", "잠시 후 다시 시도해 주세요.")
+            return
+        if not page.items:
+            self._alert("지금 확인할 내용이 없습니다", "새 사진을 분석하면 애매한 얼굴만 이곳에 표시됩니다.")
+            return
+        detail = page.items[0]
+        faces = list(detail.get("faces") or [])
+        if not faces:
+            self._load_catalog()
+            self._main_controller.rebuild()
+            return
+        face = faces[0]
+        suggestion_name = str(face.get("suggested_display_name") or "").strip()
+        review_kind = str(face.get("review_kind") or "quick_confirmation")
+        alert = NSAlert.alloc().init()
+        if review_kind == "promoted_new_person":
+            alert.setMessageText_("새로 자주 보이는 사람")
+            alert.setInformativeText_("서로 다른 좋은 사진에서 3번 이상 확인된 얼굴입니다. 이름을 입력해 주세요.")
+        elif review_kind == "ambiguous_identity_match":
+            alert.setMessageText_("이 얼굴은 한 번 확인이 필요합니다")
+            alert.setInformativeText_(f"가장 가까운 인물은 {suggestion_name or '선택 필요'}입니다.")
+        else:
+            alert.setMessageText_(f"{suggestion_name or '이 인물'}이 맞나요?")
+            alert.setInformativeText_("직접 확인한 얼굴 표본을 기준으로 찾았습니다.")
+        cluster_evidence = list(face.get("cluster_evidence") or [])
+        accessory = NSView.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 390.0, 210.0))
+        image_refs = (
+            [str(item.get("review_crop_ref") or "") for item in cluster_evidence[:3]]
+            if review_kind == "promoted_new_person" and cluster_evidence
+            else [str(face.get("review_crop_ref") or "")]
+        )
+        image_size = 112.0 if len(image_refs) > 1 else 180.0
+        gap = 10.0
+        total_width = len(image_refs) * image_size + max(0, len(image_refs) - 1) * gap
+        start_x = max(0.0, (390.0 - total_width) / 2.0)
+        for index, image_ref in enumerate(image_refs):
+            image = NSImageView.alloc().initWithFrame_(
+                NSMakeRect(start_x + index * (image_size + gap), 50.0, image_size, image_size)
+            )
+            image.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+            try:
+                image.setImage_(cached_image(str(workspace.artifact_path(image_ref))))
+            except (ValueError, FileNotFoundError):
+                pass
+            image.setAccessibilityLabel_(f"확인할 얼굴 {index + 1}")
+            accessory.addSubview_(image)
+        name_field = None
+        if not suggestion_name:
+            name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(35.0, 0.0, 320.0, 28.0))
+            name_field.setPlaceholderString_("이름 또는 가족 호칭")
+            accessory.addSubview_(name_field)
+        alert.setAccessoryView_(accessory)
+        alert.addButtonWithTitle_("맞아요" if suggestion_name else "이름 등록")
+        alert.addButtonWithTitle_("나중에")
+        alert.addButtonWithTitle_("취소")
+        response = alert.runModal()
+        if response == NSAlertFirstButtonReturn:
+            display_name = str(name_field.stringValue() or "").strip() if name_field is not None else ""
+            if not suggestion_name and not display_name:
+                self._alert("이름이 필요합니다", "등록할 이름 또는 가족 호칭을 입력해 주세요.")
+                return
+            assignment = {
+                "face_observation_id": face["face_observation_id"],
+                "target_kind": "existing" if suggestion_name else "new",
+            }
+            if suggestion_name:
+                assignment["person_identity_id"] = face["suggested_person_identity_id"]
+            else:
+                assignment["display_name"] = display_name
+            self._apply_exception_review(workspace, detail, assignments=[assignment], decisions=[])
+        elif response == NSAlertFirstButtonReturn + 1:
+            self._apply_exception_review(
+                workspace,
+                detail,
+                assignments=[],
+                decisions=[{"face_observation_id": face["face_observation_id"], "decision": "defer"}],
+            )
+
+    @objc.python_method
+    def _apply_exception_review(
+        self,
+        workspace: PeopleWorkspaceService,
+        detail: dict[str, Any],
+        *,
+        assignments: list[dict[str, Any]],
+        decisions: list[dict[str, Any]],
+    ) -> None:
+        try:
+            result = workspace.apply_asset_review(
+                local_asset_id=str(detail["local_asset_id"]),
+                expected_review_revision=int(detail["review_revision"]),
+                assignments=assignments,
+                face_decisions=decisions,
+                device_fingerprint="mac-owner-app",
+                idempotency_key=f"mac-exception-review-{uuid.uuid4()}",
+                request_hash=uuid.uuid4().hex,
+                actor="owner:mac-app",
+            )
+            refresh_all_story_location_projections(
+                self._menu_controller._state_store.run_repository,
+                identity_repository=self._identity_repository,
+            )
+            self._identity_repository.complete_story_refresh_outbox(
+                str(result["decision_group_id"])
+            )
+        except (KeyError, OSError, sqlite3.Error, ValueError) as exc:
+            self._alert("인물 정보를 저장하지 못했습니다", str(exc))
+            return
+        self._load_catalog()
+        self._main_controller.rebuild()
+
+    def deferAlias_(self, _sender) -> None:
+        alias = self._selected_alias()
+        if alias is not None:
+            self._deferred_alias_ids.add(alias.alias_id)
+        self._select_next_alias_or_close()
+
+    def connectAlias_(self, _sender) -> None:
+        alias = self._selected_alias()
+        item = self._alias_identity_popup.selectedItem() if self._alias_identity_popup else None
+        identity_id = str(item.representedObject() or "") if item is not None else ""
+        detail, face = self._selected_alias_face_review(alias)
+        if alias is None or not identity_id or self._identity_repository is None:
+            self._alert("인물을 연결할 수 없습니다", "연결할 기존 인물을 선택해 주세요.")
+            return
+        if detail is None or face is None:
+            self._alert("얼굴을 먼저 선택해 주세요", "인물 찾기를 실행한 뒤 이 이름에 해당하는 얼굴 crop을 선택해 주세요.")
+            return
+        try:
+            result = PeopleWorkspaceService(
+                self._identity_repository,
+                run_repository=self._menu_controller._state_store.run_repository,
+            ).apply_asset_review(
+                local_asset_id=alias.local_asset_id,
+                expected_review_revision=int(detail["review_revision"]),
+                assignments=[
+                    {
+                        "face_observation_id": face["face_observation_id"],
+                        "target_kind": "existing",
+                        "person_identity_id": identity_id,
+                        "alias_id": alias.alias_id,
+                    }
+                ],
+                face_decisions=[],
+                device_fingerprint="mac-owner-app",
+                idempotency_key=f"mac-face-review-{uuid.uuid4()}",
+                request_hash=uuid.uuid4().hex,
+                actor="owner:mac-app",
+            )
+            refresh_all_story_location_projections(
+                self._menu_controller._state_store.run_repository,
+                identity_repository=self._identity_repository,
+            )
+            self._identity_repository.complete_story_refresh_outbox(
+                str(result["decision_group_id"])
+            )
+        except (KeyError, OSError, sqlite3.Error, ValueError) as exc:
+            self._alert("인물을 연결할 수 없습니다", str(exc))
+            return
+        self._advance_alias_after_change()
+
+    def createPersonFromAlias_(self, _sender) -> None:
+        alias = self._selected_alias()
+        detail, face = self._selected_alias_face_review(alias)
+        if alias is None or self._identity_repository is None:
+            return
+        if detail is None or face is None:
+            self._alert("얼굴을 먼저 선택해 주세요", "인물 찾기를 실행한 뒤 이 이름에 해당하는 얼굴 crop을 선택해 주세요.")
+            return
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 320.0, 28.0))
+        field.setStringValue_(alias.private_display_label)
+        field.setPlaceholderString_("인물 이름 또는 가족 호칭")
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("새 인물로 등록")
+        alert.setInformativeText_("사진을 확인한 뒤 사용할 이름을 입력해 주세요. 개인 Story 이름 표시는 켜지고 가족 공유는 별도 설정입니다.")
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("등록")
+        alert.addButtonWithTitle_("취소")
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            return
+        name = str(field.stringValue() or "").strip()
+        if not name:
+            self._alert("이름이 필요합니다", "새 인물에 사용할 이름을 입력해 주세요.")
+            return
+        try:
+            result = PeopleWorkspaceService(
+                self._identity_repository,
+                run_repository=self._menu_controller._state_store.run_repository,
+            ).apply_asset_review(
+                local_asset_id=alias.local_asset_id,
+                expected_review_revision=int(detail["review_revision"]),
+                assignments=[
+                    {
+                        "face_observation_id": face["face_observation_id"],
+                        "target_kind": "new",
+                        "display_name": name,
+                        "alias_id": alias.alias_id,
+                    }
+                ],
+                face_decisions=[],
+                device_fingerprint="mac-owner-app",
+                idempotency_key=f"mac-face-review-{uuid.uuid4()}",
+                request_hash=uuid.uuid4().hex,
+                actor="owner:mac-app",
+            )
+            refresh_all_story_location_projections(
+                self._menu_controller._state_store.run_repository,
+                identity_repository=self._identity_repository,
+            )
+            self._identity_repository.complete_story_refresh_outbox(
+                str(result["decision_group_id"])
+            )
+        except (KeyError, OSError, sqlite3.Error, ValueError) as exc:
+            self._alert("새 인물을 등록할 수 없습니다", str(exc))
+            return
+        self._advance_alias_after_change()
+
+    def selectAliasFace_(self, sender) -> None:
+        self._selected_alias_face_id = str(sender.identifier() or "")
+        self._main_controller.rebuild()
+
+    def ignoreUnknownAliasFace_(self, _sender) -> None:
+        alias = self._selected_alias()
+        detail, face = self._selected_alias_face_review(alias)
+        if alias is None or self._identity_repository is None or detail is None or face is None:
+            self._alert(
+                "얼굴을 먼저 선택해 주세요",
+                "실제 얼굴이지만 내가 아는 사람이 아닌 경우에만 무시할 얼굴 crop을 선택해 주세요.",
+            )
+            return
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("이 얼굴을 모르는 사람으로 무시할까요?")
+        alert.setInformativeText_(
+            "얼굴로 검출된 사실은 유지하지만 인물 목록과 Story에서는 제외합니다. "
+            "원본 사진과 사진 속 다른 얼굴은 변경하지 않습니다."
+        )
+        alert.addButtonWithTitle_("모르는 사람 · 무시")
+        alert.addButtonWithTitle_("취소")
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            return
+        try:
+            result = PeopleWorkspaceService(
+                self._identity_repository,
+                run_repository=self._menu_controller._state_store.run_repository,
+            ).apply_asset_review(
+                local_asset_id=alias.local_asset_id,
+                expected_review_revision=int(detail["review_revision"]),
+                assignments=[],
+                face_decisions=[
+                    {
+                        "face_observation_id": face["face_observation_id"],
+                        "decision": "ignore_unknown",
+                    }
+                ],
+                device_fingerprint="mac-owner-app",
+                idempotency_key=f"mac-face-review-{uuid.uuid4()}",
+                request_hash=uuid.uuid4().hex,
+                actor="owner:mac-app",
+            )
+            refresh_all_story_location_projections(
+                self._menu_controller._state_store.run_repository,
+                identity_repository=self._identity_repository,
+            )
+            self._identity_repository.complete_story_refresh_outbox(
+                str(result["decision_group_id"])
+            )
+        except (KeyError, OSError, sqlite3.Error, ValueError) as exc:
+            self._alert("모르는 사람으로 무시할 수 없습니다", str(exc))
+            return
+        self._selected_alias_face_id = ""
+        self._load_catalog()
+        self._main_controller.rebuild()
+
+    def rejectAlias_(self, _sender) -> None:
+        alias = self._selected_alias()
+        if alias is None or self._identity_repository is None:
+            return
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("이 이름 후보를 제외할까요?")
+        alert.setInformativeText_("사진이나 기존 인물 정보는 삭제하지 않습니다.")
+        alert.addButtonWithTitle_("후보 제외")
+        alert.addButtonWithTitle_("취소")
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            return
+        try:
+            self._identity_repository.review_provider_person_alias(
+                alias.alias_id,
+                decision="rejected",
+                actor="owner:mac-app",
+                request_id="mac-provider-alias-reject",
+            )
+        except (KeyError, OSError, sqlite3.Error, ValueError) as exc:
+            self._alert("후보를 제외할 수 없습니다", str(exc))
+            return
+        self._advance_alias_after_change()
+
+    def indexPeople_(self, _sender) -> None:
+        if self._index_running or self._identity_repository is None:
+            return
+        self._face_runtime = face_runtime_status()
+        if self._face_runtime.status != "ready":
+            self._alert("인물 모델을 준비하지 못했습니다", ", ".join(self._face_runtime.missing_components))
+            return
+        self._index_running = True
+        self._index_message = "현재 추천 사진 최대 50장에서 인물을 찾는 중입니다…"
+        self._main_controller.rebuild()
+        Thread(target=self._run_people_index, daemon=True).start()
+
+    @objc.python_method
+    def _run_people_index(self) -> None:
+        try:
+            result = PersonIndexingService(
+                self._menu_controller._state_store.run_repository,
+                self._identity_repository,
+            ).index_recommendation_assets(limit=50)
+            message = (
+                f"인물 찾기 완료 · 사진 {result.asset_count}장 · 얼굴 {result.detected_face_count}개 · "
+                f"새 후보 {result.candidate_count}명 · 확인 {result.review_count}건"
+            )
+        except Exception as exc:
+            message = f"인물 찾기 실패 · {type(exc).__name__}"
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "finishPeopleIndex:", message, False
+        )
+
+    def finishPeopleIndex_(self, message) -> None:
+        self._index_running = False
+        self._index_message = str(message or "")
         self._load_catalog()
         self._main_controller.rebuild()
 
@@ -153,6 +559,7 @@ class PhotosMcpPeopleManagerController(NSObject):
             self._focused_face_selection_id = ""
             self._gallery_scroll_origin = None
         self._selected_identity_id = identity_id
+        self._selected_alias_id = ""
         self._focused_identity_id = identity_id
         self._main_controller.rebuild()
 
@@ -345,6 +752,62 @@ class PhotosMcpPeopleManagerController(NSObject):
             return
         self._load_catalog()
         self._main_controller.rebuild()
+
+    def toggleIdentityAuto_(self, sender) -> None:
+        identity = self._selected_identity()
+        if identity is None or not identity.stable_identity_id or self._identity_repository is None:
+            return
+        profile = self._identity_repository.latest_identity_automation_profile(
+            identity.stable_identity_id
+        )
+        if profile is None:
+            return
+        try:
+            self._identity_repository.set_identity_auto_enabled(
+                identity.stable_identity_id,
+                enabled=sender.state() == NSControlStateValueOn,
+                expected_profile_revision=int(profile["profile_revision"]),
+                actor="owner:mac-app",
+                request_id="mac-people-auto-toggle",
+            )
+        except (KeyError, OSError, sqlite3.Error, ValueError) as exc:
+            self._alert("자동 인식 설정을 저장할 수 없습니다", str(exc))
+        self._load_catalog()
+        self._main_controller.rebuild()
+
+    @objc.python_method
+    def _add_identity_auto_toggle(
+        self, card: Any, y: float, width: float, identity: PersonIdentity
+    ) -> None:
+        if self._identity_repository is None or not identity.stable_identity_id:
+            return
+        try:
+            profile = self._identity_repository.latest_identity_automation_profile(
+                identity.stable_identity_id
+            )
+        except (KeyError, OSError, sqlite3.Error, ValueError):
+            profile = None
+        if profile is None:
+            return
+        maturity_labels = {
+            "learning": "학습 중",
+            "review_ready": "확인 가능",
+            "auto_ready": "안정됨",
+        }
+        title = (
+            "자동 인식 · "
+            + maturity_labels.get(str(profile["maturity"]), "학습 중")
+            + f" · 직접 확인 {int(profile['owner_confirmed_anchor_count'])}장"
+        )
+        toggle = NSButton.alloc().initWithFrame_(NSMakeRect(20.0, y, width - 40.0, 28.0))
+        toggle.setButtonType_(NSButtonTypeSwitch)
+        toggle.setTitle_(title)
+        toggle.setTarget_(self)
+        toggle.setAction_("toggleIdentityAuto:")
+        toggle.setState_(NSControlStateValueOn if bool(profile["auto_enabled"]) else 0)
+        toggle.setEnabled_(not bool(profile["suspended"]))
+        toggle.setAccessibilityLabel_(title)
+        card.addSubview_(toggle)
 
     def clearManualChanges_(self, _sender) -> None:
         identity = self._selected_identity()
@@ -563,11 +1026,40 @@ class PhotosMcpPeopleManagerController(NSObject):
                     repository=self._identity_repository,
                     registry=self._registry,
                 )
+                catalog = replace(
+                    catalog,
+                    identities=tuple(
+                        identity
+                        for identity in catalog.identities
+                        if identity.stable_identity_status != "candidate"
+                        or len(identity.faces) >= 3
+                    ),
+                )
             except (OSError, sqlite3.Error, ValueError):
                 # Keep the face-backed legacy catalog available if the durable
                 # repository is damaged or temporarily locked.
                 pass
         self._catalog = catalog
+        self._face_runtime = face_runtime_status()
+        if self._identity_repository is not None:
+            try:
+                self._aliases = self._identity_repository.list_provider_person_aliases()
+                self._people_dashboard = PeopleWorkspaceService(
+                    self._identity_repository,
+                    run_repository=getattr(
+                        self._menu_controller._state_store, "run_repository", None
+                    ),
+                ).dashboard()
+            except (OSError, sqlite3.Error, ValueError):
+                self._aliases = ()
+                self._people_dashboard = {}
+        else:
+            self._aliases = ()
+            self._people_dashboard = {}
+        if self._selected_alias_id and not any(
+            alias.alias_id == self._selected_alias_id for alias in self._aliases
+        ):
+            self._selected_alias_id = ""
         unnamed_index = 0
         self._identity_labels = {}
         for identity in self._catalog.identities:
@@ -587,6 +1079,64 @@ class PhotosMcpPeopleManagerController(NSObject):
     @objc.python_method
     def _selected_identity(self) -> PersonIdentity | None:
         return self._catalog.identity(self._selected_identity_id)
+
+    @objc.python_method
+    def _selected_alias(self):
+        return next(
+            (alias for alias in self._aliases if alias.alias_id == self._selected_alias_id),
+            None,
+        )
+
+    @objc.python_method
+    def _selected_alias_face_review(self, alias: Any) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        if alias is None or self._identity_repository is None:
+            return None, None
+        try:
+            detail = PeopleWorkspaceService(
+                self._identity_repository,
+                run_repository=self._menu_controller._state_store.run_repository,
+            ).asset_review_detail(alias.local_asset_id)
+        except (KeyError, OSError, sqlite3.Error, ValueError):
+            return None, None
+        faces = list(detail.get("faces") or [])
+        if not faces:
+            return detail, None
+        face = next(
+            (
+                item
+                for item in faces
+                if str(item.get("face_observation_id") or "") == self._selected_alias_face_id
+            ),
+            None,
+        )
+        if face is None and len(faces) == 1:
+            face = faces[0]
+            self._selected_alias_face_id = str(face.get("face_observation_id") or "")
+        return detail, face
+
+    @objc.python_method
+    def _advance_alias_after_change(self) -> None:
+        self._selected_alias_face_id = ""
+        self._load_catalog()
+        self._select_next_alias_or_close(rebuild=False)
+        self._main_controller.rebuild()
+
+    @objc.python_method
+    def _select_next_alias_or_close(self, *, rebuild: bool = True) -> None:
+        next_alias = next(
+            (
+                alias
+                for alias in self._aliases
+                if alias.alias_id not in self._deferred_alias_ids
+            ),
+            None,
+        )
+        self._selected_alias_id = next_alias.alias_id if next_alias is not None else ""
+        self._selected_alias_face_id = ""
+        if not self._selected_alias_id and self._catalog.identities:
+            self._selected_identity_id = self._catalog.identities[0].identity_id
+        if rebuild:
+            self._main_controller.rebuild()
 
     @objc.python_method
     def _identity_summary(self, identity: PersonIdentity) -> str:
@@ -643,8 +1193,9 @@ class PhotosMcpPeopleManagerController(NSObject):
     @objc.python_method
     def _identity_list(self, parent: Any, x: float, y: float, width: float, height: float) -> None:
         card = self._card(parent, x, y, width, height, selected=False)
-        self._label(card, 18.0, height - 40.0, width - 36.0, 24.0, "인물 묶음", 14.5, True)
-        self._label(card, 18.0, height - 60.0, width - 36.0, 18.0, "이름은 사용자가 직접 지정합니다.", 8.8, False, secondary=True)
+        self._label(card, 18.0, height - 40.0, width - 36.0, 24.0, "인물", 14.5, True)
+        subtitle = f"확인할 Apple 이름 후보 {len(self._aliases)}건"
+        self._label(card, 18.0, height - 60.0, width - 36.0, 18.0, subtitle, 8.8, False, secondary=True)
         scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(10.0, 12.0, width - 20.0, max(60.0, height - 82.0)))
         scroll.setHasVerticalScroller_(True)
         scroll.setDrawsBackground_(False)
@@ -694,6 +1245,10 @@ class PhotosMcpPeopleManagerController(NSObject):
 
     @objc.python_method
     def _detail_panel(self, parent: Any, x: float, y: float, width: float, height: float) -> None:
+        alias = self._selected_alias()
+        if alias is not None:
+            self._alias_detail_panel(parent, x, y, width, height, alias)
+            return
         identity = self._selected_identity()
         if identity is None:
             card = self._card(parent, x, y, width, height, selected=False)
@@ -746,14 +1301,16 @@ class PhotosMcpPeopleManagerController(NSObject):
         )
         representative_button.setToolTip_("이 인물 묶음의 대표 얼굴이 포함된 원본 사진 보기")
 
+        self._add_identity_auto_toggle(card, height - 146.0, width, identity)
+
         drop_zone = NewIdentityDropZoneView.alloc().initWithController_(self)
-        drop_zone.setFrame_(NSMakeRect(20.0, height - 160.0, width - 40.0, 40.0))
+        drop_zone.setFrame_(NSMakeRect(20.0, height - 196.0, width - 40.0, 40.0))
         self._style_card(drop_zone, selected=False)
         drop_zone.setAccessibilityLabel_("얼굴을 놓아 새 인물 그룹 만들기")
         card.addSubview_(drop_zone)
         self._label(drop_zone, 14.0, 11.0, width - 68.0, 18.0, "얼굴을 여기에 놓아 새 인물 그룹 만들기", 9.6, True, secondary=True)
         gallery_y = 124.0
-        gallery_height = max(120.0, height - 298.0)
+        gallery_height = max(120.0, height - 334.0)
         self._face_gallery(card, 20.0, gallery_y, width - 40.0, gallery_height, identity)
         self._label(card, 20.0, 104.0, width - 40.0, 16.0, "드래그하거나 얼굴을 선택해 이동할 수 있습니다. 원본 사진은 변경하지 않습니다.", 8.8, False, secondary=True)
         selected_count = len(self._selected_face_ids)
@@ -815,6 +1372,163 @@ class PhotosMcpPeopleManagerController(NSObject):
         undo_button.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
 
     @objc.python_method
+    def _alias_detail_panel(self, parent: Any, x: float, y: float, width: float, height: float, alias: Any) -> None:
+        card = self._card(parent, x, y, width, height, selected=True)
+        detail, selected_face = self._selected_alias_face_review(alias)
+        faces = list((detail or {}).get("faces") or [])
+        self._label(card, 20.0, height - 42.0, width - 40.0, 24.0, "Apple Photos 이름 후보", 16.0, True)
+        self._label(card, 20.0, height - 68.0, width - 40.0, 20.0, alias.private_display_label, 12.0, True, accent=True)
+        try:
+            asset = self._menu_controller._state_store.run_repository.get_local_recommendation_asset_by_id(
+                alias.local_asset_id
+            ) or {}
+        except (OSError, sqlite3.Error):
+            asset = {}
+        capture_date = str(asset.get("capture_date_local") or "")[:10]
+        source_line = "Apple Photos" + (f" · {capture_date}" if capture_date else "")
+        self._label(card, 20.0, height - 92.0, width - 40.0, 18.0, source_line, 9.5, False, secondary=True)
+        guide = (
+            "이 이름에 해당하는 얼굴 crop을 선택한 뒤 연결하세요. 사진 전체를 한 사람에게 연결하지 않습니다."
+            if faces
+            else "아직 얼굴 crop이 없습니다. 상단의 인물 찾기를 먼저 실행해 주세요."
+        )
+        self._label(card, 20.0, height - 114.0, width - 40.0, 18.0, guide, 9.5, False, secondary=True)
+        suggestion = dict((selected_face or {}).get("identity_suggestion") or {})
+        if not suggestion and selected_face:
+            suggested_name = str(selected_face.get("suggested_display_name") or "").strip()
+            if suggested_name:
+                suggestion = {
+                    "display_name": suggested_name,
+                    "match_likelihood_percent": int(
+                        round(float(selected_face.get("confidence_estimate") or 0.0) * 100.0)
+                    ),
+                    "supporting_photo_count": int(
+                        selected_face.get("supporting_asset_count") or 0
+                    ),
+                    "person_identity_id": str(
+                        selected_face.get("suggested_person_identity_id") or ""
+                    ),
+                    "tier": str(selected_face.get("suggestion_tier") or "suggested"),
+                }
+        if suggestion:
+            self._label(
+                card,
+                20.0,
+                height - 136.0,
+                width - 40.0,
+                18.0,
+                "추천 인물 · {name} · 일치 가능성 {likelihood}% · 확정 사진 {support}장".format(
+                    name=str(suggestion.get("display_name") or "인물"),
+                    likelihood=int(suggestion.get("match_likelihood_percent") or 0),
+                    support=int(suggestion.get("supporting_photo_count") or 0),
+                ),
+                9.5,
+                True,
+                accent=True,
+            )
+        image_path = None
+        try:
+            image_path = ShareImageService(
+                self._menu_controller._state_store.run_repository
+            ).derivative(
+                share_id="people-review-mac",
+                public_asset_id=alias.alias_id,
+                local_asset_id=alias.local_asset_id,
+                kind="preview",
+            )
+        except (ShareImageError, RuntimeError):
+            pass
+        image_height = max(150.0, height - 410.0)
+        image_view = NSImageView.alloc().initWithFrame_(NSMakeRect(20.0, 272.0, width - 40.0, image_height))
+        image_view.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        if image_path is not None:
+            image_view.setImage_(cached_image(str(image_path)))
+        image_view.setAccessibilityLabel_(f"{alias.private_display_label} 후보 사진")
+        card.addSubview_(image_view)
+        self._label(
+            card,
+            20.0,
+            246.0,
+            width - 40.0,
+            18.0,
+            f"사진 속 얼굴 {len(faces)}개 · 이름에 해당하는 얼굴을 선택하세요",
+            9.5,
+            True,
+            secondary=not bool(faces),
+        )
+        face_scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(20.0, 150.0, width - 40.0, 92.0)
+        )
+        face_scroll.setHasHorizontalScroller_(True)
+        face_scroll.setDrawsBackground_(False)
+        face_document_width = max(width - 40.0, len(faces) * 86.0)
+        face_document = NSView.alloc().initWithFrame_(
+            NSMakeRect(0.0, 0.0, face_document_width, 78.0)
+        )
+        face_scroll.setDocumentView_(face_document)
+        workspace = PeopleWorkspaceService(
+            self._identity_repository,
+            run_repository=self._menu_controller._state_store.run_repository,
+        )
+        for index, face in enumerate(faces):
+            face_id = str(face.get("face_observation_id") or "")
+            selected = face_id == self._selected_alias_face_id
+            button = NSButton.alloc().initWithFrame_(NSMakeRect(index * 86.0, 0.0, 78.0, 74.0))
+            button.setTitle_(f"얼굴 {index + 1}" + (" ✓" if selected else ""))
+            button.setImagePosition_(NSImageAbove)
+            button.setTarget_(self)
+            button.setAction_("selectAliasFace:")
+            button.setIdentifier_(face_id)
+            button.setAccessibilityLabel_(
+                f"얼굴 {index + 1}, {'선택됨' if selected else '선택 안 됨'}"
+            )
+            try:
+                crop_path = workspace.artifact_path(str(face.get("review_crop_ref") or ""))
+                button.setImage_(cached_image(str(crop_path)))
+            except (ValueError, FileNotFoundError):
+                pass
+            face_document.addSubview_(button)
+        card.addSubview_(face_scroll)
+        self._alias_identity_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(20.0, 112.0, min(260.0, width - 220.0), 30.0), False
+        )
+        self._alias_identity_popup.addItemWithTitle_("연결할 기존 인물 선택")
+        for identity in self._catalog.identities:
+            if not identity.stable_identity_id:
+                continue
+            label = self._identity_labels.get(identity.identity_id, identity.display_name)
+            self._alias_identity_popup.addItemWithTitle_(label)
+            self._alias_identity_popup.lastItem().setRepresentedObject_(identity.stable_identity_id)
+        suggested_identity_id = str(suggestion.get("person_identity_id") or "")
+        if suggested_identity_id and str(suggestion.get("tier") or "") == "ready_to_confirm":
+            for item in self._alias_identity_popup.itemArray():
+                if str(item.representedObject() or "") == suggested_identity_id:
+                    self._alias_identity_popup.selectItem_(item)
+                    break
+        self._alias_identity_popup.setAccessibilityLabel_("연결할 기존 인물")
+        card.addSubview_(self._alias_identity_popup)
+        can_assign = selected_face is not None
+        self._button(card, width - 188.0, 112.0, 168.0, 30.0, "선택 얼굴에 연결", "connectAlias:", primary=True, enabled=can_assign)
+        self._button(card, 20.0, 68.0, 152.0, 30.0, "선택 얼굴 새 인물", "createPersonFromAlias:", enabled=can_assign)
+        self._button(card, 182.0, 68.0, 124.0, 30.0, "후보 제외", "rejectAlias:")
+        self._button(card, 316.0, 68.0, 112.0, 30.0, "나중에", "deferAlias:")
+        remaining = len(self._aliases)
+        ignore = self._button(
+            card,
+            20.0,
+            28.0,
+            174.0,
+            30.0,
+            "모르는 사람 · 무시",
+            "ignoreUnknownAliasFace:",
+            enabled=can_assign,
+        )
+        ignore.setAccessibilityHelp_(
+            "실제 얼굴이지만 아는 사람이 아닌 경우 인물 목록과 Story에서 제외합니다."
+        )
+        self._label(card, 208.0, 34.0, width - 228.0, 18.0, f"확인 대기 {remaining}건 · 사용자 확인 전에는 Story 이름에 반영되지 않습니다.", 8.8, False, secondary=True)
+
+    @objc.python_method
     def _stable_identity_details(
         self,
         card: Any,
@@ -844,13 +1558,14 @@ class PhotosMcpPeopleManagerController(NSObject):
             secondary=True,
         )
         if self._identity_repository is not None:
+            self._add_identity_auto_toggle(card, height - 212.0, width, identity)
             consent_rows = (
                 ("owner", "내 Story에 이름 표시"),
                 ("family_share", "가족 공유 Story에 이름 표시"),
             )
             for index, (audience, title) in enumerate(consent_rows):
                 toggle = NSButton.alloc().initWithFrame_(
-                    NSMakeRect(20.0, height - 232.0 - (index * 38.0), width - 40.0, 28.0)
+                    NSMakeRect(20.0, height - 252.0 - (index * 38.0), width - 40.0, 28.0)
                 )
                 toggle.setButtonType_(NSButtonTypeSwitch)
                 toggle.setTitle_(title)

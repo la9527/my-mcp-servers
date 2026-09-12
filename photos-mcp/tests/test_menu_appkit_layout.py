@@ -242,7 +242,7 @@ def test_main_window_people_tab_has_a_local_only_empty_state() -> None:
         if isinstance(view, NSTextField)
     }
 
-    assert {"인물 관리", "인물 묶음", "등록된 인물이 없습니다"}.issubset(labels)
+    assert {"인물 관리", "인물", "등록된 인물이 없습니다"}.issubset(labels)
 
 
 def test_main_window_people_tab_shows_stable_identity_without_face_cache(tmp_path) -> None:

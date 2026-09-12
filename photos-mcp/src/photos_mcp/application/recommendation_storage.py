@@ -243,11 +243,20 @@ class RecommendationStorageService:
             raw = [raw]
         if not isinstance(raw, (list, tuple, set)):
             return ()
-        labels = {
-            " ".join(str(value).split())[:100]
-            for value in raw
-            if " ".join(str(value).split())
+        sentinel_labels = {
+            "unknown",
+            "_unknown_",
+            "unnamed",
+            "unnamed person",
+            "미상",
+            "이름 없음",
         }
+        labels = set()
+        for value in raw:
+            label = " ".join(str(value).split())[:100]
+            if not label or label.casefold() in sentinel_labels:
+                continue
+            labels.add(label)
         return tuple(sorted(labels))
 
     def materialize(

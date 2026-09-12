@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
@@ -178,6 +179,8 @@ public final class MainActivity extends Activity {
             showResults(resultsStoryId);
         } else if ("story".equals(currentSection) && storyWebView == null) {
             showStories();
+        } else if ("people".equals(currentSection)) {
+            showPeople();
         }
     }
 
@@ -910,7 +913,7 @@ public final class MainActivity extends Activity {
         receipt.put("extractor_version", "android-bridge-2");
         String clientVersion = getPackageManager()
                 .getPackageInfo(getPackageName(), 0).versionName;
-        receipt.put("client_version", clientVersion == null ? "0.7.3" : clientVersion);
+        receipt.put("client_version", clientVersion == null ? "0.8.3" : clientVersion);
         receipt.put("completed_at", Instant.now().toString());
         return receipt;
     }
@@ -1821,8 +1824,8 @@ public final class MainActivity extends Activity {
         selectSection("people");
         int generation = ++resultsGeneration;
         LinearLayout page = page(
-                "인물 확인 현황",
-                "확정된 이름과 사진 연결 상태를 확인합니다. 이름은 동의한 Story에만 표시됩니다.");
+                "인물 관리",
+                "자주 등장하는 사람은 자동으로 정리하고, 애매한 경우만 확인합니다.");
         Button backToSettings = quietButton("설정으로 돌아가기");
         backToSettings.setOnClickListener(v -> showSettings());
         page.addView(backToSettings, matchWrap());
@@ -1843,10 +1846,12 @@ public final class MainActivity extends Activity {
         executor.execute(() -> {
             try {
                 OwnerApiClient client = new OwnerApiClient(this);
-                JSONObject readiness = client.getPeopleReadiness().getJSONObject("data");
-                JSONObject summary = client.getPeopleReviewSummary().getJSONObject("data");
-                JSONArray people = client.getPeople().getJSONArray("data");
-                JSONArray aliases = client.getPeopleAliases().getJSONArray("data");
+                JSONObject overview = client.getPeopleOverview().getJSONObject("data");
+                JSONObject readiness = overview.getJSONObject("readiness");
+                JSONObject summary = overview.getJSONObject("review");
+                JSONObject runtime = overview.getJSONObject("runtime");
+                JSONArray people = overview.getJSONArray("people");
+                JSONArray aliases = overview.getJSONArray("aliases");
                 runOnUiThread(() -> {
                     if (generation != resultsGeneration || !"people".equals(currentSection)) {
                         return;
@@ -1855,18 +1860,37 @@ public final class MainActivity extends Activity {
 
                     LinearLayout readinessCard = new LinearLayout(this);
                     readinessCard.setOrientation(LinearLayout.VERTICAL);
-                    TextView readinessTitle = text("Story 인물 연결", 17, ink);
+                    TextView readinessTitle = text(
+                            summary.optInt("face_review_item_count", 0) > 0
+                                    ? "확인할 내용이 " + summary.optInt("face_review_item_count") + "개 있어요"
+                                    : "지금 확인할 내용이 없어요",
+                            19, ink);
                     readinessTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
                     if (Build.VERSION.SDK_INT >= 28) readinessTitle.setAccessibilityHeading(true);
                     readinessCard.addView(readinessTitle);
                     readinessCard.addView(bodyText(
-                            readiness.optString("message", "인물 연결 상태를 확인했습니다.") + "\n"
-                                    + "확정 이름 " + readiness.optInt("confirmed_identity_count") + " · "
-                                    + "사진 연결 "
-                                    + (readiness.optInt("confirmed_face_membership_count")
-                                    + readiness.optInt("confirmed_asset_association_count")) + " · "
-                                    + "이름 후보 " + readiness.optInt("pending_alias_count")));
+                            "빠른 확인 " + summary.optInt("quick_confirmation_count") + " · "
+                                    + "두 후보 비교 " + summary.optInt("ambiguous_match_count") + " · "
+                                    + "새로 자주 보이는 사람 "
+                                    + summary.optInt("promoted_new_person_count") + "\n"
+                                    + "자동으로 정리한 얼굴 "
+                                    + summary.optInt("automatic_assignment_count") + " · "
+                                    + "품질이 낮아 숨긴 얼굴 "
+                                    + summary.optInt("quality_suppressed_count")));
                     content.addView(card(readinessCard));
+
+                    int faceReviewCount = summary.optInt("face_review_item_count", 0);
+                    if (faceReviewCount > 0) {
+                        Button openFaceReview = primaryButton(
+                                "빠르게 확인하기 · " + faceReviewCount + "개");
+                        openFaceReview.setContentDescription(
+                                "애매한 얼굴과 새로 자주 보이는 사람 "
+                                        + faceReviewCount + "개 확인");
+                        openFaceReview.setOnClickListener(v -> startActivity(
+                                new Intent(this, PeopleReviewActivity.class)));
+                        content.addView(openFaceReview, matchWrap());
+                        content.addView(space(dp(12)));
+                    }
 
                     if (aliases.length() > 0) {
                         LinearLayout aliasesCard = new LinearLayout(this);
@@ -1882,45 +1906,41 @@ public final class MainActivity extends Activity {
                             if (alias == null) continue;
                             String aliasLabel = alias.optString("display_label", "이름 후보");
                             String aliasHandle = alias.optString("alias_action_handle", "");
+                            String captureDate = alias.optString("capture_date_local", "").trim();
                             TextView aliasName = text(aliasLabel, 16, ink);
                             aliasName.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
                             aliasName.setPadding(0, dp(12), 0, dp(4));
                             aliasesCard.addView(aliasName);
-                            for (int personIndex = 0; personIndex < people.length(); personIndex++) {
-                                JSONObject person = people.optJSONObject(personIndex);
-                                if (person == null
-                                        || !"user_confirmed".equals(person.optString("identity_status"))) {
-                                    continue;
-                                }
-                                String personName = person.optString("display_name", "").trim();
-                                String identityHandle = person.optString("consent_action_handle", "");
-                                if (personName.isEmpty() || identityHandle.isEmpty()) continue;
-                                Button connect = quietButton(personName + " 사진으로 연결");
-                                connect.setContentDescription(
-                                        aliasLabel + " 후보를 " + personName + " 인물로 연결");
-                                connect.setOnClickListener(v -> confirmPersonAlias(
-                                        aliasHandle, identityHandle, connect));
-                                aliasesCard.addView(connect, matchWrap());
-                                aliasesCard.addView(space(dp(6)));
+                            if (!captureDate.isEmpty()) {
+                                aliasesCard.addView(text("Apple Photos · " + captureDate, 13, muted));
                             }
+
+                            ImageView preview = new ImageView(this);
+                            preview.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                            preview.setImageResource(R.drawable.ic_image_placeholder);
+                            preview.setColorFilter(muted);
+                            preview.setContentDescription(aliasLabel + " 후보 사진");
+                            LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(
+                                    LinearLayout.LayoutParams.MATCH_PARENT, dp(190));
+                            previewParams.setMargins(0, dp(6), 0, dp(10));
+                            aliasesCard.addView(preview, previewParams);
+                            loadPeopleAliasPreview(preview, aliasHandle, generation);
+                            Button reviewFaces = primaryButton("이 사진의 얼굴 구분하기");
+                            reviewFaces.setContentDescription(
+                                    aliasLabel + " 이름 힌트를 사진 속 정확한 얼굴에 연결");
+                            reviewFaces.setOnClickListener(v -> startActivity(
+                                    new Intent(this, PeopleReviewActivity.class)));
+                            aliasesCard.addView(reviewFaces, matchWrap());
+                            aliasesCard.addView(space(dp(6)));
+                            Button reject = quietButton("이 후보 제외");
+                            reject.setContentDescription(aliasLabel + " 후보 제외");
+                            reject.setOnClickListener(v -> rejectPersonAlias(aliasHandle, reject));
+                            aliasesCard.addView(reject, matchWrap());
                         }
                         content.addView(card(aliasesCard));
                     }
 
-                    LinearLayout review = new LinearLayout(this);
-                    review.setOrientation(LinearLayout.VERTICAL);
-                    TextView reviewTitle = text("확인이 필요한 항목", 17, ink);
-                    reviewTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-                    review.addView(reviewTitle);
-                    int total = summary.optInt("total_review_count");
-                    review.addView(bodyText(total + "건\n"
-                            + "인물 후보 " + summary.optInt("candidate_identity_count") + " · "
-                            + "충돌 " + summary.optInt("conflicted_identity_count") + "\n"
-                            + "사진 연결 후보 " + summary.optInt("candidate_membership_count") + " · "
-                            + "이전 데이터 확인 " + summary.optInt("pending_lineage_hold_count")));
-                    content.addView(card(review));
-
-                    TextView listTitle = text("인물 목록", 18, ink);
+                    TextView listTitle = text("내 인물", 18, ink);
                     listTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
                     listTitle.setPadding(0, dp(8), 0, dp(10));
                     if (Build.VERSION.SDK_INT >= 28) listTitle.setAccessibilityHeading(true);
@@ -1944,12 +1964,34 @@ public final class MainActivity extends Activity {
                             label = "확인 전 인물";
                         }
                         LinearLayout row = new LinearLayout(this);
-                        row.setOrientation(LinearLayout.VERTICAL);
-                        TextView identity = bodyText(label + "\n" + peopleStatusLabel(state));
+                        row.setOrientation(LinearLayout.HORIZONTAL);
+                        row.setGravity(Gravity.TOP);
+                        String representativeUrl = person.optString("representative_face_url", "");
+                        ImageView representative = new ImageView(this);
+                        representative.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                        representative.setImageResource(R.drawable.ic_image_placeholder);
+                        representative.setColorFilter(muted);
+                        representative.setContentDescription(label + " 대표 얼굴");
+                        LinearLayout.LayoutParams representativeParams = new LinearLayout.LayoutParams(
+                                dp(72), dp(72));
+                        representativeParams.setMargins(0, 0, dp(14), 0);
+                        row.addView(representative, representativeParams);
+                        if (!representativeUrl.isEmpty()) {
+                            loadPeopleFaceImage(representative, representativeUrl, generation);
+                        }
+                        LinearLayout personContent = new LinearLayout(this);
+                        personContent.setOrientation(LinearLayout.VERTICAL);
+                        row.addView(personContent, new LinearLayout.LayoutParams(0, -2, 1f));
+                        int linkedPhotoCount = person.optInt("linked_photo_count", 0);
+                        String linkStatus = linkedPhotoCount > 0
+                                ? "연결된 사진 " + linkedPhotoCount + "장"
+                                : "사진 연결 없음 · 이름과 설정 보존됨";
+                        TextView identity = bodyText(
+                                label + "\n" + peopleStatusLabel(state) + " · " + linkStatus);
                         identity.setContentDescription(
                                 "인물 " + (index + 1) + ", " + label + ", "
                                         + peopleStatusLabel(state));
-                        row.addView(identity, matchWrap());
+                        personContent.addView(identity, matchWrap());
                         if ("user_confirmed".equals(state)) {
                             JSONObject consents = person.optJSONObject("story_name_consent");
                             String actionHandle = person.optString(
@@ -1962,7 +2004,27 @@ public final class MainActivity extends Activity {
                                     muted);
                             explanation.setLineSpacing(0, 1.2f);
                             explanation.setPadding(0, dp(12), 0, dp(4));
-                            row.addView(explanation, matchWrap());
+                            personContent.addView(explanation, matchWrap());
+
+                            JSONObject automatic = person.optJSONObject("automatic_recognition");
+                            String automaticHandle = person.optString("automatic_action_handle", "");
+                            if (automatic != null && automatic.optInt("profile_revision", 0) > 0) {
+                                String maturity = automatic.optString("maturity", "learning");
+                                int anchors = automatic.optInt("confirmed_anchor_count", 0);
+                                Switch automaticSwitch = consentSwitch(
+                                        "자동 인식 · " + peopleMaturityLabel(maturity)
+                                                + " · 직접 확인 " + anchors + "장");
+                                automaticSwitch.setChecked(automatic.optBoolean("enabled", true));
+                                automaticSwitch.setEnabled(!automatic.optBoolean("suspended", false)
+                                        && automaticHandle.matches("pah_[A-Za-z0-9_-]{24,80}"));
+                                int profileRevision = automatic.optInt("profile_revision", 0);
+                                automaticSwitch.setOnCheckedChangeListener((button, checked) -> {
+                                    automaticSwitch.setEnabled(false);
+                                    updatePersonAutomaticRecognition(
+                                            automaticHandle, profileRevision, checked);
+                                });
+                                personContent.addView(automaticSwitch, matchWrap());
+                            }
 
                             Switch personal = consentSwitch("개인 Story에 이름 표시");
                             Switch family = consentSwitch("30일 가족 공유에 이름 표시");
@@ -1986,8 +2048,8 @@ public final class MainActivity extends Activity {
                                 family.setEnabled(false);
                                 updatePersonConsent(actionHandle, "family_share", checked);
                             });
-                            row.addView(personal, matchWrap());
-                            row.addView(family, matchWrap());
+                            personContent.addView(personal, matchWrap());
+                            personContent.addView(family, matchWrap());
                         }
                         content.addView(card(row));
                     }
@@ -2041,6 +2103,49 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void updatePersonAutomaticRecognition(
+            String actionHandle, int profileRevision, boolean enabled) {
+        setLoading(true);
+        executor.execute(() -> {
+            try {
+                new OwnerApiClient(this).setPersonAutomaticRecognition(
+                        actionHandle, profileRevision, enabled);
+                runOnUiThread(this::showPeople);
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    showPeople();
+                    showMessage(
+                            "자동 인식 설정을 저장하지 못했어요",
+                            connectionHelp(error));
+                });
+            }
+        });
+    }
+
+    private String peopleMaturityLabel(String maturity) {
+        if ("auto_ready".equals(maturity)) return "안정됨";
+        if ("review_ready".equals(maturity)) return "확인 가능";
+        return "학습 중";
+    }
+
+    private void loadPeopleFaceImage(ImageView image, String relativePath, int generation) {
+        imageExecutor.execute(() -> {
+            try {
+                byte[] encoded = new OwnerApiClient(this).getFaceReviewImage(relativePath);
+                Bitmap bitmap = BitmapFactory.decodeByteArray(encoded, 0, encoded.length);
+                if (bitmap == null) throw new IllegalStateException("face decode failed");
+                runOnUiThread(() -> {
+                    if (generation != resultsGeneration || !"people".equals(currentSection)) return;
+                    image.clearColorFilter();
+                    image.setImageBitmap(bitmap);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> image.setContentDescription(
+                        "대표 얼굴을 불러오지 못했습니다"));
+            }
+        });
+    }
+
     private void confirmPersonAlias(
             String aliasActionHandle, String identityActionHandle, Button button) {
         button.setEnabled(false);
@@ -2058,6 +2163,92 @@ public final class MainActivity extends Activity {
                     button.setEnabled(true);
                     setLoading(false);
                     showMessage("사진을 연결하지 못했어요", connectionHelp(error));
+                });
+            }
+        });
+    }
+
+    private void loadPeopleAliasPreview(
+            ImageView image, String aliasActionHandle, int generation) {
+        imageExecutor.execute(() -> {
+            try {
+                byte[] encoded = new OwnerApiClient(this).getPeopleReviewImage(
+                        aliasActionHandle, "preview");
+                Bitmap bitmap = BitmapFactory.decodeByteArray(encoded, 0, encoded.length);
+                if (bitmap == null) throw new IllegalStateException("preview decode failed");
+                runOnUiThread(() -> {
+                    if (generation != resultsGeneration || !"people".equals(currentSection)) return;
+                    image.clearColorFilter();
+                    image.setImageBitmap(bitmap);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> image.setContentDescription(
+                        "후보 사진을 불러오지 못했습니다"));
+            }
+        });
+    }
+
+    private void promptCreatePersonFromAlias(String aliasActionHandle, String aliasLabel) {
+        EditText name = new EditText(this);
+        name.setSingleLine(true);
+        name.setHint("인물 이름 또는 가족 호칭");
+        name.setText(aliasLabel);
+        name.setSelectAllOnFocus(true);
+        name.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        int horizontal = dp(22);
+        FrameLayout holder = new FrameLayout(this);
+        holder.setPadding(horizontal, 0, horizontal, 0);
+        holder.addView(name, new FrameLayout.LayoutParams(-1, -2));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("새 인물로 등록")
+                .setMessage("사진을 확인한 뒤 사용할 이름을 입력해 주세요. 개인 Story 이름 표시는 켜지고 가족 공유는 별도로 선택합니다.")
+                .setView(holder)
+                .setNegativeButton("취소", null)
+                .setPositiveButton("등록", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String value = name.getText().toString().trim();
+                    if (value.isEmpty()) {
+                        name.setError("이름을 입력해 주세요");
+                        return;
+                    }
+                    dialog.dismiss();
+                    createPersonFromAlias(aliasActionHandle, value);
+                }));
+        dialog.show();
+    }
+
+    private void createPersonFromAlias(String aliasActionHandle, String displayName) {
+        setLoading(true);
+        executor.execute(() -> {
+            try {
+                new OwnerApiClient(this).createPersonFromAlias(aliasActionHandle, displayName);
+                runOnUiThread(() -> {
+                    showMessage("새 인물 등록 완료", "사진과 이름을 연결하고 Story 정보를 갱신했습니다.");
+                    showPeople();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    setLoading(false);
+                    showMessage("인물을 등록하지 못했어요", connectionHelp(error));
+                });
+            }
+        });
+    }
+
+    private void rejectPersonAlias(String aliasActionHandle, Button button) {
+        button.setEnabled(false);
+        setLoading(true);
+        executor.execute(() -> {
+            try {
+                new OwnerApiClient(this).rejectPersonAlias(aliasActionHandle);
+                runOnUiThread(this::showPeople);
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    button.setEnabled(true);
+                    setLoading(false);
+                    showMessage("후보를 제외하지 못했어요", connectionHelp(error));
                 });
             }
         });

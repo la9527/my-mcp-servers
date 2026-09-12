@@ -94,6 +94,31 @@ async def test_command_runtime_broker_runs_prepare_command() -> None:
 
 
 @pytest.mark.asyncio
+async def test_command_runtime_broker_serializes_parallel_prepare_commands(monkeypatch) -> None:
+    import asyncio
+
+    runtime_broker = _load_runtime_broker_module()
+    active = 0
+    peak = 0
+
+    async def fake_run(_command: str) -> None:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    first = runtime_broker.CommandRuntimeBrokerClient(command="prepare", timeout_seconds=1)
+    second = runtime_broker.CommandRuntimeBrokerClient(command="prepare", timeout_seconds=1)
+    monkeypatch.setattr(first, "_run_command", fake_run)
+    monkeypatch.setattr(second, "_run_command", fake_run)
+
+    await asyncio.gather(first.acquire(), second.acquire())
+
+    assert peak == 1
+
+
+@pytest.mark.asyncio
 async def test_command_runtime_broker_runs_activity_command_after_inference() -> None:
     runtime_broker = _load_runtime_broker_module()
     client = runtime_broker.CommandRuntimeBrokerClient(
