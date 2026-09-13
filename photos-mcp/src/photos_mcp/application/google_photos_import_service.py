@@ -208,6 +208,16 @@ class GooglePhotosImportService:
                         sort_keys=True,
                     ),
                     sidecar_path=str(sidecar_path),
+                    byte_size=(
+                        max(0, int(content.local_path.stat().st_size))
+                        if content.local_path.is_file()
+                        else 0
+                    ),
+                    sidecar_byte_size=(
+                        max(0, int(sidecar_path.stat().st_size))
+                        if sidecar_path.is_file()
+                        else 0
+                    ),
                 )
             )
             completed[index] = content

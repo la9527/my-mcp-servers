@@ -1,0 +1,211 @@
+#!/bin/zsh
+# Canonical PhotosMcp Linux VLM wake/tunnel helper.
+set -uo pipefail
+
+HELPER_VERSION="photos-mcp-2026.09.13.1"
+NANOBOT_HOME="${NANOBOT_HOME:-$HOME/.nanobot}"
+CONFIG_FILE="${LINUX_LLM_CONFIG:-$NANOBOT_HOME/linux-llm.env}"
+[[ -r "$CONFIG_FILE" ]] || { print -u2 "Missing Linux LLM config: $CONFIG_FILE"; exit 2; }
+set -a
+source "$CONFIG_FILE"
+set +a
+
+SSH_TARGET="${LINUX_LLM_SSH_TARGET:?LINUX_LLM_SSH_TARGET is required}"
+WAKE_COMMAND="${LINUX_LLM_WAKE_COMMAND:?LINUX_LLM_WAKE_COMMAND is required}"
+REMOTE_PORT="${LINUX_LLM_REMOTE_PORT:-11434}"
+HEALTH_PATH="${LINUX_LLM_REMOTE_HEALTH_PATH:-/api/tags}"
+LOCAL_PORT="${LINUX_LLM_LOCAL_PORT:-12800}"
+READY_TIMEOUT="${LINUX_LLM_READY_TIMEOUT_S:-600}"
+START_COMMAND="${LINUX_LLM_REMOTE_START_COMMAND:-}"
+CONTROL_PATH="${LINUX_LLM_CONTROL_PATH:-$HOME/.ssh/nanobot-linux-llm.control}"
+CONTROL_PERSIST="${LINUX_LLM_CONTROL_PERSIST:-yes}"
+LOCAL_HEALTH_URL="http://127.0.0.1:${LOCAL_PORT}${HEALTH_PATH}"
+REQUIRE_LAN="${LINUX_LLM_REQUIRE_LAN:-0}"
+EXPECTED_LAN_HOST="${LINUX_LLM_EXPECTED_LAN_HOST:-}"
+LOCK_DIR="${LINUX_LLM_LOCK_DIR:-$NANOBOT_HOME/runtime/ensure-linux-llm.lock}"
+LOCK_WAIT_TIMEOUT="${LINUX_LLM_LOCK_WAIT_TIMEOUT_S:-$READY_TIMEOUT}"
+WOL_RETRY_SCHEDULE="${LINUX_LLM_WOL_RETRY_SCHEDULE_S:-0,60,120,240,420}"
+WOL_RETRY_TIMES=( ${(s:,:)WOL_RETRY_SCHEDULE} )
+LOCK_HELD=0
+WOL_ATTEMPTS=0
+NEXT_WOL_INDEX=1
+STATUS_FILE="${LINUX_LLM_STATUS_FILE:-$NANOBOT_HOME/runtime/linux-llm-prepare-status.json}"
+
+SSH_OPTIONS=(
+  -o BatchMode=yes -o KbdInteractiveAuthentication=no
+  -o PasswordAuthentication=no -o PubkeyAuthentication=yes
+  -o ConnectTimeout=5 -o ConnectionAttempts=1
+  -o ServerAliveInterval=3 -o ServerAliveCountMax=2
+  -o ProxyCommand=none -o ProxyJump=none
+)
+
+release_prepare_lock() {
+  if [[ "$LOCK_HELD" == "1" ]]; then
+    rm -f "$LOCK_DIR/owner.pid"
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
+}
+
+record_prepare_status() {
+  local exit_code="$1" prepare_state="failed" error_code="runtime_prepare_failed"
+  case "$exit_code" in
+    0) prepare_state="ready"; error_code="" ;;
+    2) error_code="runtime_config_missing" ;;
+    3) error_code="ssh_approval_required" ;;
+    4) prepare_state="deferred"; error_code="linux_ssh_not_ready" ;;
+    6) prepare_state="deferred"; error_code="remote_api_not_ready" ;;
+    7) prepare_state="deferred"; error_code="tunnel_not_ready" ;;
+    8) error_code="target_mismatch" ;;
+    9) prepare_state="deferred"; error_code="prepare_lock_timeout" ;;
+  esac
+  mkdir -p "${STATUS_FILE:h}"
+  local temporary="${STATUS_FILE}.tmp.$$"
+  print -r -- "{\"helper_version\":\"${HELPER_VERSION}\",\"status\":\"${prepare_state}\",\"error_code\":\"${error_code}\",\"exit_code\":${exit_code},\"wol_attempts\":${WOL_ATTEMPTS},\"ready_timeout_seconds\":${READY_TIMEOUT},\"observed_at_epoch\":$(date +%s)}" > "$temporary"
+  chmod 600 "$temporary"
+  mv -f "$temporary" "$STATUS_FILE"
+}
+
+finish_prepare() {
+  local exit_code=$?
+  trap - EXIT
+  set +e
+  record_prepare_status "$exit_code" || true
+  release_prepare_lock
+  exit "$exit_code"
+}
+trap finish_prepare EXIT
+
+acquire_prepare_lock() {
+  mkdir -p "${LOCK_DIR:h}"
+  local waited=0 owner_pid=""
+  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    owner_pid="$(cat "$LOCK_DIR/owner.pid" 2>/dev/null || true)"
+    if [[ -z "$owner_pid" || "$owner_pid" != <-> ]] || ! kill -0 "$owner_pid" 2>/dev/null; then
+      rm -f "$LOCK_DIR/owner.pid"
+      rmdir "$LOCK_DIR" 2>/dev/null || true
+      continue
+    fi
+    if (( waited >= LOCK_WAIT_TIMEOUT )); then
+      print -u2 "Timed out waiting for another Linux LLM prepare operation."
+      return 9
+    fi
+    sleep 1
+    (( waited += 1 ))
+  done
+  print -r -- "$$" > "$LOCK_DIR/owner.pid"
+  LOCK_HELD=1
+}
+
+validate_lan_target() {
+  [[ "$REQUIRE_LAN" == "1" ]] || return 0
+  local resolved_host
+  resolved_host="$(ssh -G "$SSH_TARGET" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }')"
+  if [[ -z "$resolved_host" || -z "$EXPECTED_LAN_HOST" || "$resolved_host" != "$EXPECTED_LAN_HOST" ]]; then
+    print -u2 "Refusing non-LAN Linux LLM target: $SSH_TARGET resolved to ${resolved_host:-unknown}."
+    return 8
+  fi
+}
+
+endpoint_ready() {
+  curl --silent --fail --connect-timeout 2 --max-time 4 "$LOCAL_HEALTH_URL" >/dev/null
+}
+
+ssh_ready() {
+  local output ssh_rc
+  if output=$(ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" 'true' 2>&1); then
+    return 0
+  else
+    ssh_rc=$?
+  fi
+  if [[ "$output" == *"Tailscale SSH requires an additional check"* ]]; then
+    print -u2 "$output"
+    print -u2 "Tailscale SSH approval is required once before unattended LLM wake can work."
+    return 3
+  fi
+  return 1
+}
+
+remote_ready() {
+  ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
+    "curl --silent --show-error --fail --connect-timeout 2 --max-time 4 http://127.0.0.1:${REMOTE_PORT}${HEALTH_PATH} >/dev/null"
+}
+
+send_wake() {
+  (( WOL_ATTEMPTS += 1 ))
+  print "Waking linux-workstation (attempt ${WOL_ATTEMPTS}/${#WOL_RETRY_TIMES[@]}, helper ${HELPER_VERSION})..."
+  "$WAKE_COMMAND"
+}
+
+maybe_resend_wake() {
+  if (( NEXT_WOL_INDEX <= ${#WOL_RETRY_TIMES[@]} )); then
+    local scheduled="${WOL_RETRY_TIMES[$NEXT_WOL_INDEX]}"
+    if [[ "$scheduled" == <-> ]] && (( elapsed >= scheduled )); then
+      send_wake
+      (( NEXT_WOL_INDEX += 1 ))
+    fi
+  fi
+}
+
+acquire_prepare_lock || exit $?
+trap release_prepare_lock INT TERM
+validate_lan_target || exit $?
+if endpoint_ready; then
+  print "Linux LLM tunnel is ready at $LOCAL_HEALTH_URL"
+  exit 0
+fi
+
+if ssh_ready; then
+  ssh_rc=0
+else
+  ssh_rc=$?
+fi
+if [[ $ssh_rc -ne 0 ]]; then
+  [[ $ssh_rc -eq 3 ]] && exit 3
+  send_wake || exit 4
+  NEXT_WOL_INDEX=2
+fi
+
+elapsed=0
+while true; do
+  if ssh_ready; then break; fi
+  ssh_rc=$?
+  [[ $ssh_rc -eq 3 ]] && exit 3
+  if (( elapsed >= READY_TIMEOUT )); then
+    print -u2 "linux-workstation SSH was not ready within ${READY_TIMEOUT}s (WOL attempts=${WOL_ATTEMPTS}, helper=${HELPER_VERSION})."
+    exit 4
+  fi
+  sleep 5
+  (( elapsed += 5 ))
+  maybe_resend_wake || exit 4
+done
+
+if ! remote_ready && [[ -n "$START_COMMAND" ]]; then
+  print "Starting remote LLM service..."
+  ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" "bash -lc ${(q)START_COMMAND}" || exit 6
+fi
+
+elapsed=0
+until remote_ready; do
+  if (( elapsed >= READY_TIMEOUT )); then
+    print -u2 "Remote LLM API was not healthy within ${READY_TIMEOUT}s."
+    exit 6
+  fi
+  (( elapsed == 0 )) && print "Waiting for the remote LLM API to become ready..."
+  sleep 5
+  (( elapsed += 5 ))
+done
+
+if ! ssh -S "$CONTROL_PATH" -O check "$SSH_TARGET" >/dev/null 2>&1; then
+  rm -f "$CONTROL_PATH"
+  print "Opening protected local SSH tunnel on 127.0.0.1:${LOCAL_PORT}..."
+  ssh "${SSH_OPTIONS[@]}" -M -f -N \
+    -o ControlMaster=yes -o "ControlPersist=${CONTROL_PERSIST}" -o ExitOnForwardFailure=yes \
+    -S "$CONTROL_PATH" -L "127.0.0.1:${LOCAL_PORT}:127.0.0.1:${REMOTE_PORT}" "$SSH_TARGET" \
+    || exit 7
+fi
+
+endpoint_ready || {
+  print -u2 "SSH tunnel opened, but the local health check still failed: $LOCAL_HEALTH_URL"
+  exit 7
+}
+print "Linux LLM is ready at $LOCAL_HEALTH_URL (helper ${HELPER_VERSION})"

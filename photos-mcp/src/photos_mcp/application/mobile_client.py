@@ -20,6 +20,7 @@ TERMINAL_EVENT_STATUSES = {
     "failed",
     "cancelled",
     "interrupted",
+    "deferred",
 }
 _DERIVED_SOURCE_ERROR_CODES = {"google_mcp_gate_failed"}
 
@@ -74,7 +75,7 @@ def mobile_run_projection(repository: RunRepository, run_id: str) -> dict[str, A
         }
         for item in children
         if item["error_code"]
-        or item["status"] in {"failed", "cancelled", "interrupted"}
+        or item["status"] in {"failed", "cancelled", "interrupted", "deferred"}
     ][:8]
     primary_error_code = _text(
         status.get("gate_error_code") or status.get("error_code"), 48

@@ -49,6 +49,7 @@ from photos_mcp.interfaces.appkit.people.drag_views import IdentityDragHandle, I
 from photos_mcp.interfaces.appkit.classification import controller as classification_controller_module
 from photos_mcp.application.person_identity_management import PeopleCatalog, PersonFace, PersonIdentity
 from photos_mcp.application.person_identity_repository import PersonIdentityRepository
+from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 from photos_mcp.application.people_workspace import provider_alias_matches_identity_name
 from photos_mcp.ui_theme import scaled_font_size
 
@@ -113,10 +114,13 @@ def _walk(view):
         yield from _walk(child)
 
 
-def _menu_controller(snapshot):
+def _menu_controller(snapshot, repository=None):
+    state_store = SimpleNamespace(snapshot=lambda: snapshot)
+    if repository is not None:
+        state_store.run_repository = repository
     return PhotosMcpMenuController.alloc().initWithConfig_stateStore_daemonController_(
         SimpleNamespace(),
-        SimpleNamespace(snapshot=lambda: snapshot),
+        state_store,
         SimpleNamespace(),
     )
 
@@ -235,6 +239,40 @@ def test_main_window_has_native_sidebar_and_home_actions() -> None:
     ]
     assert float(status_title.frame().origin.x) == 44.0
     assert len(status_summaries) == 1
+
+
+def test_main_window_storage_tab_shows_physical_and_story_reference_sizes(tmp_path) -> None:
+    NSApplication.sharedApplication()
+    repository = RunRepository(tmp_path / "jobs.db")
+    repository.upsert_local_recommendation_asset(
+        {
+            "local_asset_id": "asset-storage",
+            "content_hash": "a" * 64,
+            "relative_path": "2026-09-13/asset.jpg",
+            "mime_type": "image/jpeg",
+            "byte_size": 2048,
+            "capture_date_local": "2026-09-13",
+        }
+    )
+    repository.upsert_story_manifest(
+        {
+            "story_id": "story-storage",
+            "title": "저장 공간 Story",
+            "photos": [{"asset_id": "asset-storage"}],
+        }
+    )
+    controller = PhotosMcpMainWindowController.alloc().initWithMenuController_(
+        _menu_controller(_snapshot(), repository)
+    )
+
+    controller.showTab_("storage")
+
+    labels = {
+        str(view.stringValue() or "")
+        for view in _walk(controller.window().contentView())
+        if isinstance(view, NSTextField)
+    }
+    assert {"저장 공간", "추천 보관", "Story별 용량", "저장 공간 Story", "2.0KB"}.issubset(labels)
 
 
 def test_main_window_people_tab_has_a_local_only_empty_state() -> None:

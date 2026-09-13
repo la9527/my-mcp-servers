@@ -504,6 +504,10 @@ def reconcile_daily_curation(
         next_status = analysis_status
         terminal = True
         asset_status = "failed"
+    elif analysis_status == "deferred":
+        next_status = "deferred"
+        terminal = True
+        asset_status = "carry_over"
     else:
         return automation_run
     run_id = str(automation_run.get("automation_run_id") or "")
@@ -513,6 +517,24 @@ def reconcile_daily_curation(
         "terminal": terminal,
         "analysis_status": analysis_status,
     }
+    if analysis_status == "deferred":
+        summary = analysis_snapshot.get("result_summary")
+        summary = summary if isinstance(summary, dict) else {}
+        updated.update(
+            {
+                "error_code": str(
+                    analysis_snapshot.get("error_code")
+                    or summary.get("error_code")
+                    or "runtime_prepare_failed"
+                ),
+                "carry_over_pending": True,
+                "unfinished_count": max(
+                    int(automation_run.get("unfinished_count") or 0),
+                    int(automation_run.get("submitted_count") or 0),
+                ),
+                "next_retry_policy": "next_run",
+            }
+        )
     repository.upsert_automation_run(updated)
     if run_id:
         repository.update_processed_photo_assets_status(run_id, asset_status)

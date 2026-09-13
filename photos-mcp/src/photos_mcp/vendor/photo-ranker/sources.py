@@ -55,6 +55,14 @@ _TERMINAL_PYTHON = default_terminal_python("PHOTO_RANKER_TERMINAL_PYTHON_BIN", _
 DEFAULT_ANALYSIS_MAX_SIZE = 1024
 
 
+def _base64_payload_size(value: str) -> int:
+    """Return decoded bytes without allowing test or legacy placeholders to fail a load."""
+    try:
+        return max(0, len(base64.b64decode(value, validate=True)))
+    except (ValueError, TypeError):
+        return 0
+
+
 def _apple_media_type(photo) -> str:
     if bool(getattr(photo, "ismovie", False)):
         return "video"
@@ -230,6 +238,11 @@ def _load_local(
             else:
                 b64 = _image_to_b64(Image.open(path), max_size)
             provider_metadata = _load_photos_mcp_sidecar(path)
+            source_size_kind = (
+                "picker_download"
+                if provider_metadata.get("_photos_mcp_provider") == "google_photos_picker"
+                else "original"
+            )
             asset = {
                     "photo_id": str(path),
                     "image_b64": b64,
@@ -239,6 +252,9 @@ def _load_local(
                         or datetime.fromtimestamp(path.stat().st_mtime).isoformat()
                     ),
                     "provider_metadata": provider_metadata,
+                    "source_byte_size": max(0, int(path.stat().st_size)),
+                    "source_size_kind": source_size_kind,
+                    "analysis_byte_size": _base64_payload_size(b64),
                 }
             if exclude_screenshots and is_screen_capture_asset(asset):
                 logger.info("Skipped a local screen capture before analysis")
@@ -269,6 +285,8 @@ def _load_photos_mcp_sidecar(path: Path) -> dict[str, str]:
     file_payload = payload.get("file") if isinstance(payload, dict) else None
     if isinstance(file_payload, dict) and file_payload.get("filename"):
         result["original_filename"] = str(file_payload["filename"])
+    if isinstance(payload, dict) and payload.get("provider"):
+        result["_photos_mcp_provider"] = str(payload["provider"])
     return result
 
 
@@ -324,7 +342,8 @@ def _load_gcs(
         ):
             continue
         try:
-            image_b64 = _image_to_b64(Image.open(io.BytesIO(blob.download_as_bytes())), max_size)
+            source_bytes = blob.download_as_bytes()
+            image_b64 = _image_to_b64(Image.open(io.BytesIO(source_bytes)), max_size)
         except Exception:
             logger.warning("Failed to load a GCS image object")
             continue
@@ -334,6 +353,9 @@ def _load_gcs(
                 "image_b64": image_b64,
                 "source_photo_path": f"gs://{bucket_name}/{blob.name}",
                 "capture_date": created_at.isoformat() if created_at is not None else "",
+                "source_byte_size": max(0, int(getattr(blob, "size", 0) or len(source_bytes))),
+                "source_size_kind": "remote_declared",
+                "analysis_byte_size": _base64_payload_size(image_b64),
             }
         )
         if len(results) >= limit:
@@ -476,6 +498,18 @@ def _load_apple(
             img = Image.open(analysis_path)
             b64 = _image_to_b64(img, max_size)
             original_path = preferred_original_path(p, analysis_path) or ""
+            declared_size = max(0, int(getattr(p, "original_filesize", 0) or 0))
+            local_original_size = 0
+            if original_path:
+                try:
+                    local_original_size = max(0, int(Path(original_path).stat().st_size))
+                except OSError:
+                    local_original_size = 0
+            analysis_size = 0
+            try:
+                analysis_size = max(0, int(Path(analysis_path).stat().st_size))
+            except OSError:
+                analysis_size = _base64_payload_size(b64)
             results.append(
                 {
                     "photo_id": p.uuid,
@@ -483,6 +517,15 @@ def _load_apple(
                     "source_photo_path": original_path,
                     "analysis_photo_path": analysis_path,
                     "original_available": bool(original_path),
+                    "source_byte_size": local_original_size or declared_size or analysis_size,
+                    "source_size_kind": (
+                        "original"
+                        if local_original_size
+                        else "remote_declared"
+                        if declared_size
+                        else "analysis_derivative"
+                    ),
+                    "analysis_byte_size": _base64_payload_size(b64),
                     "capture_date": p.date.isoformat() if p.date else "",
                     "gps": (
                         {"lat": p.latitude, "lon": p.longitude}

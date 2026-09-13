@@ -822,4 +822,10 @@ class ApplePhotosSource:
                 if p.latitude is not None
                 else None
             ),
+            byte_size=max(0, int(getattr(p, "original_filesize", 0) or 0)),
+            byte_size_source=(
+                "remote_declared"
+                if int(getattr(p, "original_filesize", 0) or 0) > 0
+                else "unknown"
+            ),
         )

@@ -446,6 +446,10 @@ def _job_view_model(job: dict[str, Any], *, active: bool, now: datetime | None =
             interruption_reason = reason_label or "작업이 완료되기 전에 중단되었습니다"
             subtitle = f"{timestamp} · {interruption_reason} · 다시 실행하세요"
             tone = "warning"
+        elif status == "deferred":
+            title = f"{title} 다음 실행 대기"
+            subtitle = f"{timestamp} · 모델 서버를 준비하지 못해 사진을 안전하게 이월했습니다"
+            tone = "warning"
         else:
             title = f"{title} 실패"
             subtitle = f"{timestamp} · {reason_label or '실패 원인을 확인하세요'}"

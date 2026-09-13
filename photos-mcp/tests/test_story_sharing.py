@@ -7,6 +7,7 @@ from pathlib import Path
 from PIL import Image
 from starlette.testclient import TestClient
 
+from photos_mcp.application.share_image_service import ShareImageService
 from photos_mcp.application.story_sharing import (
     DEFAULT_SHARE_DAYS,
     StoryShareService,
@@ -106,6 +107,34 @@ def _repository(tmp_path: Path) -> tuple[RunRepository, Path]:
         }
     )
     return repository, root
+
+
+def test_derivative_reuses_legacy_preview_without_reencoding(tmp_path: Path) -> None:
+    repository, source_root = _repository(tmp_path)
+    cache_root = tmp_path / "shared-story-assets"
+    share_id = "owner-gallery-legacy"
+    public_asset_id = "public-asset-legacy"
+    legacy = cache_root / share_id / public_asset_id / "preview-share-jpeg-v1.jpg"
+    legacy.parent.mkdir(parents=True)
+    Image.new("RGB", (640, 360), "#4c6680").save(legacy, format="JPEG")
+
+    service = ShareImageService(
+        repository,
+        source_root=source_root,
+        cache_root=cache_root,
+    )
+    generated = service.derivative(
+        share_id=share_id,
+        public_asset_id=public_asset_id,
+        local_asset_id="local-asset-000000000001",
+        kind="download",
+    )
+
+    assert generated != legacy
+    assert generated.samefile(legacy)
+    totals = repository.derivative_storage_totals()
+    assert totals["asset_count"] == 1
+    assert totals["reference_count"] == 1
 
 
 def test_share_defaults_to_thirty_days_and_never_persists_plain_passcode(tmp_path: Path) -> None:

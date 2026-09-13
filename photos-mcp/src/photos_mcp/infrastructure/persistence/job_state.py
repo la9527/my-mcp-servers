@@ -199,6 +199,10 @@ class PhotoRankerJobStore:
                     "selected": bool(asset.get("selected", False)),
                     "review_tags": list(asset.get("tags") or []),
                     "note": str(asset.get("note") or ""),
+                    "source_byte_size": max(0, int(asset.get("source_byte_size") or 0)),
+                    "source_size_kind": str(asset.get("source_size_kind") or "unknown"),
+                    "analysis_byte_size": max(0, int(asset.get("analysis_byte_size") or 0)),
+                    "preview_byte_size": max(0, int(asset.get("preview_byte_size") or 0)),
                 }
             )
         return {

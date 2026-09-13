@@ -73,6 +73,8 @@ class GCSSource:
                     path=f"gs://{self._bucket_name}/{blob.name}",
                     width=0,
                     height=0,
+                    byte_size=max(0, int(getattr(blob, "size", 0) or 0)),
+                    byte_size_source="remote_declared",
                 )
             )
 
@@ -96,6 +98,8 @@ class GCSSource:
             date_taken=(
                 blob.time_created.isoformat() if blob.time_created else ""
             ),
+            byte_size=max(0, int(getattr(blob, "size", 0) or 0)),
+            byte_size_source="remote_declared",
         )
 
     def get_thumbnail(

@@ -390,6 +390,33 @@ class RunRepository(RecommendationVersionsMixin):
                 );
                 CREATE INDEX IF NOT EXISTS idx_shared_story_packages_status
                     ON shared_story_packages(status, expires_at);
+
+                CREATE TABLE IF NOT EXISTS derivative_assets (
+                    derivative_id TEXT PRIMARY KEY,
+                    source_content_hash TEXT NOT NULL,
+                    derivative_kind TEXT NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    byte_size INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    verified_at TEXT NOT NULL,
+                    last_accessed_at TEXT NOT NULL,
+                    UNIQUE(source_content_hash, derivative_kind, policy_version)
+                );
+                CREATE INDEX IF NOT EXISTS idx_derivative_assets_source
+                    ON derivative_assets(source_content_hash, derivative_kind);
+
+                CREATE TABLE IF NOT EXISTS derivative_references (
+                    reference_scope TEXT NOT NULL,
+                    reference_id TEXT NOT NULL,
+                    local_asset_id TEXT NOT NULL,
+                    derivative_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (reference_scope, reference_id, local_asset_id, derivative_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_derivative_references_asset
+                    ON derivative_references(derivative_id);
                 """
             )
             self._ensure_column_locked(
@@ -1285,6 +1312,184 @@ class RunRepository(RecommendationVersionsMixin):
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [_decode(row["payload_json"], {}) for row in rows]
+
+    def recommendation_storage_totals(self) -> dict[str, int]:
+        """Return durable, deduplicated recommendation counts without scanning files."""
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT COUNT(*) AS asset_count,
+                          COALESCE(SUM(byte_size), 0) AS byte_size
+                   FROM local_recommendation_assets"""
+            ).fetchone()
+        return {
+            "asset_count": int(row["asset_count"] if row is not None else 0),
+            "byte_size": int(row["byte_size"] if row is not None else 0),
+        }
+
+    def story_storage_totals(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Project Story logical reference bytes using unique recommendation assets."""
+        stories = self.list_story_manifests(limit=limit)
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT local_asset_id, byte_size
+                   FROM local_recommendation_assets"""
+            ).fetchall()
+            derivative_rows = self._conn.execute(
+                """SELECT r.local_asset_id, a.derivative_id, a.byte_size
+                   FROM derivative_references r
+                   JOIN derivative_assets a ON a.derivative_id = r.derivative_id"""
+            ).fetchall()
+        sizes = {str(row["local_asset_id"]): max(0, int(row["byte_size"] or 0)) for row in rows}
+        derivative_by_asset: dict[str, dict[str, int]] = {}
+        for row in derivative_rows:
+            derivative_by_asset.setdefault(str(row["local_asset_id"]), {})[
+                str(row["derivative_id"])
+            ] = max(0, int(row["byte_size"] or 0))
+        result: list[dict[str, Any]] = []
+        for story in stories:
+            asset_ids = {
+                str(item.get("asset_id") or item.get("local_asset_id") or "")
+                for item in list(story.get("photos") or [])
+                if isinstance(item, dict)
+            }
+            asset_ids.discard("")
+            known = [asset_id for asset_id in asset_ids if asset_id in sizes]
+            story_derivatives: dict[str, int] = {}
+            for asset_id in asset_ids:
+                story_derivatives.update(derivative_by_asset.get(asset_id, {}))
+            result.append(
+                {
+                    "story_id": str(story.get("story_id") or ""),
+                    "title": str(story.get("title") or "Story"),
+                    "status": str(story.get("status") or "ready"),
+                    "photo_count": len(asset_ids),
+                    "known_photo_count": len(known),
+                    "referenced_byte_size": sum(sizes[asset_id] for asset_id in known),
+                    "cache_asset_count": len(story_derivatives),
+                    "cache_byte_size": sum(story_derivatives.values()),
+                }
+            )
+        return result
+
+    def upsert_derivative_asset(self, payload: dict[str, Any]) -> dict[str, Any]:
+        derivative_id = str(payload.get("derivative_id") or "")
+        source_hash = str(payload.get("source_content_hash") or "")
+        kind = str(payload.get("derivative_kind") or "")
+        policy = str(payload.get("policy_version") or "")
+        relative_path = str(payload.get("relative_path") or "")
+        if not derivative_id or not source_hash or not kind or not policy or not relative_path:
+            raise ValueError("Derivative asset requires id, source, kind, policy, and path")
+        now = _utcnow_iso()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO derivative_assets
+                   (derivative_id, source_content_hash, derivative_kind,
+                    policy_version, relative_path, byte_size, created_at,
+                    verified_at, last_accessed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(source_content_hash, derivative_kind, policy_version)
+                   DO UPDATE SET relative_path=excluded.relative_path,
+                                 byte_size=excluded.byte_size,
+                                 verified_at=excluded.verified_at,
+                                 last_accessed_at=excluded.last_accessed_at""",
+                (
+                    derivative_id,
+                    source_hash,
+                    kind,
+                    policy,
+                    relative_path,
+                    max(0, int(payload.get("byte_size") or 0)),
+                    str(payload.get("created_at") or now),
+                    str(payload.get("verified_at") or now),
+                    now,
+                ),
+            )
+            row = self._conn.execute(
+                """SELECT * FROM derivative_assets
+                   WHERE source_content_hash = ? AND derivative_kind = ? AND policy_version = ?""",
+                (source_hash, kind, policy),
+            ).fetchone()
+            self._conn.commit()
+        return dict(row) if row is not None else dict(payload)
+
+    def add_derivative_reference(
+        self,
+        *,
+        reference_scope: str,
+        reference_id: str,
+        local_asset_id: str,
+        derivative_id: str,
+    ) -> None:
+        if not all((reference_scope, reference_id, local_asset_id, derivative_id)):
+            raise ValueError("Derivative reference fields are required")
+        now = _utcnow_iso()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO derivative_references
+                   (reference_scope, reference_id, local_asset_id, derivative_id,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(reference_scope, reference_id, local_asset_id, derivative_id)
+                   DO UPDATE SET updated_at=excluded.updated_at""",
+                (reference_scope, reference_id, local_asset_id, derivative_id, now, now),
+            )
+            self._conn.commit()
+
+    def remove_derivative_references(
+        self,
+        *,
+        reference_scope: str,
+        reference_id: str,
+    ) -> list[dict[str, Any]]:
+        """Remove one consumer and return only derivative rows now unreferenced."""
+        with self._lock:
+            derivative_ids = [
+                str(row["derivative_id"])
+                for row in self._conn.execute(
+                    """SELECT DISTINCT derivative_id FROM derivative_references
+                       WHERE reference_scope = ? AND reference_id = ?""",
+                    (reference_scope, reference_id),
+                ).fetchall()
+            ]
+            self._conn.execute(
+                """DELETE FROM derivative_references
+                   WHERE reference_scope = ? AND reference_id = ?""",
+                (reference_scope, reference_id),
+            )
+            result: list[dict[str, Any]] = []
+            for derivative_id in derivative_ids:
+                reference = self._conn.execute(
+                    "SELECT 1 FROM derivative_references WHERE derivative_id = ? LIMIT 1",
+                    (derivative_id,),
+                ).fetchone()
+                if reference is not None:
+                    continue
+                row = self._conn.execute(
+                    "SELECT * FROM derivative_assets WHERE derivative_id = ?",
+                    (derivative_id,),
+                ).fetchone()
+                if row is not None:
+                    result.append(dict(row))
+                self._conn.execute(
+                    "DELETE FROM derivative_assets WHERE derivative_id = ?",
+                    (derivative_id,),
+                )
+            self._conn.commit()
+        return result
+
+    def derivative_storage_totals(self) -> dict[str, int]:
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT COUNT(*) AS asset_count,
+                          COALESCE(SUM(byte_size), 0) AS byte_size,
+                          (SELECT COUNT(*) FROM derivative_references) AS reference_count
+                   FROM derivative_assets"""
+            ).fetchone()
+        return {
+            "asset_count": int(row["asset_count"] if row is not None else 0),
+            "byte_size": int(row["byte_size"] if row is not None else 0),
+            "reference_count": int(row["reference_count"] if row is not None else 0),
+        }
 
     def get_photo_analysis_location_private(
         self,

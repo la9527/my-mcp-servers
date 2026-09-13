@@ -18,6 +18,8 @@ class GoogleImportLease:
     state: str = "materialized"
     metadata_json: str = "{}"
     sidecar_path: str = ""
+    byte_size: int = 0
+    sidecar_byte_size: int = 0
 
 
 class GoogleImportLeaseRepository:
@@ -46,6 +48,8 @@ class GoogleImportLeaseRepository:
         )
         self._ensure_column("metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column("sidecar_path", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("byte_size", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("sidecar_byte_size", "INTEGER NOT NULL DEFAULT 0")
         self._connection.commit()
         if self.path is not None:
             self.path.chmod(0o600)
@@ -56,15 +60,17 @@ class GoogleImportLeaseRepository:
                 """
                 INSERT INTO google_import_leases (
                     session_id, asset_key, local_path, mime_type, job_id, state,
-                    metadata_json, sidecar_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    metadata_json, sidecar_path, byte_size, sidecar_byte_size
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id, asset_key) DO UPDATE SET
                     local_path=excluded.local_path,
                     mime_type=excluded.mime_type,
                     job_id=excluded.job_id,
                     state=excluded.state,
                     metadata_json=excluded.metadata_json,
-                    sidecar_path=excluded.sidecar_path
+                    sidecar_path=excluded.sidecar_path,
+                    byte_size=excluded.byte_size,
+                    sidecar_byte_size=excluded.sidecar_byte_size
                 """,
                 (
                     lease.session_id,
@@ -75,6 +81,8 @@ class GoogleImportLeaseRepository:
                     lease.state,
                     lease.metadata_json,
                     lease.sidecar_path,
+                    max(0, int(lease.byte_size or 0)),
+                    max(0, int(lease.sidecar_byte_size or 0)),
                 ),
             )
             self._connection.commit()
@@ -198,6 +206,8 @@ class GoogleImportLeaseRepository:
                 state=str(row["state"]),
                 metadata_json=str(row["metadata_json"] or "{}"),
                 sidecar_path=str(row["sidecar_path"] or ""),
+                byte_size=max(0, int(row["byte_size"] or 0)),
+                sidecar_byte_size=max(0, int(row["sidecar_byte_size"] or 0)),
             )
             for row in rows
         )

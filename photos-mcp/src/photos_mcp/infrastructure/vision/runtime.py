@@ -215,8 +215,35 @@ def _openai_compat_active_model(api_base: str, timeout_seconds: float) -> str:
     return re.sub(r"-00001-of-\d+(?=\.gguf$)", "", name, flags=re.IGNORECASE)
 
 
+def _last_prepare_status() -> dict[str, object]:
+    path = Path(
+        os.environ.get(
+            "LINUX_LLM_STATUS_FILE",
+            str(Path.home() / ".nanobot/runtime/linux-llm-prepare-status.json"),
+        )
+    ).expanduser()
+    try:
+        if path.stat().st_size > 64 * 1024:
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "helper_version": str(payload.get("helper_version") or "")[:64],
+        "status": str(payload.get("status") or "")[:32],
+        "error_code": str(payload.get("error_code") or "")[:64],
+        "exit_code": int(payload.get("exit_code") or 0),
+        "wol_attempts": max(0, int(payload.get("wol_attempts") or 0)),
+        "ready_timeout_seconds": max(0, int(payload.get("ready_timeout_seconds") or 0)),
+        "observed_at_epoch": max(0, int(payload.get("observed_at_epoch") or 0)),
+    }
+
+
 def vision_runtime_summary(*, check_ready: bool = False) -> dict[str, object]:
     settings = resolve_vision_runtime_settings()
+    prepare_status = _last_prepare_status()
     ready = False
     active_model = ""
     if check_ready and settings.backend == "openai_compat" and settings.api_base:
@@ -247,4 +274,9 @@ def vision_runtime_summary(*, check_ready: bool = False) -> dict[str, object]:
         "on_demand": settings.is_on_demand,
         "remote_allowed": settings.policy == REMOTE_ALLOWED,
         "local_only_override": "PHOTOS_MCP_VLM_POLICY=local_only",
+        "prepare_timeout_seconds": settings.prepare_timeout_seconds,
+        "prepare_retry_delays_seconds": os.environ.get(
+            "PHOTOS_MCP_LINUX_VLM_RETRY_DELAYS_SECONDS", "60,180,600"
+        ),
+        "last_prepare": prepare_status,
     }

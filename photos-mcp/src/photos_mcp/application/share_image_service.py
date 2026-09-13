@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 import re
 from typing import Any, Literal
@@ -55,32 +56,82 @@ class ShareImageService:
             raise ShareImageError("Invalid public asset identifier")
         if kind not in {"thumb", "preview", "download"}:
             raise ShareImageError("Unsupported derivative kind")
-        destination = self.cache_root / share_id / public_asset_id / f"{kind}-{_POLICY_VERSION}.jpg"
-        if destination.is_file() and destination.stat().st_size > 0:
-            return destination
         asset = self.repository.get_local_recommendation_asset_by_id(local_asset_id)
         if asset is None:
             raise ShareImageError("Recommendation asset is unavailable")
         source = self._resolve_source(str(asset.get("relative_path") or ""))
         fingerprint = str(asset.get("content_hash") or "")
-        if not fingerprint:
+        if not re.fullmatch(r"[a-fA-F0-9]{64}", fingerprint):
             fingerprint = self._sha256(source)
-        self._render(source, destination, kind=kind)
+        stored_kind = "preview" if kind == "download" else kind
+        derivative_id = hashlib.sha256(
+            f"{fingerprint}\0{stored_kind}\0{_POLICY_VERSION}".encode("utf-8")
+        ).hexdigest()[:32]
+        relative_path = Path("derivatives") / fingerprint / _POLICY_VERSION / f"{stored_kind}.jpg"
+        destination = self.cache_root / relative_path
+        if not destination.is_file() or destination.stat().st_size <= 0:
+            legacy = self.cache_root / share_id / public_asset_id / f"{stored_kind}-{_POLICY_VERSION}.jpg"
+            reused = False
+            if legacy.is_file() and legacy.stat().st_size > 0:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.parent.chmod(0o700)
+                try:
+                    os.link(legacy, destination)
+                    destination.chmod(0o600)
+                    reused = True
+                except OSError:
+                    destination.unlink(missing_ok=True)
+            if not reused:
+                self._render(source, destination, kind=stored_kind)
+        stored = self.repository.upsert_derivative_asset(
+            {
+                "derivative_id": derivative_id,
+                "source_content_hash": fingerprint,
+                "derivative_kind": stored_kind,
+                "policy_version": _POLICY_VERSION,
+                "relative_path": relative_path.as_posix(),
+                "byte_size": destination.stat().st_size,
+            }
+        )
+        self.repository.add_derivative_reference(
+            reference_scope="story_surface",
+            reference_id=share_id,
+            local_asset_id=local_asset_id,
+            derivative_id=str(stored.get("derivative_id") or derivative_id),
+        )
         return destination
 
     def purge_share(self, share_id: str) -> int:
         if not _SAFE_ID.fullmatch(share_id):
             return 0
+        removed = 0
+        for asset in self.repository.remove_derivative_references(
+            reference_scope="story_surface",
+            reference_id=share_id,
+        ):
+            relative_path = Path(str(asset.get("relative_path") or ""))
+            candidate = (self.cache_root / relative_path).resolve()
+            root = self.cache_root.resolve()
+            if candidate != root and root in candidate.parents and candidate.is_file():
+                candidate.unlink(missing_ok=True)
+                removed += 1
+                for parent in (candidate.parent, candidate.parent.parent):
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+
+        # Non-destructively clean legacy per-share derivatives created before the ledger.
         directory = self.cache_root / share_id
-        if not directory.exists():
-            return 0
-        files = [path for path in directory.rglob("*") if path.is_file()]
-        for path in files:
-            path.unlink(missing_ok=True)
-        for path in sorted((p for p in directory.rglob("*") if p.is_dir()), reverse=True):
-            path.rmdir()
-        directory.rmdir()
-        return len(files)
+        if directory.exists():
+            files = [path for path in directory.rglob("*") if path.is_file()]
+            for path in files:
+                path.unlink(missing_ok=True)
+            removed += len(files)
+            for path in sorted((p for p in directory.rglob("*") if p.is_dir()), reverse=True):
+                path.rmdir()
+            directory.rmdir()
+        return removed
 
     def _resolve_source(self, relative_path: str) -> Path:
         if not relative_path or Path(relative_path).is_absolute():

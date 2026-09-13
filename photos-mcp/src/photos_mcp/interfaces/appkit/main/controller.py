@@ -42,6 +42,7 @@ from photos_mcp.interfaces.appkit.menu.presentation import (
 )
 from photos_mcp.interfaces.appkit.people.controller import PhotosMcpPeopleManagerController
 from photos_mcp.application.recommendation_storage import DEFAULT_OWNER_STORY_URL
+from photos_mcp.application.storage_insights import StorageInsightsService, format_bytes
 from photos_mcp.interfaces.appkit.shared.theme import (
     ICON_SIZE,
     accent_color,
@@ -69,6 +70,7 @@ _SYSTEM_SYMBOLS = {
     "environment": "checkmark.shield",
     "people": "person.2",
     "story": "book.closed",
+    "storage": "internaldrive",
     "device-mac-mini": "macmini",
     "device-workstation": "desktopcomputer",
     "model-chip": "cpu",
@@ -125,6 +127,9 @@ class PhotosMcpMainWindowController(NSWindowController):
         self._direct_view = None
         self._people_manager = None
         self._story_web_view = None
+        self._storage_service: StorageInsightsService | None = None
+        self._storage_snapshot: dict[str, Any] | None = None
+        self._storage_verifying = False
         self._icons: dict[tuple[str, float, bool], Any] = {}
         self._runtime_snapshot = vision_runtime_summary(check_ready=False)
         self._is_runtime_checking = False
@@ -147,7 +152,7 @@ class PhotosMcpMainWindowController(NSWindowController):
     def refreshWithSnapshot_(self, snapshot: Any) -> None:
         self._snapshot = snapshot
         if (
-            self._selected_tab not in {"classification", "story"}
+            self._selected_tab not in {"classification", "story", "storage"}
             and self._view_signature(snapshot) != self._render_signature
         ):
             self.rebuild()
@@ -158,7 +163,7 @@ class PhotosMcpMainWindowController(NSWindowController):
 
     @objc.python_method
     def showTab_(self, tab: str) -> None:
-        if tab not in {"home", "classification", "story", "jobs", "environment", "people"}:
+        if tab not in {"home", "classification", "story", "jobs", "environment", "people", "storage"}:
             tab = "home"
         if self._selected_tab == "jobs" and tab != "jobs":
             self._remember_job_scroll_position()
@@ -204,6 +209,7 @@ class PhotosMcpMainWindowController(NSWindowController):
                 "classification": self._build_classification,
                 "story": self._build_story,
                 "jobs": self._build_jobs,
+                "storage": self._build_storage,
                 "environment": self._build_environment,
                 "people": self._build_people,
             }[self._selected_tab](content, width - sidebar_width, height)
@@ -246,6 +252,7 @@ class PhotosMcpMainWindowController(NSWindowController):
             ("classification", "사진 분류"),
             ("story", "Story"),
             ("jobs", "작업 기록"),
+            ("storage", "저장 공간"),
             ("environment", "환경 및 권한"),
             ("people", "인물 관리"),
         )
@@ -366,6 +373,164 @@ class PhotosMcpMainWindowController(NSWindowController):
 
     def openEnvironment_(self, _sender) -> None:
         self.showTab_("environment")
+
+    @objc.python_method
+    def _build_storage(self, parent: Any, width: float, height: float) -> None:
+        if self._storage_service is None:
+            repository = getattr(self._menu_controller._state_store, "run_repository", None)
+            if repository is None:
+                self._label(
+                    parent,
+                    _CONTENT_MARGIN,
+                    height - 86.0,
+                    width - _CONTENT_MARGIN * 2.0,
+                    42.0,
+                    "저장 공간 저장소를 불러올 수 없습니다.",
+                    bold=True,
+                    size=18.0,
+                )
+                return
+            self._storage_service = StorageInsightsService(repository)
+        if self._storage_snapshot is None:
+            self._storage_snapshot = self._storage_service.snapshot(verify_files=False)
+        snapshot = self._storage_snapshot
+        margin = _CONTENT_MARGIN
+        usable = width - margin * 2.0
+        top = height - 42.0
+        self._label(parent, margin, top - 34.0, usable - 310.0, 38.0, "저장 공간", bold=True, size=28.0)
+        detail = (
+            "실제 파일까지 확인한 용량입니다."
+            if snapshot.get("verified")
+            else "빠른 집계입니다. ‘실제 파일 확인’으로 디스크와 비교할 수 있습니다."
+        )
+        self._label(parent, margin, top - 64.0, usable - 310.0, 22.0, detail, secondary=True, size=11.5)
+        verify = self._button(
+            parent,
+            margin + usable - 292.0,
+            top - 54.0,
+            142.0,
+            36.0,
+            "확인 중…" if self._storage_verifying else "실제 파일 확인",
+            self,
+            "verifyStorage:",
+            symbol="refresh",
+        )
+        verify.setEnabled_(not self._storage_verifying)
+        self._button(
+            parent,
+            margin + usable - 140.0,
+            top - 54.0,
+            140.0,
+            36.0,
+            "정리 예상 보기",
+            self,
+            "showStorageCleanupPreview:",
+        )
+
+        categories = dict(snapshot.get("categories") or {})
+        recommendations = dict(snapshot.get("recommendations") or {})
+        derivatives = dict(snapshot.get("derivatives") or {})
+        google = dict(snapshot.get("google_imports") or {})
+        filesystem = dict(snapshot.get("filesystem") or {})
+        derivative_count = (
+            int((filesystem.get("derivatives") or {}).get("file_count") or 0)
+            if snapshot.get("verified")
+            else int(derivatives.get("asset_count") or 0)
+        )
+        cards = (
+            ("추천 보관", recommendations.get("verified_byte_size") if snapshot.get("verified") else recommendations.get("byte_size"), f"{int(recommendations.get('asset_count') or 0)}장", "success"),
+            ("Google 임시 원본", categories.get("google_imports"), f"{int(google.get('asset_count') or 0)}개", "neutral"),
+            ("Story 이미지", categories.get("derivatives"), f"{derivative_count}개 · 원장 {int(derivatives.get('asset_count') or 0)}개", "neutral"),
+            ("분석 · 얼굴 데이터", (categories.get("analysis_artifacts") or 0) + (categories.get("people") or 0) if snapshot.get("verified") else None, "실제 파일 확인 필요" if not snapshot.get("verified") else "분석 산출물 + 인물", "warning"),
+        )
+        gap = 12.0
+        card_width = (usable - gap * 3.0) / 4.0
+        card_y = top - 170.0
+        for index, (title, byte_size, subtitle, tone) in enumerate(cards):
+            card = self._card(parent, margin + index * (card_width + gap), card_y, card_width, 82.0, tone)
+            self._label(card, 16.0, 51.0, card_width - 32.0, 18.0, title, bold=True, size=11.2)
+            self._label(card, 16.0, 25.0, card_width - 32.0, 24.0, format_bytes(byte_size), bold=True, size=17.0)
+            self._label(card, 16.0, 8.0, card_width - 32.0, 16.0, subtitle, secondary=True, size=8.8)
+
+        volume = dict(snapshot.get("volume") or {})
+        volume_y = card_y - 96.0
+        volume_card = self._card(parent, margin, volume_y, usable, 72.0, "neutral")
+        self._label(volume_card, 18.0, 40.0, usable - 36.0, 20.0, "보관 볼륨", bold=True, size=13.0)
+        if volume.get("availability") == "available":
+            volume_text = f"사용 {format_bytes(volume.get('used'))} · 남음 {format_bytes(volume.get('free'))} · 전체 {format_bytes(volume.get('total'))}"
+        else:
+            volume_text = "추천 보관 볼륨을 사용할 수 없습니다. 외장 볼륨 연결 상태를 확인하세요."
+        self._label(volume_card, 18.0, 16.0, usable - 36.0, 20.0, volume_text, secondary=True, size=10.5)
+
+        stories = list(snapshot.get("stories") or [])
+        story_top = volume_y - 30.0
+        self._label(parent, margin, story_top, usable, 22.0, "Story별 용량", bold=True, size=15.0)
+        story_height = max(176.0, story_top - 36.0)
+        story_card = self._card(parent, margin, 24.0, usable, story_height, "neutral")
+        if not stories:
+            self._label(story_card, 20.0, story_height / 2.0, usable - 40.0, 20.0, "저장된 Story가 없습니다.", secondary=True, size=11.0)
+        else:
+            visible = stories[: min(7, max(1, int((story_height - 40.0) // 38.0)))]
+            row_y = story_height - 38.0
+            self._label(story_card, 18.0, row_y, usable * 0.54, 18.0, "Story", secondary=True, size=9.2)
+            self._label(story_card, usable * 0.58, row_y, 100.0, 18.0, "사진", secondary=True, size=9.2)
+            self._label(story_card, usable - 230.0, row_y, 100.0, 18.0, "사진 참조", secondary=True, size=9.2)
+            self._label(story_card, usable - 120.0, row_y, 100.0, 18.0, "화면 캐시", secondary=True, size=9.2)
+            row_y -= 32.0
+            for story in visible:
+                self._label(story_card, 18.0, row_y, usable * 0.52, 20.0, str(story.get("title") or "Story"), bold=True, size=10.8)
+                self._label(story_card, usable * 0.58, row_y, 100.0, 20.0, f"{int(story.get('photo_count') or 0)}장", size=10.2)
+                self._label(story_card, usable - 230.0, row_y, 100.0, 20.0, format_bytes(story.get("referenced_byte_size")), bold=True, size=10.8)
+                self._label(story_card, usable - 120.0, row_y, 100.0, 20.0, format_bytes(story.get("cache_byte_size")), size=10.2)
+                row_y -= 36.0
+
+    def verifyStorage_(self, _sender) -> None:
+        if self._storage_verifying or self._storage_service is None:
+            return
+        self._storage_verifying = True
+        self.rebuild()
+
+        def worker() -> None:
+            try:
+                payload = self._storage_service.snapshot(verify_files=True)
+            except Exception as exc:
+                payload = {"error": str(exc)}
+            self.performSelectorOnMainThread_withObject_waitUntilDone_("storageVerified:", payload, False)
+
+        Thread(target=worker, name="photos-mcp-storage-verify", daemon=True).start()
+
+    def storageVerified_(self, payload) -> None:
+        self._storage_verifying = False
+        result = dict(payload or {})
+        if result.get("error"):
+            from AppKit import NSAlert
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_("저장 공간을 확인하지 못했습니다")
+            alert.setInformativeText_(str(result["error"]))
+            alert.addButtonWithTitle_("확인")
+            alert.runModal()
+        else:
+            self._storage_snapshot = result
+        if self._selected_tab == "storage":
+            self.rebuild()
+
+    def showStorageCleanupPreview_(self, _sender) -> None:
+        from AppKit import NSAlert
+        if self._storage_service is None:
+            return
+        snapshot = self._storage_snapshot or self._storage_service.snapshot(verify_files=False)
+        google = dict(snapshot.get("google_imports") or {})
+        recommendations = dict(snapshot.get("recommendations") or {})
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("정리 예상")
+        alert.setInformativeText_(
+            f"해제된 Google 임시 원본 {int(google.get('reclaimable_count') or 0)}개 · {format_bytes(google.get('reclaimable_byte_size'))}\n"
+            f"Google 임시 파일 전체 {format_bytes(google.get('verified_byte_size'))} · 과거 파일은 정리 전 참조 재확인 필요\n"
+            f"추천 파일 누락 {int(recommendations.get('missing_count') or 0)}개 · 용량 불일치 {int(recommendations.get('mismatch_count') or 0)}개\n\n"
+            "이 화면은 삭제 전에 영향을 확인하는 용도이며 파일을 변경하지 않습니다."
+        )
+        alert.addButtonWithTitle_("확인")
+        alert.runModal()
 
     @objc.python_method
     def _build_people(self, parent: Any, width: float, height: float) -> None:
@@ -527,7 +692,7 @@ class PhotosMcpMainWindowController(NSWindowController):
 
         completed = sum(job.status == "completed" for job in jobs)
         interrupted = sum(job.status == "interrupted" for job in jobs)
-        failed = sum(job.status == "failed" for job in jobs)
+        failed = sum(job.status in {"failed", "deferred"} for job in jobs)
         active = sum(job.can_cancel for job in jobs)
         filter_y = top - 126.0
         filters = (
@@ -535,7 +700,7 @@ class PhotosMcpMainWindowController(NSWindowController):
             ("active", f"진행 중 {active}"),
             ("completed", f"완료 {completed}"),
             ("interrupted", f"중단 {interrupted}"),
-            ("failed", f"실패 {failed}"),
+            ("failed", f"확인 필요 {failed}"),
         )
         filter_width = min(108.0, (usable - 24.0) / 5.0)
         for index, (key, title) in enumerate(filters):
@@ -560,7 +725,7 @@ class PhotosMcpMainWindowController(NSWindowController):
             or (self._job_filter == "active" and job.can_cancel)
             or (self._job_filter == "completed" and job.status == "completed")
             or (self._job_filter == "interrupted" and job.status == "interrupted")
-            or (self._job_filter == "failed" and job.status == "failed")
+            or (self._job_filter == "failed" and job.status in {"failed", "deferred"})
         ]
         if filtered_jobs and not any(job.job_id == self._selected_job_id for job in filtered_jobs):
             try:
@@ -869,6 +1034,16 @@ class PhotosMcpMainWindowController(NSWindowController):
         dot = self._label(parent, center_x - 8.0, device_y + (device_size / 2.0) - 8.0, 16.0, 16.0, "●", size=10.0)
         runtime = self._runtime_snapshot
         runtime_tone = "success" if runtime.get("ready") else ("warning" if runtime.get("on_demand") else "neutral")
+        last_prepare = runtime.get("last_prepare") if isinstance(runtime.get("last_prepare"), dict) else {}
+        runtime_detail = "요청 시 PC를 깨워 연결" if runtime.get("on_demand") else "설정된 모델 서버 사용"
+        if runtime.get("on_demand"):
+            runtime_detail += f" · {int(float(runtime.get('prepare_timeout_seconds') or 0))}초"
+        if last_prepare.get("helper_version"):
+            runtime_detail += f" · {last_prepare.get('helper_version')}"
+        if last_prepare.get("wol_attempts"):
+            runtime_detail += f" · 마지막 WOL {int(last_prepare.get('wol_attempts') or 0)}회"
+        if last_prepare.get("error_code"):
+            runtime_detail += f" · {last_prepare.get('error_code')}"
         dot.setTextColor_(_tone_color(runtime_tone))
         self._image_view(
             parent,
@@ -898,7 +1073,7 @@ class PhotosMcpMainWindowController(NSWindowController):
             24.0,
             max(72.0, width - 282.0),
             18.0,
-            "요청 시 PC를 깨워 연결" if runtime.get("on_demand") else "설정된 모델 서버 사용",
+            runtime_detail,
             secondary=True,
             size=9.3,
         )

@@ -150,6 +150,11 @@ class JobDB:
                 selected INTEGER DEFAULT 0,
                 selection_overridden INTEGER NOT NULL DEFAULT 0,
                 note TEXT DEFAULT '',
+                source_byte_size INTEGER NOT NULL DEFAULT 0,
+                source_size_kind TEXT NOT NULL DEFAULT 'unknown',
+                analysis_byte_size INTEGER NOT NULL DEFAULT 0,
+                preview_byte_size INTEGER NOT NULL DEFAULT 0,
+                size_observed_at REAL,
                 PRIMARY KEY (job_id, photo_id),
                 FOREIGN KEY (job_id) REFERENCES jobs(id)
             );
@@ -203,6 +208,11 @@ class JobDB:
             "selection_overridden",
             "INTEGER NOT NULL DEFAULT 1",
         )
+        self._ensure_column("job_assets", "source_byte_size", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("job_assets", "source_size_kind", "TEXT NOT NULL DEFAULT 'unknown'")
+        self._ensure_column("job_assets", "analysis_byte_size", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("job_assets", "preview_byte_size", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("job_assets", "size_observed_at", "REAL")
         self._repair_stale_jobs()
         self._conn.commit()
 
@@ -573,19 +583,40 @@ class JobDB:
         photo_id: str,
         preview_path: str = "",
         source_photo_path: str = "",
+        *,
+        source_byte_size: int = 0,
+        source_size_kind: str = "unknown",
+        analysis_byte_size: int = 0,
+        preview_byte_size: int = 0,
     ) -> None:
         """Persist preview/source paths used by review UIs."""
         self._conn.execute(
             """
             INSERT INTO job_assets
                 (job_id, photo_id, preview_path, source_photo_path,
-                 selection_overridden)
-            VALUES (?, ?, ?, ?, 0)
+                 source_byte_size, source_size_kind, analysis_byte_size,
+                 preview_byte_size, size_observed_at, selection_overridden)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             ON CONFLICT(job_id, photo_id) DO UPDATE SET
                 preview_path = excluded.preview_path,
-                source_photo_path = excluded.source_photo_path
+                source_photo_path = excluded.source_photo_path,
+                source_byte_size = excluded.source_byte_size,
+                source_size_kind = excluded.source_size_kind,
+                analysis_byte_size = excluded.analysis_byte_size,
+                preview_byte_size = excluded.preview_byte_size,
+                size_observed_at = excluded.size_observed_at
             """,
-            (job_id, photo_id, preview_path, source_photo_path),
+            (
+                job_id,
+                photo_id,
+                preview_path,
+                source_photo_path,
+                max(0, int(source_byte_size or 0)),
+                str(source_size_kind or "unknown")[:40],
+                max(0, int(analysis_byte_size or 0)),
+                max(0, int(preview_byte_size or 0)),
+                time.time(),
+            ),
         )
         self._conn.commit()
 
@@ -769,11 +800,58 @@ class JobDB:
 
     @_synchronized
     def list_job_assets(self, job_id: str) -> dict[str, dict]:
-        """Load preview/source/review metadata for a job."""
+        """Load review metadata and safely backfill sizes for legacy local paths."""
         rows = self._conn.execute(
             "SELECT * FROM job_assets WHERE job_id = ?",
             (job_id,),
         ).fetchall()
+        backfilled = False
+        observed_at = time.time()
+        for row in rows:
+            source_size = max(0, int(row["source_byte_size"] or 0))
+            preview_size = max(0, int(row["preview_byte_size"] or 0))
+            source_kind = str(row["source_size_kind"] or "unknown")
+            source_path = Path(str(row["source_photo_path"] or "")).expanduser()
+            preview_path = Path(str(row["preview_path"] or "")).expanduser()
+            try:
+                if source_size <= 0 and source_path.is_file() and not source_path.is_symlink():
+                    source_size = max(0, int(source_path.stat().st_size))
+                    source_kind = (
+                        "picker_download"
+                        if "google-photos-imports" in source_path.parts
+                        else "original"
+                    )
+            except OSError:
+                pass
+            try:
+                if preview_size <= 0 and preview_path.is_file() and not preview_path.is_symlink():
+                    preview_size = max(0, int(preview_path.stat().st_size))
+            except OSError:
+                pass
+            if source_size != int(row["source_byte_size"] or 0) or preview_size != int(
+                row["preview_byte_size"] or 0
+            ):
+                self._conn.execute(
+                    """UPDATE job_assets
+                       SET source_byte_size = ?, source_size_kind = ?,
+                           preview_byte_size = ?, size_observed_at = ?
+                       WHERE job_id = ? AND photo_id = ?""",
+                    (
+                        source_size,
+                        source_kind,
+                        preview_size,
+                        observed_at,
+                        job_id,
+                        str(row["photo_id"]),
+                    ),
+                )
+                backfilled = True
+        if backfilled:
+            self._conn.commit()
+            rows = self._conn.execute(
+                "SELECT * FROM job_assets WHERE job_id = ?",
+                (job_id,),
+            ).fetchall()
         return {
             row["photo_id"]: {
                 "job_id": row["job_id"],
@@ -784,6 +862,11 @@ class JobDB:
                 "selected": bool(row["selected"]),
                 "selection_overridden": bool(row["selection_overridden"]),
                 "note": row["note"] or "",
+                "source_byte_size": max(0, int(row["source_byte_size"] or 0)),
+                "source_size_kind": str(row["source_size_kind"] or "unknown"),
+                "analysis_byte_size": max(0, int(row["analysis_byte_size"] or 0)),
+                "preview_byte_size": max(0, int(row["preview_byte_size"] or 0)),
+                "size_observed_at": row["size_observed_at"],
             }
             for row in rows
         }

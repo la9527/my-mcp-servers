@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import subprocess
 from threading import Thread
@@ -12,6 +13,7 @@ from typing import Any
 
 import objc
 from AppKit import (
+    NSApp,
     NSAlert,
     NSAlertFirstButtonReturn,
     NSAlertSecondButtonReturn,
@@ -19,6 +21,7 @@ from AppKit import (
     NSAlertStyleWarning,
     NSBackingStoreBuffered,
     NSButton,
+    NSButtonTypePushOnPushOff,
     NSCache,
     NSColor,
     NSCollectionView,
@@ -94,6 +97,7 @@ from photos_mcp.application.viewer_asset_service import hydrate_viewer_source_pa
 from photos_mcp.application.google_photos_upload_service import (
     GooglePhotosResultUploadService,
 )
+from photos_mcp.application.storage_insights import format_bytes, result_storage_summary
 from photos_mcp.infrastructure.sources.google_photos.library_destination import APPEND_ONLY_SCOPE
 
 
@@ -169,6 +173,11 @@ class PhotosMcpResultsController(NSWindowController):
         self._pending_google_upload: dict[str, Any] = {}
         self._selection_persist_error = ""
         self._selection_preset = ""
+        self._workspace_mode = "browse"
+        self._developer_tools_visible = False
+        self._developer_mode = os.getenv("PHOTOS_MCP_DEVELOPER_MODE", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
         self._is_laying_out = False
         window.setTitle_("사진 분류 결과")
         window.setMinSize_(NSMakeSize(_RESULT_MIN_WIDTH, _RESULT_MIN_HEIGHT))
@@ -218,6 +227,26 @@ class PhotosMcpResultsController(NSWindowController):
     def closeWindow_(self, _sender) -> None:
         self.window().performClose_(None)
 
+    def switchWorkspace_(self, sender) -> None:
+        workspace = self._sender_identifier(sender)
+        if workspace == "storage":
+            main = getattr(self._menu_controller, "_main_window_controller", None)
+            if main is not None:
+                main.showWindow_(None)
+                main.showTab_("storage")
+            return
+        if workspace not in {"browse", "selection"} or workspace == self._workspace_mode:
+            return
+        self._workspace_mode = workspace
+        self._reload_results(scroll_to_top=False)
+
+    def toggleDeveloperTools_(self, _sender) -> None:
+        if not self._developer_mode:
+            return
+        self._developer_tools_visible = not self._developer_tools_visible
+        self._refresh_workspace_visibility()
+        self._layout_view()
+
     def filterResults_(self, sender) -> None:
         value = self._sender_identifier(sender)
         if value:
@@ -252,6 +281,16 @@ class PhotosMcpResultsController(NSWindowController):
         elif direction == "larger":
             self._density_index = min(len(_DENSITY_WIDTHS) - 1, self._density_index + 1)
         NSUserDefaults.standardUserDefaults().setInteger_forKey_(self._density_index, _DENSITY_DEFAULTS_KEY)
+        self._layout_view(anchor_index=anchor)
+
+    def selectDensity_(self, sender) -> None:
+        anchor = self._top_visible_index()
+        selected = int(sender.indexOfSelectedItem())
+        if 0 <= selected < len(_DENSITY_WIDTHS):
+            self._density_index = selected
+        NSUserDefaults.standardUserDefaults().setInteger_forKey_(
+            self._density_index, _DENSITY_DEFAULTS_KEY
+        )
         self._layout_view(anchor_index=anchor)
 
     def selectResultItem_(self, sender) -> None:
@@ -290,10 +329,13 @@ class PhotosMcpResultsController(NSWindowController):
 
     def revealSelected_(self, _sender) -> None:
         selected = self._selected_item()
+        private = self._viewer_items_by_id.get(str(selected.get("photo_id") or ""), {}) if selected else {}
+        source_path = str(private.get("source_photo_path") or "")
         preview_path = str(selected.get("preview_path") or "") if selected else ""
-        if preview_path and Path(preview_path).exists():
+        target_path = source_path if source_path and Path(source_path).exists() else preview_path
+        if target_path and Path(target_path).exists():
             subprocess.Popen(
-                ["/usr/bin/open", "-R", preview_path],
+                ["/usr/bin/open", "-R", target_path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -446,6 +488,22 @@ class PhotosMcpResultsController(NSWindowController):
             self._show_alert("내보낼 사진이 없습니다", "사진 카드에서 내보낼 사진을 선택하세요.")
             return
 
+        if self._is_google_result():
+            destination = NSAlert.alloc().init()
+            destination.setMessageText_(f"선택한 {selected_count}장 저장 위치")
+            destination.setInformativeText_(
+                "Google Photos 새 앨범 또는 Mac의 로컬·Apple Photos 저장 흐름을 선택하세요."
+            )
+            destination.addButtonWithTitle_("Google Photos 새 앨범")
+            destination.addButtonWithTitle_("Mac 저장 위치 선택…")
+            destination.addButtonWithTitle_("취소")
+            response = destination.runModal()
+            if response == NSAlertFirstButtonReturn:
+                self.uploadSelectedToGoogle_(None)
+                return
+            if response != NSAlertSecondButtonReturn:
+                return
+
         chooser = NSAlert.alloc().init()
         chooser.setMessageText_(f"선택한 {selected_count}장 내보내기")
         chooser.setInformativeText_(
@@ -518,7 +576,9 @@ class PhotosMcpResultsController(NSWindowController):
             return
         self._selected_photo_id = str(self._visible_items[index].get("photo_id") or "")
         self._update_inspector()
-        self.openSelectedViewer_(None)
+        event = NSApp.currentEvent() if NSApp is not None else None
+        if event is not None and hasattr(event, "clickCount") and int(event.clickCount()) >= 2:
+            self.openSelectedViewer_(None)
 
     @objc.python_method
     def _build_view(self) -> None:
@@ -529,6 +589,21 @@ class PhotosMcpResultsController(NSWindowController):
 
         self._title_label = self._label(root, "사진 분석 완료", 22.0, bold=True)
         self._subtitle_label = self._label(root, "", 11.0, secondary=True)
+        self._workspace_buttons: dict[str, Any] = {}
+        for key, title in (
+            ("browse", "사진 보기"),
+            ("selection", "선택 및 저장"),
+            ("storage", "저장 공간"),
+        ):
+            self._workspace_buttons[key] = self._button(
+                root,
+                title,
+                "switchWorkspace:",
+                identifier=key,
+                accessibility_label=title,
+            )
+            self._workspace_buttons[key].setButtonType_(NSButtonTypePushOnPushOff)
+        self._advanced_button = self._button(root, "고급 도구", "toggleDeveloperTools:")
         self._summary_cards: dict[str, Any] = {}
         self._summary_labels: dict[str, Any] = {}
         for key, title, tone in (
@@ -562,6 +637,18 @@ class PhotosMcpResultsController(NSWindowController):
         self._density_label = self._label(root, "자동 3열", 9.5, bold=True)
         self._density_label.setAlignment_(1)
         self._density_larger = self._button(root, "+", "changeDensity:", identifier="larger")
+        self._density_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(0.0, 0.0, 150.0, 32.0), False
+        )
+        self._density_popup.setTarget_(self)
+        self._density_popup.setAction_("selectDensity:")
+        self._density_popup.setAccessibilityLabel_("사진 보기 크기")
+        for title in ("작게 보기", "보통 크기", "크게 보기", "아주 크게 보기"):
+            self._density_popup.addItemWithTitle_(title)
+        root.addSubview_(self._density_popup)
+        self._density_smaller.setHidden_(True)
+        self._density_label.setHidden_(True)
+        self._density_larger.setHidden_(True)
         self._selection_label = self._label(root, "선택한 0장", 10.0, bold=True)
         self._selection_hint_label = self._label(root, "", 8.8, bold=True)
         self._selection_hint_label.setTextColor_(NSColor.systemGreenColor())
@@ -628,8 +715,9 @@ class PhotosMcpResultsController(NSWindowController):
         self._inspector_scene.setUsesSingleLineMode_(False)
         self._inspector_metrics = self._label(self._inspector_card, "", 9.5, secondary=True)
         self._inspector_event = self._label(self._inspector_card, "", 9.5, secondary=True)
+        self._inspector_storage = self._label(self._inspector_card, "", 9.5, secondary=True)
 
-        self._finder_button = self._button(root, "Finder에서 보기", "revealSelected:")
+        self._finder_button = self._button(self._inspector_card, "Finder에서 보기", "revealSelected:")
         self._recommendation_review_button = self._button(
             root,
             "추천 품질 검토",
@@ -658,6 +746,7 @@ class PhotosMcpResultsController(NSWindowController):
         )
         self._export_button = self._button(root, "선택한 사진 내보내기", "exportSelected:", primary=True)
         self._close_button = self._button(root, "닫기", "closeWindow:", primary=True)
+        self._refresh_workspace_visibility()
         self._layout_view()
 
     @objc.python_method
@@ -675,6 +764,14 @@ class PhotosMcpResultsController(NSWindowController):
             gallery_width = width - margin * 2.0 - gap - inspector_width
             self._title_label.setFrame_(NSMakeRect(margin, height - 62.0, width - margin * 2.0, 30.0))
             self._subtitle_label.setFrame_(NSMakeRect(margin, height - 88.0, width - margin * 2.0, 20.0))
+            workspace_width = 116.0
+            workspace_y = height - 60.0
+            workspace_x = width - margin - workspace_width * 3.0 - 12.0
+            for index, key in enumerate(("browse", "selection", "storage")):
+                self._workspace_buttons[key].setFrame_(
+                    NSMakeRect(workspace_x + index * workspace_width, workspace_y, workspace_width - 6.0, 32.0)
+                )
+            self._advanced_button.setFrame_(NSMakeRect(workspace_x - 100.0, workspace_y, 92.0, 32.0))
 
             tile_y = height - 162.0
             tile_gap = 10.0
@@ -699,15 +796,11 @@ class PhotosMcpResultsController(NSWindowController):
                     NSMakeRect(filter_start_x + index * (filter_width + filter_gap), toolbar_y, filter_width, 32.0)
                 )
             density_x = margin + gallery_width - density_width
-            self._density_smaller.setFrame_(NSMakeRect(density_x, toolbar_y, 36.0, 32.0))
-            self._density_label.setFrame_(NSMakeRect(density_x + 40.0, toolbar_y + 7.0, 70.0, 20.0))
-            self._density_larger.setFrame_(NSMakeRect(density_x + 114.0, toolbar_y, 36.0, 32.0))
+            self._density_popup.setFrame_(NSMakeRect(density_x, toolbar_y, density_width, 32.0))
 
-            # Reserve two footer rows for review tools and output controls so
-            # every review entry remains usable at the minimum window width.
-            # Google uploads add a third row because their album button is wider.
-            is_google_result = self._is_google_result()
-            body_y = 160.0 if is_google_result else 118.0
+            selection_mode = self._workspace_mode == "selection"
+            developer_tools = self._developer_mode and self._developer_tools_visible
+            body_y = 112.0 if selection_mode or developer_tools else 24.0
             body_top = toolbar_y - 14.0
             body_height = max(240.0, body_top - body_y)
             self._scroll_view.setFrame_(NSMakeRect(margin, body_y, gallery_width, body_height))
@@ -721,13 +814,12 @@ class PhotosMcpResultsController(NSWindowController):
 
             footer_y = 24.0
             action_y = 66.0
-            review_y = 108.0 if is_google_result else 66.0
-            self._finder_button.setFrame_(NSMakeRect(margin, footer_y, 150.0, 34.0))
-            self._selection_label.setFrame_(NSMakeRect(margin + 166.0, footer_y + 7.0, 100.0, 20.0))
-            self._selection_hint_label.setFrame_(NSMakeRect(margin + 166.0, 4.0, 190.0, 16.0))
-            self._select_scene_best_button.setFrame_(NSMakeRect(margin + 270.0, footer_y, 138.0, 34.0))
-            self._select_all_button.setFrame_(NSMakeRect(margin + 416.0, footer_y, 86.0, 34.0))
-            self._clear_all_button.setFrame_(NSMakeRect(margin + 508.0, footer_y, 86.0, 34.0))
+            review_y = 66.0
+            self._selection_label.setFrame_(NSMakeRect(margin, footer_y + 7.0, 214.0, 20.0))
+            self._selection_hint_label.setFrame_(NSMakeRect(margin, 4.0, 214.0, 16.0))
+            self._select_scene_best_button.setFrame_(NSMakeRect(margin + 220.0, footer_y, 150.0, 34.0))
+            self._select_all_button.setFrame_(NSMakeRect(margin + 378.0, footer_y, 86.0, 34.0))
+            self._clear_all_button.setFrame_(NSMakeRect(margin + 470.0, footer_y, 86.0, 34.0))
             self._recommendation_review_button.setFrame_(
                 NSMakeRect(margin, review_y, 150.0, 34.0)
             )
@@ -766,7 +858,9 @@ class PhotosMcpResultsController(NSWindowController):
         self._inspector_title.setFrame_(NSMakeRect(20.0, preview_y - 36.0, width - 40.0, 22.0))
         self._inspector_scene.setFrame_(NSMakeRect(20.0, preview_y - 112.0, width - 40.0, 66.0))
         self._inspector_metrics.setFrame_(NSMakeRect(20.0, preview_y - 154.0, width - 40.0, 36.0))
-        self._inspector_event.setFrame_(NSMakeRect(20.0, max(20.0, preview_y - 184.0), width - 40.0, 20.0))
+        self._inspector_event.setFrame_(NSMakeRect(20.0, max(54.0, preview_y - 184.0), width - 40.0, 20.0))
+        self._inspector_storage.setFrame_(NSMakeRect(20.0, max(32.0, preview_y - 208.0), width - 40.0, 20.0))
+        self._finder_button.setFrame_(NSMakeRect(20.0, 16.0, 132.0, 30.0))
 
     @objc.python_method
     def _update_collection_layout(self, gallery_width: float) -> None:
@@ -781,6 +875,7 @@ class PhotosMcpResultsController(NSWindowController):
         self._density_label.setStringValue_(f"자동 {self._computed_columns}열")
         self._density_smaller.setEnabled_(self._density_index > 0)
         self._density_larger.setEnabled_(self._density_index + 1 < len(_DENSITY_WIDTHS))
+        self._density_popup.selectItemAtIndex_(self._density_index)
 
     @objc.python_method
     def _reload_results(self, *, scroll_to_top: bool) -> None:
@@ -805,6 +900,13 @@ class PhotosMcpResultsController(NSWindowController):
         else:
             self._summary_labels["recommended"].setStringValue_(f"추천  {counts['recommended']}")
         self._summary_labels["review"].setStringValue_(f"검토 필요  {counts['review']}")
+        storage = result_storage_summary(self._items)
+        self._subtitle_label.setStringValue_(
+            f"{self._subtitle_label.stringValue()} · 확인된 원본 "
+            f"{storage['known_item_count']}/{storage['item_count']}장 "
+            f"{format_bytes(storage['source_byte_size'] if storage['known_item_count'] else None)} · "
+            f"분석본 {format_bytes(storage['analysis_byte_size'] or None)}"
+        )
         labels = {
             "all": f"전체 {len(self._items)}",
             "recommended": f"추천 {counts['recommended']}",
@@ -815,6 +917,8 @@ class PhotosMcpResultsController(NSWindowController):
             button.setState_(1 if self._filter == key else 0)
         self._scene_view_button.setBezelStyle_(1 if self._view_mode == "scene" else 0)
         self._photo_view_button.setBezelStyle_(1 if self._view_mode == "photo" else 0)
+        for key, button in self._workspace_buttons.items():
+            button.setState_(1 if key == self._workspace_mode else 0)
         if hasattr(self._scene_view_button, "setBezelColor_"):
             self._scene_view_button.setBezelColor_(accent_color())
             self._photo_view_button.setBezelColor_(accent_color())
@@ -824,6 +928,7 @@ class PhotosMcpResultsController(NSWindowController):
         self._refresh_selection_controls()
         self._sync_selection()
         self._update_inspector()
+        self._refresh_workspace_visibility()
         self._layout_view()
         if scroll_to_top and self._visible_items:
             path = NSIndexPath.indexPathForItem_inSection_(0, 0)
@@ -856,7 +961,9 @@ class PhotosMcpResultsController(NSWindowController):
             self._inspector_scene.setStringValue_("필터에 표시할 사진이 없습니다.")
             self._inspector_metrics.setStringValue_("")
             self._inspector_event.setStringValue_("")
+            self._inspector_storage.setStringValue_("")
             self._inspector_open.setEnabled_(False)
+            self._finder_button.setEnabled_(False)
             return
         failure = result_item_failure(item)
         self._inspector_image.setImage_(_cached_image(str(item.get("preview_path") or "")))
@@ -880,7 +987,41 @@ class PhotosMcpResultsController(NSWindowController):
             else f"추천 근거 · {reason}\n종합 {score:.0f} · 품질 {quality:.0f} · 기술 {technical:.0f} · 의미 {meaningful:.0f}"
         )
         self._inspector_event.setStringValue_(f"분류 · {str(item.get('event_type') or '기타')}")
+        source_bytes = int(item.get("source_byte_size") or 0)
+        analysis_bytes = int(item.get("analysis_byte_size") or 0)
+        preview_bytes = int(item.get("preview_byte_size") or 0)
+        self._inspector_storage.setStringValue_(
+            f"용량 · 원본 {format_bytes(source_bytes or None)} · 분석본 {format_bytes(analysis_bytes or None)} · 미리보기 {format_bytes(preview_bytes or None)}"
+        )
+        private = self._viewer_items_by_id.get(str(item.get("photo_id") or ""), {})
+        source_path = str(private.get("source_photo_path") or "")
+        has_source = bool(source_path and Path(source_path).exists())
+        self._finder_button.setTitle_("원본 보기" if has_source else "분석 미리보기 보기")
+        self._finder_button.setEnabled_(has_source or bool(str(item.get("preview_path") or "")))
         self._inspector_open.setEnabled_(True)
+
+    @objc.python_method
+    def _refresh_workspace_visibility(self) -> None:
+        selection_mode = self._workspace_mode == "selection"
+        developer_tools = self._developer_mode and self._developer_tools_visible
+        for control in (
+            self._selection_label,
+            self._selection_hint_label,
+            self._select_scene_best_button,
+            self._select_all_button,
+            self._clear_all_button,
+            self._export_button,
+        ):
+            control.setHidden_(not selection_mode)
+        self._google_upload_button.setHidden_(True)
+        self._finder_button.setHidden_(False)
+        self._advanced_button.setHidden_(not self._developer_mode)
+        self._recommendation_review_button.setHidden_(not developer_tools)
+        self._face_identity_review_button.setHidden_(not developer_tools)
+        self._face_identity_grouping_review_button.setHidden_(not developer_tools)
+        self._person_composition_review_button.setHidden_(True)
+        self._json_export_button.setHidden_(not developer_tools)
+        self._close_button.setHidden_(True)
 
     @objc.python_method
     def _top_visible_index(self) -> int | None:
@@ -969,8 +1110,12 @@ class PhotosMcpResultsController(NSWindowController):
     def _refresh_selection_controls(self) -> None:
         count = self._selected_export_count()
         if hasattr(self, "_selection_label"):
-            self._selection_label.setStringValue_(f"선택한 {count}장")
-            self._export_button.setTitle_(f"선택한 {count}장 내보내기")
+            storage = result_storage_summary(self._items)
+            self._selection_label.setStringValue_(
+                f"선택한 {count}장 · 확인 {storage['selected_known_item_count']}장 "
+                f"{format_bytes(storage['selected_source_byte_size'] if storage['selected_known_item_count'] else None)}"
+            )
+            self._export_button.setTitle_(f"선택한 {count}장 저장…")
             self._export_button.setEnabled_(count > 0 and not self._export_in_progress)
             self._select_all_button.setEnabled_(not self._export_in_progress)
             self._clear_all_button.setEnabled_(not self._export_in_progress)
@@ -985,7 +1130,7 @@ class PhotosMcpResultsController(NSWindowController):
             else:
                 self._selection_hint_label.setStringValue_("")
             is_google = self._is_google_result()
-            self._google_upload_button.setHidden_(not is_google)
+            self._google_upload_button.setHidden_(True)
             self._google_upload_button.setTitle_(f"선택한 {count}장 Google 새 앨범")
             self._google_upload_button.setEnabled_(
                 is_google

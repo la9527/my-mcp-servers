@@ -25,6 +25,7 @@ _TERMINAL_CHILD_STATUSES = {
     "cancelled",
     "interrupted",
     "partial_timeout",
+    "deferred",
 }
 DEFAULT_OWNER_STORY_URL = "https://byoungyoung-macmini.tail53bcc7.ts.net/photos"
 DEFAULT_ACTION_BASE_URL = "https://byoungyoung-macmini.tail53bcc7.ts.net/photos-actions"
@@ -34,6 +35,7 @@ _RETRYABLE_PARENT_STATUSES = {
     "partial_timeout",
     "cancelled",
     "interrupted",
+    "deferred",
 }
 _GOOGLE_PARALLEL_READY_STAGES = {
     "selection_prepared",
@@ -805,6 +807,9 @@ async def advance_google_first_curations(
 
 
 def _child_is_ready(child: dict[str, Any]) -> bool:
+    status = str(child.get("status") or "")
+    if status == "deferred" and bool(child.get("terminal")):
+        return True
     analysis_run_id = str(child.get("analysis_run_id") or "")
     storage = child.get("recommendation_storage")
     if analysis_run_id:
@@ -989,6 +994,7 @@ def reconcile_combined_curation(
                 "cancelled",
                 "interrupted",
                 "partial_timeout",
+                "deferred",
             } and not timed_out_source:
                 continue
             failed_source_details.append(
@@ -1053,6 +1059,28 @@ def reconcile_combined_curation(
                 f" 소스 작업 오류 {len(failed_source_details)}건: "
                 + ", ".join(detail_labels)
                 + "."
+            )
+        deferred_children = [
+            child
+            for child in child_values
+            if str(child.get("status") or "") == "deferred"
+        ]
+        if deferred_children:
+            deferred_photo_count = sum(
+                max(
+                    0,
+                    int(
+                        child.get("unfinished_count")
+                        or child.get("submitted_count")
+                        or child.get("selected_photo_count")
+                        or 0
+                    ),
+                )
+                for child in deferred_children
+            )
+            message += (
+                f" Linux 워크스테이션이 준비되지 않아 {deferred_photo_count}장은 "
+                "다음 실행으로 넘겼습니다. 사진은 유실되지 않았습니다."
             )
         if album_publish_failed_count:
             message += (

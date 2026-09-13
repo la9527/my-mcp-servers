@@ -142,7 +142,33 @@ def test_set_all_preserves_tags_notes_and_paths(tmp_path) -> None:
         "selected": True,
         "selection_overridden": True,
         "note": "keep this note",
+        "source_byte_size": 0,
+        "source_size_kind": "unknown",
+        "analysis_byte_size": 0,
+        "preview_byte_size": 0,
+        "size_observed_at": item["size_observed_at"],
     }
+    db.close()
+
+
+def test_legacy_job_asset_sizes_are_backfilled_from_safe_local_files(tmp_path) -> None:
+    JobDB = _load_job_db_class()
+    db = JobDB(tmp_path / "jobs.db")
+    source = tmp_path / "google-photos-imports" / "picked.jpg"
+    preview = tmp_path / "artifacts" / "preview.jpg"
+    source.parent.mkdir(parents=True)
+    preview.parent.mkdir(parents=True)
+    source.write_bytes(b"picker-download")
+    preview.write_bytes(b"preview")
+    db.save_photo_results("job-1", [_result("one")])
+    db.save_job_asset("job-1", "one", str(preview), str(source))
+
+    item = db.list_job_assets("job-1")["one"]
+
+    assert item["source_byte_size"] == len(b"picker-download")
+    assert item["source_size_kind"] == "picker_download"
+    assert item["preview_byte_size"] == len(b"preview")
+    assert item["size_observed_at"] is not None
     db.close()
 
 

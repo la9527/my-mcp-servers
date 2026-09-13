@@ -605,14 +605,31 @@ async def _run_classify_job(job) -> dict:
         _persist_job_result_artifact(job, db, summary=job.result_summary)
         return job.result_summary
 
-    ranked = await pipe.run(
-        photos,
-        job,
-        selection_profile=selection_profile,
-        allow_face_analysis=bool(
-            getattr(job, "request_options", {}).get("face_analysis_enabled", True)
-        ),
-    )
+    try:
+        ranked = await pipe.run(
+            photos,
+            job,
+            selection_profile=selection_profile,
+            allow_face_analysis=bool(
+                getattr(job, "request_options", {}).get("face_analysis_enabled", True)
+            ),
+        )
+    except Exception as exc:
+        if bool(getattr(exc, "deferred", False)):
+            job.status = JobStatus.DEFERRED
+            job.finished_at = time.time()
+            job.error_message = str(exc)
+            job.result_summary = {
+                **(job.result_summary or {}),
+                "error_code": str(getattr(exc, "code", "runtime_prepare_failed")),
+                "retryable": True,
+                "carry_over": True,
+                "prepare_attempt_count": int(getattr(exc, "attempt_count", 1)),
+                "source_load_s": source_load_seconds,
+            }
+            db.save_job(job)
+            _persist_job_result_artifact(job, db, summary=job.result_summary)
+        raise
     _cache_face_review_assets(job, photos)
 
     # Persist results
@@ -786,7 +803,23 @@ async def _run_sync_classification(
             "cached preview assets in %.2fs",
             time.perf_counter() - preview_started,
         )
-    ranked = await pipe.run(photos, job, selection_profile=selection_profile)
+    try:
+        ranked = await pipe.run(photos, job, selection_profile=selection_profile)
+    except Exception as exc:
+        if bool(getattr(exc, "deferred", False)):
+            job.status = JobStatus.DEFERRED
+            job.finished_at = time.time()
+            job.error_message = str(exc)
+            job.result_summary = {
+                **(job.result_summary or {}),
+                "error_code": str(getattr(exc, "code", "runtime_prepare_failed")),
+                "retryable": True,
+                "carry_over": True,
+                "prepare_attempt_count": int(getattr(exc, "attempt_count", 1)),
+            }
+            db.save_job(job)
+            _persist_job_result_artifact(job, db, summary=job.result_summary)
+        raise
     _cache_face_review_assets(job, photos)
 
     results = [result.to_dict() for result in ranked]
@@ -1221,7 +1254,21 @@ def _cache_job_review_assets(job, photos: list[dict]) -> None:
         source_photo_path = photo.get("source_photo_path") or (
             photo["photo_id"] if job.source == "local" else ""
         )
-        db.save_job_asset(job.id, photo["photo_id"], preview_path, source_photo_path)
+        preview_byte_size = 0
+        try:
+            preview_byte_size = Path(preview_path).stat().st_size if preview_path else 0
+        except OSError:
+            preview_byte_size = 0
+        db.save_job_asset(
+            job.id,
+            photo["photo_id"],
+            preview_path,
+            source_photo_path,
+            source_byte_size=max(0, int(photo.get("source_byte_size") or 0)),
+            source_size_kind=str(photo.get("source_size_kind") or "unknown"),
+            analysis_byte_size=max(0, int(photo.get("analysis_byte_size") or 0)),
+            preview_byte_size=max(0, int(preview_byte_size)),
+        )
 
 
 def _cache_face_review_assets(job, photos: list[dict]) -> None:
@@ -1272,6 +1319,10 @@ def _build_review_items(
             "review_tags": asset.get("tags", []),
             "selected": asset.get("selected", False),
             "note": asset.get("note", ""),
+            "source_byte_size": max(0, int(asset.get("source_byte_size") or 0)),
+            "source_size_kind": str(asset.get("source_size_kind") or "unknown"),
+            "analysis_byte_size": max(0, int(asset.get("analysis_byte_size") or 0)),
+            "preview_byte_size": max(0, int(asset.get("preview_byte_size") or 0)),
         }
         if selected_only and not item["selected"]:
             continue

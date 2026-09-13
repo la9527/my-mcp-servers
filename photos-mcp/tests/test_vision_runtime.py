@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from photos_mcp.infrastructure.vision import runtime as vision_runtime
 
 
@@ -22,6 +24,7 @@ RUNTIME_ENV_NAMES = (
     "LOCAL_LLM_MODEL",
     "LOCAL_LLM_BASE_URL",
     "LOCAL_LLM_API_KEY",
+    "LINUX_LLM_STATUS_FILE",
 )
 
 
@@ -98,4 +101,39 @@ def test_runtime_summary_reports_ready_without_exposing_api_key(monkeypatch) -> 
     assert payload["model"] == "Qwen3.8-Flash-Next-UD-IQ4_XS.gguf"
     assert payload["configured_model"] == "Qwen3.8-27B-Q4_K_M.gguf"
     assert payload["active_model"] == "Qwen3.8-Flash-Next-UD-IQ4_XS.gguf"
+
+
+def test_runtime_summary_includes_bounded_helper_observability(monkeypatch, tmp_path) -> None:
+    _clear_runtime_env(monkeypatch)
+    status_path = tmp_path / "prepare-status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "helper_version": "photos-mcp-2026.09.13.1",
+                "status": "deferred",
+                "error_code": "linux_ssh_not_ready",
+                "exit_code": 4,
+                "wol_attempts": 5,
+                "ready_timeout_seconds": 600,
+                "observed_at_epoch": 1789250000,
+                "secret": "must-not-leak",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LINUX_LLM_STATUS_FILE", str(status_path))
+
+    payload = vision_runtime.vision_runtime_summary(check_ready=False)
+
+    assert payload["prepare_timeout_seconds"] == 600.0
+    assert payload["prepare_retry_delays_seconds"] == "60,180,600"
+    assert payload["last_prepare"] == {
+        "helper_version": "photos-mcp-2026.09.13.1",
+        "status": "deferred",
+        "error_code": "linux_ssh_not_ready",
+        "exit_code": 4,
+        "wol_attempts": 5,
+        "ready_timeout_seconds": 600,
+        "observed_at_epoch": 1789250000,
+    }
     assert "api_key" not in payload

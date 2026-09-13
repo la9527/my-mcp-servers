@@ -51,3 +51,28 @@ async def test_scheduled_pending_job_can_be_cancelled_before_start() -> None:
 
     assert calls == []
     assert job.status == module.JobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_retryable_runtime_failure_is_deferred_and_removable() -> None:
+    module = load_vendor_server("photo-ranker")
+    queue = module.JobQueue()
+
+    class DeferredError(RuntimeError):
+        deferred = True
+        retryable = True
+        code = "linux_ssh_not_ready"
+        attempt_count = 4
+
+    async def handler(_job):
+        raise DeferredError("workstation offline")
+
+    queue.set_handler(handler)
+    job = queue.create_job("apple", "")
+    await queue.submit(job.id)
+    await asyncio.sleep(0.01)
+
+    assert job.status == module.JobStatus.DEFERRED
+    assert job.result_summary["carry_over"] is True
+    assert job.result_summary["prepare_attempt_count"] == 4
+    assert queue.remove_job(job.id) is True

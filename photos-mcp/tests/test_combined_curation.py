@@ -771,6 +771,55 @@ def test_combined_parent_reports_provider_failure_separately_from_photo_failures
     assert "Google Photos(unsafe_browser_state)" in event["message"]
 
 
+def test_combined_parent_finalizes_deferred_vision_child_without_waiting_for_deadline(
+    tmp_path,
+) -> None:
+    repository = RunRepository(tmp_path / "jobs.db")
+    now = datetime(2026, 9, 13, 3, 10, tzinfo=UTC)
+    repository.upsert_automation_run(
+        {
+            "automation_run_id": "combined-deferred-vision",
+            "provider": "combined",
+            "status": "running",
+            "terminal": False,
+            "child_run_ids": {"apple": "daily-apple-deferred"},
+            "deadline_at": (now + timedelta(hours=5)).isoformat(),
+            "notification_state": "pending",
+        }
+    )
+    repository.upsert_automation_run(
+        {
+            "automation_run_id": "daily-apple-deferred",
+            "provider": "apple_photos",
+            "status": "deferred",
+            "terminal": True,
+            "analysis_run_id": "analysis-apple-deferred",
+            "error_code": "linux_ssh_not_ready",
+            "submitted_count": 6,
+            "unfinished_count": 6,
+            "carry_over_pending": True,
+        }
+    )
+
+    result = reconcile_combined_curation(repository=repository, now=now)
+
+    assert result["finalized_parent_count"] == 1
+    parent = repository.get_automation_run("combined-deferred-vision")
+    assert parent is not None
+    assert parent["status"] == "failed"
+    assert parent["failed_sources"] == [
+        {
+            "source": "apple",
+            "status": "deferred",
+            "error_code": "linux_ssh_not_ready",
+        }
+    ]
+    event = repository.list_user_action_requests(statuses={"pending"})[0]
+    assert "다음 실행으로 넘겼습니다" in event["message"]
+    assert "6장" in event["message"]
+    assert "사진은 유실되지 않았습니다" in event["message"]
+
+
 @pytest.mark.asyncio
 async def test_stop_requires_exact_confirmation_and_preserves_carry_over(tmp_path) -> None:
     repository = RunRepository(tmp_path / "jobs.db")

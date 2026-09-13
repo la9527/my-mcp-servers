@@ -26,6 +26,7 @@ from photos_mcp.application.result_presenter import (
     result_item_failure,
 )
 from photos_mcp.interfaces.appkit.shared.theme import accent_color, app_font
+from photos_mcp.application.storage_insights import format_bytes
 
 
 _IMAGE_CACHE = NSCache.alloc().init()
@@ -79,6 +80,8 @@ class PhotosMcpResultCollectionItem(NSCollectionViewItem):
         self._reason.setLineBreakMode_(NSLineBreakByWordWrapping)
         self._reason.setMaximumNumberOfLines_(2)
         self._reason.setUsesSingleLineMode_(False)
+        self._size = self._label(root, "", 8.6)
+        self._size.setTextColor_(NSColor.tertiaryLabelColor())
         self._export_check = NSButton.alloc().initWithFrame_(NSMakeRect(0.0, 0.0, 28.0, 28.0))
         self._export_check.setButtonType_(3)
         self._export_check.setTitle_("")
@@ -104,14 +107,15 @@ class PhotosMcpResultCollectionItem(NSCollectionViewItem):
         root = self.view()
         width = float(root.bounds().size.width)
         height = float(root.bounds().size.height)
-        image_y = 112.0
-        image_height = max(92.0, height - 120.0)
+        image_y = 126.0
+        image_height = max(92.0, height - 134.0)
         self._image_view.setFrame_(NSMakeRect(7.0, image_y, max(1.0, width - 14.0), image_height))
         self._placeholder.setFrame_(NSMakeRect(14.0, image_y + image_height / 2.0 - 10.0, width - 28.0, 20.0))
-        self._badge.setFrame_(NSMakeRect(12.0, 86.0, max(70.0, width - 88.0), 18.0))
-        self._score.setFrame_(NSMakeRect(max(12.0, width - 64.0), 84.0, 52.0, 21.0))
-        self._reason.setFrame_(NSMakeRect(12.0, 46.0, max(1.0, width - 24.0), 34.0))
-        self._scene_button.setFrame_(NSMakeRect(12.0, 12.0, max(1.0, width - 24.0), 28.0))
+        self._badge.setFrame_(NSMakeRect(12.0, 100.0, max(70.0, width - 88.0), 18.0))
+        self._score.setFrame_(NSMakeRect(max(12.0, width - 64.0), 98.0, 52.0, 21.0))
+        self._reason.setFrame_(NSMakeRect(12.0, 60.0, max(1.0, width - 24.0), 34.0))
+        self._size.setFrame_(NSMakeRect(12.0, 40.0, max(1.0, width - 24.0), 16.0))
+        self._scene_button.setFrame_(NSMakeRect(12.0, 8.0, max(1.0, width - 24.0), 28.0))
         self._export_check.setFrame_(NSMakeRect(max(8.0, width - 36.0), max(8.0, height - 36.0), 28.0, 28.0))
 
     @objc.python_method
@@ -125,6 +129,7 @@ class PhotosMcpResultCollectionItem(NSCollectionViewItem):
         self._export_check.setTarget_(controller)
         self._export_check.setAction_("toggleItemSelection:")
         self._export_check.setEnabled_(not bool(getattr(controller, "_export_in_progress", False)))
+        self._export_check.setHidden_(getattr(controller, "_workspace_mode", "browse") != "selection")
         failure = result_item_failure(item)
         category = result_category(item)
         category_label = "실패" if failure else {
@@ -163,6 +168,11 @@ class PhotosMcpResultCollectionItem(NSCollectionViewItem):
         self._score.setTextColor_(status_color(tone))
         self._reason.setStringValue_(reason)
         self._reason.setToolTip_(reason)
+        source_bytes = int(item.get("source_byte_size") or 0)
+        analysis_bytes = int(item.get("analysis_byte_size") or 0)
+        self._size.setStringValue_(
+            f"원본 {format_bytes(source_bytes or None)} · 분석 {format_bytes(analysis_bytes or None)}"
+        )
         alternative_count = int(item.get("_scene_alternative_count") or 0)
         show_scene_button = scene_gallery and alternative_count > 0
         self._scene_button.setHidden_(not show_scene_button)

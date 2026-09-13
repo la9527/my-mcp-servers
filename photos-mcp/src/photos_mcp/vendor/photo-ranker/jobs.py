@@ -19,6 +19,7 @@ class JobStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     INTERRUPTED = "interrupted"
+    DEFERRED = "deferred"
 
 
 @dataclass
@@ -159,8 +160,16 @@ class JobQueue:
                 job.status = JobStatus.CANCELLED
             except Exception as e:
                 logger.exception("Job %s failed", job.id)
-                job.status = JobStatus.FAILED
+                job.status = JobStatus.DEFERRED if bool(getattr(e, "deferred", False)) else JobStatus.FAILED
                 job.error_message = str(e)
+                if bool(getattr(e, "deferred", False)):
+                    job.result_summary = {
+                        **(job.result_summary or {}),
+                        "error_code": str(getattr(e, "code", "runtime_prepare_failed")),
+                        "retryable": True,
+                        "carry_over": True,
+                        "prepare_attempt_count": int(getattr(e, "attempt_count", 1)),
+                    }
             finally:
                 job.finished_at = time.time()
 
@@ -202,6 +211,7 @@ class JobQueue:
             JobStatus.FAILED,
             JobStatus.CANCELLED,
             JobStatus.INTERRUPTED,
+            JobStatus.DEFERRED,
         }:
             return False
 
@@ -223,6 +233,7 @@ class JobQueue:
             JobStatus.FAILED,
             JobStatus.CANCELLED,
             JobStatus.INTERRUPTED,
+            JobStatus.DEFERRED,
         }
         removed: list[str] = []
         for job_id, job in list(self._jobs.items()):

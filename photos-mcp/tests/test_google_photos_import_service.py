@@ -440,6 +440,7 @@ def test_local_loader_uses_picker_sidecar_capture_time(tmp_path: Path) -> None:
         json.dumps(
             {
                 "schema_version": 1,
+                "provider": "google_photos_picker",
                 "picker_metadata": {
                     "create_time": "2026-08-16T01:02:03Z",
                     "camera_model": "Example Camera",
@@ -454,6 +455,9 @@ def test_local_loader_uses_picker_sidecar_capture_time(tmp_path: Path) -> None:
 
     assert loaded[0]["capture_date"] == "2026-08-16T01:02:03Z"
     assert loaded[0]["provider_metadata"]["camera_model"] == "Example Camera"
+    assert loaded[0]["source_byte_size"] == photo_path.stat().st_size
+    assert loaded[0]["source_size_kind"] == "picker_download"
+    assert loaded[0]["analysis_byte_size"] > 0
 
 
 def test_google_location_embedding_preserves_existing_camera_exif(tmp_path: Path) -> None:

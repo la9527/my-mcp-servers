@@ -817,7 +817,8 @@ def test_owner_story_creates_30_day_share_derivatives_and_blocks_cross_site_post
     expires_at = datetime.fromisoformat(packages[0]["expires_at"])
     assert (expires_at - created_at).days == 30
     derivatives = list((tmp_path / "cache" / "shared-story-assets").rglob("*.jpg"))
-    assert {path.name.split("-")[0] for path in derivatives} == {"thumb", "preview", "download"}
+    assert {path.name for path in derivatives} == {"thumb.jpg", "preview.jpg"}
+    assert len(derivatives) == 2  # Download reuses the metadata-free preview bytes.
 
 
 def test_load_vendor_server_uses_package_namespace_for_photo_ranker(monkeypatch) -> None:

@@ -20,6 +20,8 @@ class Photo:
     albums: list[str] = field(default_factory=list)
     persons: list[str] = field(default_factory=list)
     gps: dict | None = None  # {"lat": float, "lon": float}
+    byte_size: int = 0
+    byte_size_source: str = "unknown"
 
     def to_dict(self) -> dict:
         d = {
@@ -34,6 +36,8 @@ class Photo:
             "media_type": self.media_type,
             "albums": self.albums,
             "persons": self.persons,
+            "byte_size": max(0, int(self.byte_size or 0)),
+            "byte_size_source": self.byte_size_source or "unknown",
         }
         if self.gps:
             d["gps"] = self.gps
@@ -56,6 +60,8 @@ class PhotoMetadata:
     albums: list[str] = field(default_factory=list)
     persons: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
+    byte_size: int = 0
+    byte_size_source: str = "unknown"
 
     def to_dict(self) -> dict:
         return {
@@ -73,6 +79,8 @@ class PhotoMetadata:
             "albums": self.albums,
             "persons": self.persons,
             "keywords": self.keywords,
+            "byte_size": max(0, int(self.byte_size or 0)),
+            "byte_size_source": self.byte_size_source or "unknown",
         }
 
 

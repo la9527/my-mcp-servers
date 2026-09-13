@@ -105,8 +105,10 @@ def test_results_gallery_exposes_review_button_only_for_multi_photo_scenes() -> 
 
     controller.showWithResult_(_result_payload(scene_count=1))
     assert controller._recommendation_review_button.isEnabled()
+    assert controller._recommendation_review_button.isHidden()
     assert controller._recommendation_review_button.accessibilityLabel() == "추천 품질 검토"
     assert controller._person_composition_review_button.isEnabled()
+    assert controller._person_composition_review_button.isHidden()
     assert controller._person_composition_review_button.accessibilityLabel() == "인물 구성 검토"
     assert controller._face_identity_review_button.accessibilityLabel() == "얼굴 동일인 검토"
     assert controller._face_identity_grouping_review_button.accessibilityLabel() == "복수 지지 검토"
@@ -176,11 +178,15 @@ def test_google_result_upload_action_is_source_gated_and_requires_selection() ->
 
     google_payload = {**_result_payload(scene_count=1), "origin_provider": "google_photos"}
     controller.showWithResult_(google_payload)
-    assert not controller._google_upload_button.isHidden()
+    assert controller._google_upload_button.isHidden()
+    controller._workspace_mode = "selection"
+    controller._refresh_workspace_visibility()
+    assert controller._google_upload_button.isHidden()
     assert not controller._google_upload_button.isEnabled()
     controller._items[0]["selected"] = True
     controller._refresh_selection_controls()
     assert controller._google_upload_button.isEnabled()
+    assert controller._google_upload_button.isHidden()
     assert "1장" in str(controller._google_upload_button.title())
 
 
@@ -200,3 +206,27 @@ def test_grouping_review_uses_private_hydrated_source_paths() -> None:
 
     assert review_items[0]["source_photo_path"] == "/private/source/original.heic"
     assert "source_photo_path" not in controller._items[0]
+
+
+def test_results_default_to_browse_and_reveal_selection_controls_only_in_save_workspace() -> None:
+    NSApplication.sharedApplication()
+    menu_controller = type("MenuController", (), {})()
+    menu_controller._snapshot = type("Snapshot", (), {})()
+    controller = PhotosMcpResultsController.alloc().initWithMenuController_(menu_controller)
+    controller.showWithResult_(_result_payload(scene_count=1))
+
+    assert controller._workspace_mode == "browse"
+    assert controller._density_smaller.isHidden()
+    assert controller._density_larger.isHidden()
+    assert controller._density_popup.numberOfItems() == 4
+    assert controller._selection_label.isHidden()
+    assert controller._export_button.isHidden()
+    assert controller._person_composition_review_button.isHidden()
+    assert controller._recommendation_review_button.isHidden()
+
+    controller.switchWorkspace_(controller._workspace_buttons["selection"])
+
+    assert controller._workspace_mode == "selection"
+    assert not controller._selection_label.isHidden()
+    assert not controller._export_button.isHidden()
+    assert controller._person_composition_review_button.isHidden()
