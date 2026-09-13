@@ -2,7 +2,7 @@
 
 작성일: 2026-09-13
 
-상태: Phase A~E(P0) 구현, 전체 회귀·문서·앱 번들 검증 완료
+상태: Phase A~E(P0)와 P1 최적화 구현, 전체 회귀·문서·앱 번들 검증 완료
 
 적용 범위: macOS 사진 분석 결과, 선택·내보내기, 저장 용량 원장, Story별 용량, 추천 보관소, Google Picker 임시 다운로드, 분석·인물·Story 파생 캐시, Linux Vision runtime 준비와 실패 복구
 
@@ -426,7 +426,7 @@ Apple Photos 6장은 Linux 워크스테이션이 준비되지 않아 다음 실�
 
 ### 11.5 검증 기록
 
-- 전체 테스트: `1,066 passed`
+- 전체 테스트: `1,072 passed`
 - 결과·저장·AppKit 집중 테스트: `126 passed`
 - 문서 링크·구조 검증: Markdown `111개` 통과
 - zsh helper 구문 및 LAN target mismatch 경로 통과
