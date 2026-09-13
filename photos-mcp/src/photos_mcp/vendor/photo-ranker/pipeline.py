@@ -239,6 +239,15 @@ class Pipeline:
                     len(s1_done),
                     len(s2_done),
                 )
+        current_photo_ids = {str(photo.get("photo_id") or "") for photo in photos}
+        checkpoint_reuse = {
+            "filter_reused_count": sum(1 for photo_id in s1_done if photo_id in current_photo_ids),
+            "vlm_reused_count": 0,
+            "filter_computed_count": 0,
+            "vlm_computed_count": 0,
+        }
+        if job:
+            job.result_summary = {**(job.result_summary or {}), "checkpoint_reuse": dict(checkpoint_reuse)}
 
         # ── Stage 1: Filter ──
         candidates = []
@@ -264,6 +273,7 @@ class Pipeline:
                     self._db.save_checkpoint(
                         job.id, "filter", pid, self._snapshot_candidate(cand),
                     )
+                checkpoint_reuse["filter_computed_count"] += 1
             candidates.append(cand)
             if self._db and job:
                 self._db.save_photo_location(
@@ -417,6 +427,7 @@ class Pipeline:
             for i, cand in enumerate(stage2_candidates):
                 if cand.photo_id in s2_done:
                     self._apply_vlm_checkpoint(cand, s2_done[cand.photo_id])
+                    checkpoint_reuse["vlm_reused_count"] += 1
                 else:
                     await self._stage2(cand)
                     if stage2_runtime_client is not None:
@@ -426,6 +437,7 @@ class Pipeline:
                             job.id, "vlm", cand.photo_id,
                             self._snapshot_candidate(cand),
                         )
+                    checkpoint_reuse["vlm_computed_count"] += 1
                 if job:
                     job.progress.completed = i + 1
                     job.progress.current_file = cand.photo_id
@@ -503,6 +515,7 @@ class Pipeline:
                     "processed_count": len(stage2_candidates),
                     "duration_seconds": round(t_s2, 2),
                 },
+                "checkpoint_reuse": dict(checkpoint_reuse),
                 **stage_times,
             }
 

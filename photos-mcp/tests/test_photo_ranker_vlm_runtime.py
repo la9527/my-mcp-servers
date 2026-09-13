@@ -296,3 +296,69 @@ async def test_pipeline_run_acquires_marks_used_and_releases_broker_lease(monkey
     assert lease_calls == ["acquire", "mark_used", "release"]
     assert fake_vlm.unload_calls == 1
     assert pipeline._vlm is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_records_checkpoint_reuse_and_compute_counts(monkeypatch) -> None:
+    pipeline_module = _load_pipeline_module()
+    monkeypatch.setattr(pipeline_module, "DedupEngine", lambda: SimpleNamespace())
+    monkeypatch.setattr(pipeline_module, "FaceEngine", lambda: SimpleNamespace())
+    monkeypatch.setattr(pipeline_module, "ExifEngine", lambda: SimpleNamespace())
+    pipeline = pipeline_module.Pipeline()
+
+    candidate = pipeline_module.PhotoCandidate(
+        photo_id="photo-1",
+        image_b64="stale",
+        technical_score=20.0,
+    )
+    filter_snapshot = pipeline._snapshot_candidate(candidate)
+
+    class FakeDB:
+        def load_checkpoints(self, _job_id, stage):
+            return {"photo-1": filter_snapshot} if stage == "filter" else {}
+
+        def save_checkpoint(self, *_args):
+            return None
+
+        def save_photo_location(self, *_args, **_kwargs):
+            return None
+
+        def save_job(self, *_args):
+            return None
+
+        def clear_checkpoints(self, *_args):
+            return None
+
+    class FakeBrokerClient:
+        async def acquire(self):
+            return None
+
+        async def mark_used(self):
+            return None
+
+        async def release(self):
+            return None
+
+    pipeline._db = FakeDB()
+    monkeypatch.setattr(pipeline_module, "default_runtime_broker_client", lambda: FakeBrokerClient())
+
+    async def stage1_must_not_run(*_args, **_kwargs):
+        raise AssertionError("filter checkpoint was not reused")
+
+    async def fake_stage2(item):
+        item.scene_description = "computed"
+
+    monkeypatch.setattr(pipeline, "_stage1", stage1_must_not_run)
+    monkeypatch.setattr(pipeline, "_stage2", fake_stage2)
+    monkeypatch.setattr(pipeline, "_detect_duplicates", lambda _items: [])
+    monkeypatch.setattr(pipeline, "_rank", lambda _items, _groups, _profile: [])
+    job = SimpleNamespace(id="resume-1", request_options={}, result_summary={}, progress=None)
+
+    await pipeline.run([{"photo_id": "photo-1", "image_b64": "fresh"}], job)
+
+    assert job.result_summary["checkpoint_reuse"] == {
+        "filter_reused_count": 1,
+        "vlm_reused_count": 0,
+        "filter_computed_count": 0,
+        "vlm_computed_count": 1,
+    }

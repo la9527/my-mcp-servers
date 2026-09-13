@@ -133,6 +133,67 @@ class ShareImageService:
             directory.rmdir()
         return removed
 
+    def index_existing_legacy_derivatives(self) -> dict[str, int]:
+        """Hard-link known legacy share files into the content-addressed ledger.
+
+        Missing variants are skipped rather than rendered, keeping migration
+        bounded and side-effect free with respect to recommendation originals.
+        """
+        indexed = 0
+        skipped = 0
+        # Owner surfaces use the local asset ID as their route-safe public ID,
+        # so their legacy directories can be mapped without a session handle.
+        for share_id in ("owner-gallery", "mobile-owner"):
+            scope = self.cache_root / share_id
+            if not scope.is_dir():
+                continue
+            for asset_dir in scope.iterdir():
+                local_id = asset_dir.name
+                if asset_dir.is_symlink() or not asset_dir.is_dir() or not _SAFE_ID.fullmatch(local_id):
+                    continue
+                for kind in ("thumb", "preview"):
+                    legacy = asset_dir / f"{kind}-{_POLICY_VERSION}.jpg"
+                    if legacy.is_symlink() or not legacy.is_file() or legacy.stat().st_size <= 0:
+                        skipped += 1
+                        continue
+                    try:
+                        self.derivative(
+                            share_id=share_id,
+                            public_asset_id=local_id,
+                            local_asset_id=local_id,
+                            kind=kind,
+                        )
+                        indexed += 1
+                    except ShareImageError:
+                        skipped += 1
+        for package in self.repository.list_shared_story_packages(limit=500):
+            share_id = str(package.get("share_id") or "")
+            if not _SAFE_ID.fullmatch(share_id):
+                continue
+            for photo in list(package.get("photos") or []):
+                if not isinstance(photo, dict):
+                    continue
+                public_id = str(photo.get("public_asset_id") or "")
+                local_id = str(photo.get("local_asset_id") or "")
+                if not _SAFE_ID.fullmatch(public_id) or not local_id:
+                    continue
+                for kind in ("thumb", "preview"):
+                    legacy = self.cache_root / share_id / public_id / f"{kind}-{_POLICY_VERSION}.jpg"
+                    if legacy.is_symlink() or not legacy.is_file() or legacy.stat().st_size <= 0:
+                        skipped += 1
+                        continue
+                    try:
+                        self.derivative(
+                            share_id=share_id,
+                            public_asset_id=public_id,
+                            local_asset_id=local_id,
+                            kind=kind,
+                        )
+                        indexed += 1
+                    except ShareImageError:
+                        skipped += 1
+        return {"indexed_count": indexed, "skipped_count": skipped}
+
     def _resolve_source(self, relative_path: str) -> Path:
         if not relative_path or Path(relative_path).is_absolute():
             raise ShareImageError("Invalid recommendation asset path")

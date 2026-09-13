@@ -42,6 +42,7 @@ from photos_mcp.interfaces.appkit.menu.presentation import (
 )
 from photos_mcp.interfaces.appkit.people.controller import PhotosMcpPeopleManagerController
 from photos_mcp.application.recommendation_storage import DEFAULT_OWNER_STORY_URL
+from photos_mcp.application.share_image_service import ShareImageService
 from photos_mcp.application.storage_insights import StorageInsightsService, format_bytes
 from photos_mcp.interfaces.appkit.shared.theme import (
     ICON_SIZE,
@@ -130,6 +131,8 @@ class PhotosMcpMainWindowController(NSWindowController):
         self._storage_service: StorageInsightsService | None = None
         self._storage_snapshot: dict[str, Any] | None = None
         self._storage_verifying = False
+        self._storage_indexing = False
+        self._storage_cleaning = False
         self._icons: dict[tuple[str, float, bool], Any] = {}
         self._runtime_snapshot = vision_runtime_summary(check_ready=False)
         self._is_runtime_checking = False
@@ -406,7 +409,7 @@ class PhotosMcpMainWindowController(NSWindowController):
         self._label(parent, margin, top - 64.0, usable - 310.0, 22.0, detail, secondary=True, size=11.5)
         verify = self._button(
             parent,
-            margin + usable - 292.0,
+            margin + usable - 450.0,
             top - 54.0,
             142.0,
             36.0,
@@ -416,16 +419,28 @@ class PhotosMcpMainWindowController(NSWindowController):
             symbol="refresh",
         )
         verify.setEnabled_(not self._storage_verifying)
-        self._button(
+        index = self._button(
             parent,
-            margin + usable - 140.0,
+            margin + usable - 298.0,
             top - 54.0,
-            140.0,
+            144.0,
             36.0,
-            "정리 예상 보기",
+            "색인 중…" if self._storage_indexing else "기존 캐시 색인",
+            self,
+            "indexStorageCache:",
+        )
+        index.setEnabled_(not self._storage_indexing)
+        cleanup = self._button(
+            parent,
+            margin + usable - 144.0,
+            top - 54.0,
+            144.0,
+            36.0,
+            "정리 중…" if self._storage_cleaning else "정리 계획 만들기",
             self,
             "showStorageCleanupPreview:",
         )
+        cleanup.setEnabled_(not self._storage_cleaning)
 
         categories = dict(snapshot.get("categories") or {})
         recommendations = dict(snapshot.get("recommendations") or {})
@@ -492,7 +507,7 @@ class PhotosMcpMainWindowController(NSWindowController):
 
         def worker() -> None:
             try:
-                payload = self._storage_service.snapshot(verify_files=True)
+                payload = self._storage_service.snapshot(verify_files=True, force=True)
             except Exception as exc:
                 payload = {"error": str(exc)}
             self.performSelectorOnMainThread_withObject_waitUntilDone_("storageVerified:", payload, False)
@@ -516,21 +531,101 @@ class PhotosMcpMainWindowController(NSWindowController):
 
     def showStorageCleanupPreview_(self, _sender) -> None:
         from AppKit import NSAlert
-        if self._storage_service is None:
+        if self._storage_service is None or self._storage_cleaning:
             return
-        snapshot = self._storage_snapshot or self._storage_service.snapshot(verify_files=False)
-        google = dict(snapshot.get("google_imports") or {})
-        recommendations = dict(snapshot.get("recommendations") or {})
+        plan = self._storage_service.prepare_cleanup()
         alert = NSAlert.alloc().init()
-        alert.setMessageText_("정리 예상")
+        alert.setMessageText_("관리 캐시 정리 계획")
         alert.setInformativeText_(
-            f"해제된 Google 임시 원본 {int(google.get('reclaimable_count') or 0)}개 · {format_bytes(google.get('reclaimable_byte_size'))}\n"
-            f"Google 임시 파일 전체 {format_bytes(google.get('verified_byte_size'))} · 과거 파일은 정리 전 참조 재확인 필요\n"
-            f"추천 파일 누락 {int(recommendations.get('missing_count') or 0)}개 · 용량 불일치 {int(recommendations.get('mismatch_count') or 0)}개\n\n"
-            "이 화면은 삭제 전에 영향을 확인하는 용도이며 파일을 변경하지 않습니다."
+            f"삭제 후보 {int(plan.get('candidate_count') or 0)}건 · {format_bytes(plan.get('reclaimable_byte_size'))}\n\n"
+            "보호 대상: 추천 원본, Story와 인물 데이터, 사용 중인 화면 캐시\n"
+            "승인 직전에 파일 상태와 관리 경로를 다시 확인합니다."
         )
+        alert.addButtonWithTitle_("승인 후 정리")
+        alert.addButtonWithTitle_("취소")
+        if int(alert.runModal()) != 1000:
+            try:
+                self._storage_service.repository.decide_mutation_plan(
+                    str(plan.get("approval_token") or ""), "rejected"
+                )
+            except (KeyError, ValueError):
+                pass
+            return
+        token = str(plan.get("approval_token") or "")
+        if not self._storage_service.repository.decide_mutation_plan(token, "approved"):
+            return
+        self._storage_cleaning = True
+        self.rebuild()
+
+        def worker() -> None:
+            try:
+                payload = self._storage_service.execute_cleanup(token)
+            except Exception as exc:
+                payload = {"error": str(exc)}
+            self.performSelectorOnMainThread_withObject_waitUntilDone_("storageCleaned:", payload, False)
+
+        Thread(target=worker, name="photos-mcp-storage-cleanup", daemon=True).start()
+
+    def storageCleaned_(self, payload) -> None:
+        from AppKit import NSAlert
+        self._storage_cleaning = False
+        result = dict(payload or {})
+        alert = NSAlert.alloc().init()
+        if result.get("error"):
+            alert.setMessageText_("저장 공간을 정리하지 못했습니다")
+            alert.setInformativeText_(str(result["error"]))
+        else:
+            alert.setMessageText_("관리 캐시 정리 완료")
+            alert.setInformativeText_(
+                f"{int(result.get('deleted_file_count') or 0)}개 파일 · "
+                f"{format_bytes(result.get('reclaimed_byte_size'))} 확보\n"
+                f"영수증: {str(result.get('receipt_id') or '')}"
+            )
+            self._storage_snapshot = self._storage_service.snapshot(verify_files=True, force=True)
         alert.addButtonWithTitle_("확인")
         alert.runModal()
+        if self._selected_tab == "storage":
+            self.rebuild()
+
+    def indexStorageCache_(self, _sender) -> None:
+        if self._storage_indexing or self._storage_service is None:
+            return
+        self._storage_indexing = True
+        self.rebuild()
+        repository = self._storage_service.repository
+        cache_root = self._storage_service.cache_root / "shared-story-assets"
+        source_root = self._storage_service.recommendation_path
+
+        def worker() -> None:
+            try:
+                payload = ShareImageService(
+                    repository,
+                    source_root=source_root,
+                    cache_root=cache_root,
+                ).index_existing_legacy_derivatives()
+            except Exception as exc:
+                payload = {"error": str(exc)}
+            self.performSelectorOnMainThread_withObject_waitUntilDone_("storageIndexed:", payload, False)
+
+        Thread(target=worker, name="photos-mcp-storage-index", daemon=True).start()
+
+    def storageIndexed_(self, payload) -> None:
+        from AppKit import NSAlert
+        self._storage_indexing = False
+        result = dict(payload or {})
+        alert = NSAlert.alloc().init()
+        if result.get("error"):
+            alert.setMessageText_("기존 캐시를 색인하지 못했습니다")
+            alert.setInformativeText_(str(result["error"]))
+        else:
+            alert.setMessageText_("기존 캐시 색인 완료")
+            alert.setInformativeText_(f"{int(result.get('indexed_count') or 0)}개 연결 · {int(result.get('skipped_count') or 0)}개 건너뜀")
+            self._storage_service.invalidate()
+            self._storage_snapshot = self._storage_service.snapshot(verify_files=True, force=True)
+        alert.addButtonWithTitle_("확인")
+        alert.runModal()
+        if self._selected_tab == "storage":
+            self.rebuild()
 
     @objc.python_method
     def _build_people(self, parent: Any, width: float, height: float) -> None:

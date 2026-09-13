@@ -137,6 +137,56 @@ def test_derivative_reuses_legacy_preview_without_reencoding(tmp_path: Path) -> 
     assert totals["reference_count"] == 1
 
 
+def test_bulk_index_links_only_existing_legacy_derivatives(tmp_path: Path) -> None:
+    repository, source_root = _repository(tmp_path)
+    cache_root = tmp_path / "shared-story-assets"
+    share_id = "share-legacy-0001"
+    public_asset_id = "public-legacy-0001"
+    repository.upsert_shared_story_package(
+        {
+            "share_id": share_id,
+            "story_id": "story-legacy",
+            "expires_at": (NOW + timedelta(days=30)).isoformat(),
+            "photos": [
+                {
+                    "public_asset_id": public_asset_id,
+                    "local_asset_id": "local-asset-000000000001",
+                }
+            ],
+        }
+    )
+    legacy = cache_root / share_id / public_asset_id / "thumb-share-jpeg-v1.jpg"
+    legacy.parent.mkdir(parents=True)
+    Image.new("RGB", (640, 640), "#64805c").save(legacy, format="JPEG")
+    service = ShareImageService(repository, source_root=source_root, cache_root=cache_root)
+
+    result = service.index_existing_legacy_derivatives()
+
+    assert result == {"indexed_count": 1, "skipped_count": 1}
+    assert repository.derivative_storage_totals()["reference_count"] == 1
+    indexed = cache_root / "derivatives" / ("a" * 64) / "share-jpeg-v1" / "thumb.jpg"
+    assert indexed.samefile(legacy)
+
+
+def test_bulk_index_maps_owner_surface_asset_ids_without_rendering_missing_variants(tmp_path: Path) -> None:
+    repository, source_root = _repository(tmp_path)
+    cache_root = tmp_path / "shared-story-assets"
+    asset_id = "local-asset-000000000001"
+    legacy = cache_root / "mobile-owner" / asset_id / "preview-share-jpeg-v1.jpg"
+    legacy.parent.mkdir(parents=True)
+    Image.new("RGB", (640, 360), "#50657a").save(legacy, format="JPEG")
+
+    result = ShareImageService(
+        repository,
+        source_root=source_root,
+        cache_root=cache_root,
+    ).index_existing_legacy_derivatives()
+
+    assert result == {"indexed_count": 1, "skipped_count": 1}
+    indexed = cache_root / "derivatives" / ("a" * 64) / "share-jpeg-v1" / "preview.jpg"
+    assert indexed.samefile(legacy)
+
+
 def test_share_defaults_to_thirty_days_and_never_persists_plain_passcode(tmp_path: Path) -> None:
     repository, _root = _repository(tmp_path)
     story = build_recommendation_story(repository, now=NOW)

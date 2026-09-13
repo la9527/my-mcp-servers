@@ -405,7 +405,7 @@ Apple Photos 6장은 Linux 워크스테이션이 준비되지 않아 다음 실�
 - Mac 사이드바에 독립 `저장 공간` 화면을 추가했다. SQLite 기록을 먼저 보여주고 실제 파일 검증은 백그라운드에서 수행한다.
 - 추천 보관소의 기록/실측/누락/불일치, Google 임시 다운로드, 분석·인물 데이터, Chrome 전용 profile, 외장 볼륨 여유 공간을 구분한다.
 - Story는 고유 추천 사진 참조 용량과 화면 캐시 용량을 따로 표시한다.
-- 정리 기능은 즉시 삭제하지 않고 예상 확보량과 보호 범위를 보여주는 preview만 제공한다.
+- 정리 기능은 즉시 삭제하지 않고 계획을 저장한 뒤 명시적 승인을 받아 실행하며, 결과를 영수증으로 보존한다. 1차 대상은 `released` 상태의 PhotosMcp 관리 Google 임시 파일뿐이며 추천 원본·Story·인물 데이터·참조 중인 파생물은 제외한다.
 
 ### 11.3 Story 파생 이미지
 
@@ -435,11 +435,10 @@ Apple Photos 6장은 Linux 워크스테이션이 준비되지 않아 다음 실�
 
 읽기 전용 실제 저장소 점검에서는 추천 보관소 272장, Story 8개, Google 임시 cache 약 1.91GB가 정상 집계됐다. 기존 Google lease에는 크기 column이 없던 기간이 있으므로 DB 기록값은 0일 수 있지만, `실제 파일 확인`을 누르면 파일시스템 검증값과 미측정 건수를 별도로 보여준다.
 
-## 12. 후속 최적화
+## 12. P1 최적화 구현 결과
 
-다음 항목은 이번 P0의 완료를 막지 않는 선택적 P1이다.
-
-- 02:55 Vision preflight를 03:00 사진 작업과 별도 예약으로 분리
-- deferred 재실행 간 Stage 1 checkpoint 재사용률 계측
-- 최초 대규모 기존 캐시 승격을 위한 유휴 시간 bulk indexer
-- storage snapshot TTL과 정리 승인·영수증 workflow 연결
+- Hermes no-agent cron `PhotosMcp Vision 사전 준비`(`97704d9eab09`)를 매일 02:55 KST에 추가했다. 600초 범위에서 versioned helper를 실행하며 성공은 무음, 실패의 안정 코드만 Telegram으로 전달한다. 기존 03:00 통합 선별 cron은 그대로 유지한다.
+- 동일 run ID 재실행 시 Stage 1과 Vision checkpoint의 `reused_count`와 `computed_count`를 결과 요약에 기록한다. deferred 오류 결과에도 이 계측값이 남아 다음 실행에서 실제 절감량을 비교할 수 있다.
+- 저장 공간 화면에 `기존 캐시 색인`을 추가했다. 공유 package로 소유 관계가 확인되는 기존 파일만 콘텐츠 주소 캐시에 hardlink하고 원장/reference를 만들며, 없는 파생물은 bulk 작업 중 새로 렌더링하지 않는다.
+- 빠른 저장량 projection은 60초 TTL로 재사용하고, `실제 파일 확인`, 색인 완료, 정리 완료에서는 강제 갱신한다.
+- `정리 계획 만들기 → 사용자 승인 → 실행 직전 상태·경로 재검증 → 영수증` 흐름을 연결했다. 현재 삭제 허용 범위는 관리 cache root 내부의 released Google 임시 파일로 제한된다.

@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+import hashlib
+import json
+import secrets
 import shutil
 import sqlite3
+import time
 from typing import Any
+import uuid
 
 from photos_mcp.application.recommendation_storage import recommendation_root
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
@@ -111,14 +116,24 @@ class StorageInsightsService:
         cache_root: str | Path | None = None,
         runtime_root: str | Path | None = None,
         home_root: str | Path | None = None,
+        snapshot_ttl_seconds: float = 60.0,
+        now_fn: Any = time.monotonic,
     ) -> None:
         self.repository = repository
         self.recommendation_path = Path(recommendation_path or recommendation_root())
         self.cache_root = Path(cache_root or photos_mcp_cache_root())
         self.runtime_root = Path(runtime_root or photos_mcp_runtime_root())
         self.home_root = Path(home_root or photos_mcp_home())
+        self.snapshot_ttl_seconds = max(0.0, float(snapshot_ttl_seconds))
+        self._now_fn = now_fn
+        self._snapshot_cache: dict[bool, tuple[float, dict[str, Any]]] = {}
 
-    def snapshot(self, *, verify_files: bool = False) -> dict[str, Any]:
+    def snapshot(self, *, verify_files: bool = False, force: bool = False) -> dict[str, Any]:
+        cache_key = bool(verify_files)
+        observed = float(self._now_fn())
+        cached = self._snapshot_cache.get(cache_key)
+        if not force and cached and observed - cached[0] < self.snapshot_ttl_seconds:
+            return dict(cached[1])
         recommendation = self.repository.recommendation_storage_totals()
         derivative = self.repository.derivative_storage_totals()
         stories = self.repository.story_storage_totals(limit=200)
@@ -149,6 +164,7 @@ class StorageInsightsService:
             },
         }
         if not verify_files:
+            self._snapshot_cache[cache_key] = (observed, dict(result))
             return result
 
         recommendation_usage = directory_usage(self.recommendation_path)
@@ -202,6 +218,167 @@ class StorageInsightsService:
                 "chrome_profile": int(chrome_usage["byte_size"]),
             }
         )
+        self._snapshot_cache[cache_key] = (observed, dict(result))
+        return result
+
+    def invalidate(self) -> None:
+        self._snapshot_cache.clear()
+
+    def prepare_cleanup(self, *, ttl_seconds: float = 900.0) -> dict[str, Any]:
+        """Persist a private deletion plan for released Google import files only.
+
+        Recommendation originals, Story manifests, and referenced derivatives are
+        intentionally outside this first cleanup contract.
+        """
+        private_candidates = self._released_google_candidates()
+        candidates = [
+            {
+                "session_id": item["session_id"],
+                "asset_key": item["asset_key"],
+                "byte_size": item["byte_size"],
+                "path_fingerprint": self._path_fingerprint(item.get("paths") or []),
+            }
+            for item in private_candidates
+        ]
+        canonical = json.dumps(candidates, sort_keys=True, separators=(",", ":"))
+        fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        token = secrets.token_urlsafe(24)
+        created_at = time.time()
+        idempotency_key = f"storage-cleanup:{fingerprint}"
+        plan = {
+            "action": "cleanup_managed_storage",
+            "destructive": True,
+            "candidate_count": len(candidates),
+            "reclaimable_byte_size": sum(int(item["byte_size"]) for item in candidates),
+            "protected": ["recommendation_originals", "story_manifests", "referenced_derivatives"],
+            # Even the private plan stores only a fingerprint, not filesystem paths.
+            "candidates": candidates,
+        }
+        self.repository.save_mutation_plan(
+            {
+                "token": token,
+                "fingerprint": fingerprint,
+                "idempotency_key": idempotency_key,
+                "tool": "photos_storage",
+                "action": "cleanup_managed_storage",
+                "status": "pending",
+                "options": {},
+                "mutation_plan": plan,
+                "created_at": created_at,
+                "expires_at": created_at + max(60.0, float(ttl_seconds)),
+            }
+        )
+        return {
+            "status": "awaiting_approval",
+            "approval_token": token,
+            "candidate_count": plan["candidate_count"],
+            "reclaimable_byte_size": plan["reclaimable_byte_size"],
+            "protected": list(plan["protected"]),
+        }
+
+    def execute_cleanup(self, approval_token: str) -> dict[str, Any]:
+        saved = self.repository.get_mutation_plan(str(approval_token))
+        if saved is None or saved.get("status") != "approved":
+            raise ValueError("storage_cleanup_not_approved")
+        if saved.get("action") != "cleanup_managed_storage":
+            raise ValueError("storage_cleanup_plan_mismatch")
+        if not self.repository.consume_mutation_plan(str(approval_token)):
+            raise ValueError("storage_cleanup_token_consumed")
+
+        planned = {
+            (str(item.get("session_id") or ""), str(item.get("asset_key") or "")): item
+            for item in list((saved.get("mutation_plan") or {}).get("candidates") or [])
+            if isinstance(item, dict)
+        }
+        current = {
+            (str(item.get("session_id") or ""), str(item.get("asset_key") or "")): item
+            for item in self._released_google_candidates()
+        }
+        deleted = 0
+        reclaimed = 0
+        for key, item in planned.items():
+            fresh = current.get(key)
+            if fresh is None or self._path_fingerprint(fresh.get("paths") or []) != item.get(
+                "path_fingerprint"
+            ):
+                continue
+            for raw in list(fresh.get("paths") or []):
+                path = Path(str(raw)).expanduser().resolve()
+                root = (self.cache_root / "google-photos-imports").expanduser().resolve()
+                if path == root or root not in path.parents or not path.is_file():
+                    continue
+                try:
+                    size = path.stat().st_size
+                    path.unlink()
+                    deleted += 1
+                    reclaimed += max(0, int(size))
+                except OSError:
+                    continue
+        receipt = {
+            "receipt_id": f"receipt-{uuid.uuid4().hex[:16]}",
+            "idempotency_key": str(saved["idempotency_key"]),
+            "status": "completed",
+            "action": "cleanup_managed_storage",
+            "deleted_file_count": deleted,
+            "reclaimed_byte_size": reclaimed,
+            "protected": ["recommendation_originals", "story_manifests", "referenced_derivatives"],
+        }
+        self.repository.save_mutation_receipt(receipt)
+        self.invalidate()
+        return receipt
+
+    @staticmethod
+    def _path_fingerprint(paths: list[str]) -> str:
+        canonical = json.dumps(sorted(str(path) for path in paths), separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _released_google_candidates(self) -> list[dict[str, Any]]:
+        database = self.runtime_root / "google-photos" / "import-leases.sqlite3"
+        if not database.is_file():
+            return []
+        root = (self.cache_root / "google-photos-imports").expanduser().resolve()
+        result: list[dict[str, Any]] = []
+        try:
+            connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """SELECT session_id, asset_key, local_path, sidecar_path
+                   FROM google_import_leases WHERE state = 'released'
+                   ORDER BY session_id, asset_key"""
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+        finally:
+            try:
+                connection.close()
+            except (NameError, sqlite3.Error):
+                pass
+        for row in rows:
+            paths: list[str] = []
+            total = 0
+            for raw in (str(row["local_path"] or ""), str(row["sidecar_path"] or "")):
+                if not raw:
+                    continue
+                source_path = Path(raw).expanduser()
+                if source_path.is_symlink():
+                    continue
+                candidate = source_path.resolve()
+                if candidate == root or root not in candidate.parents or not candidate.is_file():
+                    continue
+                paths.append(str(candidate))
+                try:
+                    total += max(0, int(candidate.stat().st_size))
+                except OSError:
+                    pass
+            if paths:
+                result.append(
+                    {
+                        "session_id": str(row["session_id"]),
+                        "asset_key": str(row["asset_key"]),
+                        "paths": paths,
+                        "byte_size": total,
+                    }
+                )
         return result
 
     def _google_lease_totals(self) -> dict[str, Any]:
