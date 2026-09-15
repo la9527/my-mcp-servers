@@ -5,9 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import hashlib
 import json
-import os
 from pathlib import Path
-import sys
 from typing import Any, Iterable
 
 from photos_mcp.application.person_identity_repository import (
@@ -23,62 +21,22 @@ from photos_mcp.application.people_automation_policy import (
     should_promote_new_person,
 )
 from photos_mcp.application.recommendation_storage import recommendation_root
-from photos_mcp.infrastructure.runtime.paths import photos_mcp_home
+from photos_mcp.infrastructure.vision.face_runtime import (
+    DETECTION_PREPROCESSOR_VERSION,
+    DETECTOR_MODEL,
+    MODEL_FAMILY,
+    MODEL_MINIMUM_BYTES,
+    MODEL_VERSION,
+    RECOGNIZER_MODEL,
+    bounded_detector_image as _bounded_detector_image,
+    face_to_source_coordinates as _face_to_source_coordinates,
+    model_file_sha256,
+    resolve_face_models,
+)
 
 
-MODEL_FAMILY = "opencv-yunet-sface"
-MODEL_VERSION = "yunet-2023mar+sface-2021dec"
-DETECTOR_MODEL = "face_detection_yunet_2023mar.onnx"
-RECOGNIZER_MODEL = "face_recognition_sface_2021dec.onnx"
-MODEL_MINIMUM_BYTES = {
-    DETECTOR_MODEL: 200_000,
-    RECOGNIZER_MODEL: 36_000_000,
-}
 CANDIDATE_SIMILARITY = 0.55
 PERSON_MATCH_POLICY_VERSION = PEOPLE_AUTOMATION_POLICY_VERSION
-DETECTOR_MAX_LONG_EDGE = 1600
-DETECTION_PREPROCESSOR_VERSION = "bounded-long-edge-1600-v1"
-
-
-def _bounded_detector_image(image: Any, cv2_module: Any) -> tuple[Any, float, float]:
-    """Return a context-preserving detector input and its source scale factors.
-
-    YuNet becomes materially less reliable when a multi-person phone photo is
-    passed at full camera resolution. Detection therefore runs on a bounded
-    proxy while alignment, embeddings, crops and stored geometry continue to
-    use the original pixels.
-    """
-
-    height, width = image.shape[:2]
-    scale = min(1.0, float(DETECTOR_MAX_LONG_EDGE) / float(max(width, height)))
-    if scale >= 1.0:
-        return image, 1.0, 1.0
-    detector_width = max(1, int(round(width * scale)))
-    detector_height = max(1, int(round(height * scale)))
-    proxy = cv2_module.resize(
-        image,
-        (detector_width, detector_height),
-        interpolation=cv2_module.INTER_AREA,
-    )
-    return proxy, detector_width / float(width), detector_height / float(height)
-
-
-def _face_to_source_coordinates(face: Any, scale_x: float, scale_y: float) -> Any:
-    """Map a YuNet row (box plus five landmarks) back to source pixels."""
-
-    import numpy as np
-
-    if scale_x <= 0.0 or scale_y <= 0.0:
-        raise ValueError("invalid detector scale")
-    mapped = np.asarray(face, dtype="float32").copy()
-    # YuNet: x, y, w, h, right-eye, left-eye, nose, mouth corners, score.
-    for index in (0, 2, 4, 6, 8, 10, 12):
-        if index < mapped.size:
-            mapped[index] /= scale_x
-    for index in (1, 3, 5, 7, 9, 11, 13):
-        if index < mapped.size:
-            mapped[index] /= scale_y
-    return mapped
 
 
 @dataclass(frozen=True)
@@ -105,39 +63,6 @@ class PersonIndexResult:
     skipped_google_count: int
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _resource_model_roots() -> tuple[Path, ...]:
-    configured = os.environ.get("PHOTOS_MCP_PERSON_MODEL_ROOT", "").strip()
-    if configured:
-        # An explicit model root is an operational override, not merely another
-        # search location. Failing closed exposes a bad deployment path instead
-        # of silently selecting a stale model from the user cache.
-        return (Path(configured).expanduser(),)
-    roots = [photos_mcp_home() / "cache" / "models" / "person-shadow"]
-    executable = Path(sys.executable).resolve()
-    if ".app" in str(executable):
-        roots.insert(0, executable.parents[1] / "Resources" / "person-models")
-    return tuple(roots)
-
-
-def resolve_face_models() -> dict[str, Path]:
-    for root in _resource_model_roots():
-        paths = {name: root / name for name in MODEL_MINIMUM_BYTES}
-        if all(
-            path.is_file() and path.stat().st_size >= MODEL_MINIMUM_BYTES[name]
-            for name, path in paths.items()
-        ):
-            return paths
-    return {}
-
-
 def face_runtime_status() -> FaceRuntimeStatus:
     missing: list[str] = []
     try:
@@ -152,7 +77,9 @@ def face_runtime_status() -> FaceRuntimeStatus:
     fingerprint = ""
     if models:
         fingerprint = hashlib.sha256(
-            "\n".join(f"{name}:{_sha256(models[name])}" for name in sorted(models)).encode("utf-8")
+            "\n".join(
+                f"{name}:{model_file_sha256(models[name])}" for name in sorted(models)
+            ).encode("utf-8")
         ).hexdigest()
     if missing:
         return FaceRuntimeStatus(

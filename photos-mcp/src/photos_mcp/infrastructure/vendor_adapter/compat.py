@@ -26,6 +26,13 @@ from photos_mcp.infrastructure.sources.local_files.raw_image import (
     raw_preview_jpeg_bytes,
 )
 from photos_mcp.infrastructure.vision.broker_client import default_runtime_broker_client
+from photos_mcp.infrastructure.vision.face_runtime import (
+    DETECTOR_MODEL,
+    RECOGNIZER_MODEL,
+    bounded_detector_image,
+    face_to_source_coordinates,
+    resolve_face_models,
+)
 from photos_mcp.infrastructure.vision.runtime import resolve_vision_runtime_settings
 
 
@@ -51,12 +58,17 @@ def apple_photo_is_managed_output(photo: Any) -> bool:
             return True
     return False
 
+
 __all__ = [
+    "DETECTOR_MODEL",
     "RAW_IMAGE_EXTENSIONS",
+    "RECOGNIZER_MODEL",
     "ToolLogContext",
     "apple_photo_is_managed_output",
+    "bounded_detector_image",
     "default_runtime_broker_client",
     "default_terminal_python",
+    "face_to_source_coordinates",
     "get_apple_photos_db",
     "log_context",
     "open_raw_preview",
@@ -66,5 +78,6 @@ __all__ = [
     "preferred_original_path",
     "raw_image_dimensions",
     "raw_preview_jpeg_bytes",
+    "resolve_face_models",
     "resolve_vision_runtime_settings",
 ]

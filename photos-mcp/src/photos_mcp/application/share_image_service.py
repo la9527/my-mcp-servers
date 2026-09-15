@@ -22,7 +22,7 @@ from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 from photos_mcp.infrastructure.runtime.paths import photos_mcp_cache_root
 
 
-DerivativeKind = Literal["thumb", "preview", "download"]
+DerivativeKind = Literal["thumb", "gallery", "preview", "download"]
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 _POLICY_VERSION = "share-jpeg-v1"
 
@@ -54,7 +54,7 @@ class ShareImageService:
     ) -> Path:
         if not _SAFE_ID.fullmatch(share_id) or not _SAFE_ID.fullmatch(public_asset_id):
             raise ShareImageError("Invalid public asset identifier")
-        if kind not in {"thumb", "preview", "download"}:
+        if kind not in {"thumb", "gallery", "preview", "download"}:
             raise ShareImageError("Unsupported derivative kind")
         asset = self.repository.get_local_recommendation_asset_by_id(local_asset_id)
         if asset is None:
@@ -232,6 +232,8 @@ class ShareImageService:
                         (640, 640),
                         method=Image.Resampling.LANCZOS,
                     )
+                elif kind == "gallery":
+                    image.thumbnail((768, 768), Image.Resampling.LANCZOS)
                 else:
                     image.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
                 temporary = destination.with_suffix(".tmp")

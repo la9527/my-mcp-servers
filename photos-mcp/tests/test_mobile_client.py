@@ -475,8 +475,17 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         assert "SameSite=strict" in bootstrap.headers["set-cookie"]
 
         story = client.get("/mobile-client/story")
+        presentation_update = client.post(
+            "/mobile-client/story/presentation",
+            data={"theme_id": "spatial_ribbon", "presentation_revision": "1"},
+            follow_redirects=False,
+        )
+        themed_story = client.get("/mobile-client/story")
         css = client.get("/mobile-client/story/story.css")
         js = client.get("/mobile-client/story/story.js")
+        swiper_css = client.get("/mobile-client/story/swiper-bundle.min.css")
+        swiper_js = client.get("/mobile-client/story/swiper-bundle.min.js")
+        favicon = client.get("/mobile-client/story/favicon.svg")
         thumb = client.get(
             "/mobile-client/story/assets/local-asset-mobile-000001/thumb"
         )
@@ -485,10 +494,36 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         )
 
         assert story.status_code == 200
+        assert 'data-story-theme="scroll_cinema"' in story.text
+        assert 'action="/mobile-client/story/presentation"' in story.text
+        assert presentation_update.status_code == 303
+        assert presentation_update.headers["location"] == "/mobile-client/story"
+        assert 'data-story-theme="spatial_ribbon"' in themed_story.text
+        # The installed Android WebView uses this authenticated form and GET,
+        # not a separate theme renderer. Verify every new ID survives saving.
+        for theme_id in ("quiet_memories", "moment_clusters", "memory_volume", "scroll_cinema"):
+            current = client.get("/mobile-client/story")
+            revision = current.text.split('name="presentation_revision" value="', 1)[1].split('"', 1)[0]
+            saved = client.post(
+                "/mobile-client/story/presentation",
+                data={"theme_id": theme_id, "presentation_revision": str(revision)},
+                follow_redirects=False,
+            )
+            assert saved.status_code == 303
+            reopened = client.get("/mobile-client/story")
+            assert f'data-story-theme="{theme_id}"' in reopened.text
+        gallery = client.get("/mobile-client/story/assets/local-asset-mobile-000001/gallery")
+        assert gallery.status_code == 200
+        assert gallery.headers["content-type"].startswith("image/jpeg")
         assert "/mobile-client/story/story.css" in story.text
         assert "/mobile-client/story/assets/local-asset-mobile-000001/thumb" in story.text
         assert css.status_code == 200
         assert js.status_code == 200
+        assert swiper_css.status_code == 200
+        assert swiper_js.status_code == 200
+        assert "Swiper 14.2.0" in swiper_js.text
+        assert favicon.status_code == 200
+        assert favicon.headers["content-type"].startswith("image/svg+xml")
         assert thumb.status_code == 200
         assert thumb.headers["content-type"] == "image/jpeg"
         assert replay.status_code == 401

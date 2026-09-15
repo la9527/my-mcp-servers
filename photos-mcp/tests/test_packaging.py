@@ -4,6 +4,8 @@ import plistlib
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from photos_mcp.operations.packaging import builder as packaging
 from photos_mcp.operations.packaging.contract import (
     PY2APP_INCLUDES,
@@ -64,8 +66,21 @@ def test_build_face_model_resources_requires_both_models(tmp_path: Path) -> None
     ]
 
 
-def test_ui_uses_native_symbols_without_packaged_raster_icons() -> None:
-    assert build_ui_resources() == []
+def test_ui_resources_bundle_pinned_swiper_and_license(tmp_path: Path) -> None:
+    expected = []
+    for name in packaging.SWIPER_ASSET_NAMES:
+        path = tmp_path / name
+        path.write_bytes(name.encode("utf-8"))
+        expected.append(str(path))
+
+    assert build_ui_resources(tmp_path) == [("story-assets", expected)]
+
+
+def test_ui_resources_fail_build_when_swiper_bundle_is_incomplete(tmp_path: Path) -> None:
+    (tmp_path / "swiper-bundle.min.css").write_text("css", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="swiper-bundle.min.js, LICENSE"):
+        build_ui_resources(tmp_path)
 
 
 def test_info_plist_keeps_photos_mcp_visible_as_regular_app() -> None:
@@ -120,6 +135,7 @@ def test_framework_build_keeps_bundle_signed_after_health_check() -> None:
     assert 'PYTHONDONTWRITEBYTECODE=1 "$INSTALL_BUNDLE_PATH/Contents/MacOS/PhotosMcp" --health' in script_text
     assert 'PYTHONDONTWRITEBYTECODE=1 "$APP_BUNDLE/Contents/MacOS/PhotosMcp" --vendor-runtime-smoke' in script_text
     assert 'PYTHONDONTWRITEBYTECODE=1 "$INSTALL_BUNDLE_PATH/Contents/MacOS/PhotosMcp" --vendor-runtime-smoke' in script_text
+    assert "photo-ranker-face-runtime-ready:opencv-yunet-sface" in script_text
     assert script_text.count('codesign --verify --deep --strict "$APP_BUNDLE"') >= 2
     assert script_text.count('codesign --verify --deep --strict "$INSTALL_BUNDLE_PATH"') >= 2
 

@@ -7,7 +7,6 @@ from pathlib import Path
 import subprocess
 import sys
 import textwrap
-import json
 
 from photos_mcp.app.config import load_config
 from photos_mcp.app.main import run_cli
@@ -739,6 +738,49 @@ def test_owner_story_page_queues_mac_manual_story_without_resurrecting_deleted_d
     assert operations[0]["origin"] == "mac_app"
     assert operations[0]["request"]["date_from"] == "2020-09-01"
     assert operations[0]["request"]["sources"] == ["apple"]
+
+
+def test_owner_story_visual_theme_is_saved_and_rendered(tmp_path) -> None:
+    from starlette.testclient import TestClient
+
+    config = load_config()
+    state_store = PhotosMcpStateStore(
+        endpoint=config.endpoint,
+        health_endpoint=config.health_endpoint,
+        repository_path=tmp_path / "jobs.db",
+    )
+    state_store.run_repository.upsert_story_manifest(
+        {
+            "story_id": "story-theme-test",
+            "title": "테마 확인",
+            "subtitle": "같은 사진을 다른 스타일로 봅니다.",
+            "photos": [],
+            "chapters": [],
+        }
+    )
+    app = build_http_app(config=config, state_store=state_store)
+
+    with TestClient(app) as client:
+        initial = client.get("/photos/stories/story-theme-test")
+        updated = client.post(
+            "/photos/stories/story-theme-test/presentation",
+            data={"theme_id": "spatial_ribbon", "presentation_revision": "1"},
+            follow_redirects=False,
+        )
+        rendered = client.get("/photos/stories/story-theme-test")
+
+    assert initial.status_code == 200
+    assert 'data-story-theme="scroll_cinema"' in initial.text
+    assert updated.status_code == 303
+    assert updated.headers["location"] == "/photos/stories/story-theme-test"
+    assert 'data-story-theme="spatial_ribbon"' in rendered.text
+    assert state_store.run_repository.get_story_presentation("story-theme-test") == {
+        "schema_version": 1,
+        "theme_id": "spatial_ribbon",
+        "design_preset": "spatial-ribbon-v1",
+        "presentation_revision": 1,
+        "selection_mode": "manual",
+    }
 
 
 def test_owner_story_creates_30_day_share_derivatives_and_blocks_cross_site_post(

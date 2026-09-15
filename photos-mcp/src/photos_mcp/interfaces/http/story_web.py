@@ -8,6 +8,7 @@ import html
 import os
 from pathlib import Path
 import secrets
+import sys
 from threading import RLock
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -18,13 +19,30 @@ from starlette.responses import FileResponse, HTMLResponse, PlainTextResponse, R
 from starlette.routing import Route
 
 from photos_mcp.application.share_image_service import ShareImageError, ShareImageService
-from photos_mcp.application.story_sharing import StoryShareService, build_recommendation_story
+from photos_mcp.application.story_presentation import (
+    CURRENT_STORY_THEME_IDS,
+    STORY_THEME_DEFINITIONS,
+    automatic_story_presentation,
+    normalize_story_presentation,
+    owner_story_presentation,
+)
+from photos_mcp.interfaces.http.story_experience import EXPERIENCE_CSS, EXPERIENCE_JS
+from photos_mcp.interfaces.http.story_book import BOOK_CSS, BOOK_JS
+from photos_mcp.interfaces.http.story_spatial import SPATIAL_CSS, SPATIAL_JS
+from photos_mcp.interfaces.http.story_gallery import GALLERY_CSS, GALLERY_JS
+from photos_mcp.application.story_sharing import StoryShareService
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 from photos_mcp.infrastructure.google_location import maps_embed_api_key
 from photos_mcp.infrastructure.runtime.paths import ensure_private_directory, photos_mcp_runtime_root
 
 
 SESSION_COOKIE = "photos_story_session"
+SWIPER_VERSION = "14.2.0"
+STORY_ASSET_VERSION = "11"
+SWIPER_ASSET_NAMES = frozenset(
+    {"swiper-bundle.min.css", "swiper-bundle.min.js", "LICENSE"}
+)
+STORY_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#153cff"/><circle cx="45" cy="20" r="7" fill="#ffd325"/><path d="M10 49 25 30l10 11 7-8 12 16Z" fill="#fffdf8"/></svg>"""
 PUBLIC_HEADERS = {
     "Cache-Control": "no-store, private",
     "Content-Security-Policy": (
@@ -46,56 +64,184 @@ STORY_CSS = r"""
 a{color:inherit}.shell{width:min(1120px,100%);margin:auto;padding:clamp(20px,4vw,52px) clamp(16px,3vw,36px) 72px}.eyebrow{margin:0;color:var(--accent);font-size:.78rem;font-weight:750;letter-spacing:.12em;text-transform:uppercase}
 h1{font-family:ui-serif,Georgia,serif;font-size:clamp(2rem,6vw,4.6rem);line-height:1.02;letter-spacing:-.045em;margin:.35rem 0 .9rem;max-width:15ch}.lede{max-width:62ch;color:var(--muted);font-size:clamp(1rem,2vw,1.2rem);margin:0}.meta{display:flex;flex-wrap:wrap;gap:8px 18px;margin:24px 0;color:var(--muted);font-size:.9rem}
 .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:end;background:rgba(255,255,255,.7);border:1px solid var(--line);padding:14px;border-radius:18px;margin:26px 0}.toolbar label{font-size:.82rem;color:var(--muted);display:grid;gap:4px}.toolbar select{height:44px;border:1px solid var(--line);border-radius:10px;background:white;padding:0 12px}.check{display:flex!important;align-items:center;gap:8px!important;min-height:44px}.check input{width:20px;height:20px}
-button,.button{min-height:48px;min-width:48px;border:0;border-radius:999px;padding:10px 18px;font:inherit;font-weight:700;cursor:pointer;background:var(--accent);color:#fff;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.secondary{background:var(--accent2);color:var(--accent)}button:focus-visible,.button:focus-visible,.tile:focus-visible{outline:3px solid #e19b38;outline-offset:3px}
+button,.button{min-height:48px;min-width:48px;border:0;border-radius:999px;padding:10px 18px;font:inherit;font-weight:700;cursor:pointer;background:var(--accent);color:#fbfbfd;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.secondary{background:var(--accent2);color:var(--accent)}button:focus-visible,.button:focus-visible,.tile:focus-visible{outline:3px solid #e19b38;outline-offset:3px}
 .notice{border:1px solid var(--line);background:var(--card);padding:16px;border-radius:16px;margin:18px 0}.secret{font:700 1.35rem ui-monospace,monospace;letter-spacing:.16em}.copy-row{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}.owner-tools,.stories,.shares{margin:28px 0}.owner-tools h2,.stories h2,.shares h2{font-family:ui-serif,Georgia,serif;margin-bottom:8px}.owner-tools>p,.stories>p{margin-top:0;color:var(--muted)}.manual-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;background:var(--card);border:1px solid var(--line);padding:16px;border-radius:18px}.manual-form label{font-size:.82rem;color:var(--muted);display:grid;gap:4px}.manual-form input[type=date],.manual-form input[type=number],.manual-form select{height:46px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);padding:0 12px;font:inherit}.manual-form .source-row,.manual-form .action-row{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:12px;align-items:center}.manual-form .source-row label{display:flex;align-items:center;gap:7px;min-height:38px}.manual-form input[type=checkbox]{width:20px;height:20px}.manual-form .action-row{justify-content:space-between}.manual-form .action-row span{color:var(--muted);font-size:.8rem}.story-list,.share-list{display:grid;gap:10px}.story-card,.share-card{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;background:var(--card);border:1px solid var(--line);padding:14px 16px;border-radius:16px}.story-card p,.share-card p{margin:0;color:var(--muted);font-size:.84rem}.share-actions{display:flex;flex-wrap:wrap;gap:8px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}.tile{border:0;background:#d9d5cd;padding:0;position:relative;aspect-ratio:1;overflow:hidden;border-radius:12px;cursor:zoom-in}.tile img{width:100%;height:100%;object-fit:cover;display:block}.tile span{position:absolute;left:8px;bottom:8px;background:rgba(18,24,27,.72);color:#fff;border-radius:999px;padding:3px 8px;font-size:.7rem}
 .story-status{display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:var(--accent2);color:var(--accent);padding:4px 10px;font-size:.78rem;font-weight:700}.chapters{display:grid;gap:clamp(34px,6vw,68px);margin-top:34px}.chapter{border-top:1px solid var(--line);padding-top:22px}.chapter-head{display:grid;grid-template-columns:minmax(0,1fr);gap:5px;margin-bottom:16px}.chapter-date{color:var(--accent);font-size:.78rem;font-weight:750;letter-spacing:.08em}.chapter h2{font-family:ui-serif,Georgia,serif;font-size:clamp(1.6rem,4vw,2.5rem);line-height:1.1;margin:0}.chapter-copy{color:var(--muted);max-width:68ch;margin:5px 0 0}.people-caption{display:flex;align-items:center;gap:7px;color:var(--accent);font-size:.84rem;font-weight:720;margin:4px 0 0}.people-caption::before{content:"인물";border:1px solid currentColor;border-radius:999px;padding:1px 6px;font-size:.64rem;letter-spacing:.04em}.chapter .grid{margin-top:14px}.closing{font-family:ui-serif,Georgia,serif;font-size:clamp(1.1rem,2.2vw,1.45rem);max-width:48ch;margin:50px 0 0;padding:24px 0;border-top:1px solid var(--line)}
 .place-list,.location-overview,.people-overview{display:flex;flex-wrap:wrap;gap:7px;margin:7px 0 0}.place,.location-chip,.person-chip{display:inline-flex;align-items:center;gap:6px;border:0;border-radius:999px;background:var(--accent2);color:var(--accent);padding:4px 10px;font-size:.78rem;font-weight:700;min-height:40px;min-width:0}.place[aria-pressed="true"],.person-chip[aria-pressed="true"]{background:var(--accent);color:#fff}.location-overview{margin:20px 0 4px}.people-overview{margin:9px 0 4px}.people-overview::before{content:"함께한 사람";display:inline-flex;align-items:center;color:var(--muted);font-size:.74rem;font-weight:700;padding-right:2px}.person-chip{background:#eee8f7;color:#5b397a}.person-filter-status{width:100%;margin:2px 0 0;color:var(--muted);font-size:.76rem}.tile[hidden]{display:none}.location-chip[data-status="contextual_estimate"]{background:#eee6d4;color:#72561e}.location-chip[data-status="unknown"]{background:#e7e7e4;color:#626866}.location-subchapter{margin-top:24px}.location-subchapter h3{display:flex;align-items:center;gap:8px;font-size:1rem;margin:0;color:var(--ink)}.location-subchapter h3 span{color:var(--muted);font-size:.72rem;font-weight:600}.location-subchapter .grid{margin-top:10px}.story-map{margin:18px 0 22px;border:1px solid var(--line);border-radius:18px;overflow:hidden;background:var(--card)}.story-map iframe{display:block;width:100%;height:min(52vw,360px);min-height:240px;border:0}.story-map-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;color:var(--muted);font-size:.78rem}.story-map-foot a{font-weight:700;color:var(--accent)}.legal{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:48px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:.78rem}
 .empty{padding:50px 20px;text-align:center;background:var(--card);border:1px solid var(--line);border-radius:20px;margin-top:30px}.lock{width:min(430px,calc(100% - 32px));margin:12vh auto;background:var(--card);border:1px solid var(--line);border-radius:24px;padding:30px;box-shadow:0 20px 60px rgba(40,35,25,.12)}.lock h1{font-size:2.2rem}.lock label{display:grid;gap:7px;color:var(--muted)}.lock input{height:50px;border:1px solid var(--line);border-radius:12px;padding:0 14px;font:1.15rem ui-monospace,monospace;letter-spacing:.12em;margin-bottom:14px;width:100%}.error{color:var(--danger)}
-.viewer{border:0;padding:0;background:var(--scrim);color:white;width:100vw;height:100dvh;max-width:none;max-height:none}.viewer::backdrop{background:var(--scrim)}.viewer-inner{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr) auto auto auto}.viewer-top,.viewer-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px max(10px,env(safe-area-inset-right)) 8px max(10px,env(safe-area-inset-left));background:rgba(8,11,13,.9)}.viewer-top{justify-content:flex-end;padding-top:max(8px,env(safe-area-inset-top));min-height:64px}.viewer-foot{padding-bottom:max(8px,env(safe-area-inset-bottom))}.viewer-actions{display:flex;align-items:center;gap:4px}.viewer button,.viewer .button{background:rgba(255,255,255,.16);backdrop-filter:blur(8px)}.zoom-control{padding:0;width:48px;height:48px;border-radius:50%;font-size:1.15rem}.zoom-reset{font-size:.78rem}.stage{position:relative;display:grid;place-items:center;min-height:0;overflow:hidden;touch-action:none}.stage figure{margin:0;width:100%;height:100%;display:grid;place-items:center;min-width:0;overflow:hidden;touch-action:none;overscroll-behavior:contain}.stage img{max-width:100%;max-height:100%;object-fit:contain;transform:translate3d(0,0,0) scale(1);transform-origin:center;will-change:transform;touch-action:none;user-select:none;-webkit-user-drag:none;cursor:grab}.stage figure.is-zoomed img{cursor:grabbing}.position-indicator{display:grid;gap:5px;padding:8px max(20px,env(safe-area-inset-right)) 1px max(20px,env(safe-area-inset-left));background:rgba(8,11,13,.9)}.position-count{text-align:center;font-size:.8rem;font-weight:750;font-variant-numeric:tabular-nums}.position-track{height:3px;border-radius:999px;background:rgba(255,255,255,.24);overflow:hidden}.position-fill{display:block;width:0;height:100%;border-radius:inherit;background:#82cfb4;transition:width .18s ease}.gesture-hint{margin:0;padding:7px 16px;background:rgba(8,11,13,.9);color:#bec9c3;text-align:center;font-size:.76rem}.caption{min-width:0}.caption strong,.caption span{display:block}.caption span{color:#c7ced2;font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.download[hidden]{display:none}.expiry{font-size:.8rem;color:var(--muted);margin-top:32px}
+.viewer{border:0;padding:0;background:var(--scrim);color:white;width:100vw;height:100dvh;max-width:none;max-height:none}.viewer::backdrop{background:var(--scrim)}.viewer-inner{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr) auto auto auto}.viewer-top,.viewer-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px max(10px,env(safe-area-inset-right)) 8px max(10px,env(safe-area-inset-left));background:rgba(8,11,13,.9)}.viewer-top{justify-content:flex-end;padding-top:max(8px,env(safe-area-inset-top));min-height:64px}.viewer-foot{padding-bottom:max(8px,env(safe-area-inset-bottom))}.viewer-actions{display:flex;align-items:center;gap:4px}.viewer button,.viewer .button{background:rgba(255,255,255,.16);backdrop-filter:blur(8px)}.zoom-control{padding:0;width:48px;height:48px;border-radius:50%;font-size:.78rem}.stage.swiper{position:relative;display:block;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden;overscroll-behavior:contain;background:#050807}.stage .swiper-wrapper{height:100%}.stage .swiper-slide{height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden}.stage .swiper-zoom-container{width:100%;height:100%;display:flex;align-items:center;justify-content:center}.stage img{display:block;width:auto;height:auto;max-width:none;max-height:none;object-fit:contain;user-select:none;-webkit-user-drag:none;opacity:1;transition:opacity .12s ease}.stage .is-loading img{opacity:0}.stage .swiper-slide-zoomed img{cursor:grab}.position-indicator{display:grid;gap:5px;padding:8px max(20px,env(safe-area-inset-right)) 1px max(20px,env(safe-area-inset-left));background:rgba(8,11,13,.9)}.position-count{text-align:center;font-size:.8rem;font-weight:750;font-variant-numeric:tabular-nums}.position-track{height:3px;border-radius:999px;background:rgba(255,255,255,.24);overflow:hidden}.position-fill{display:block;width:0;height:100%;border-radius:inherit;background:#82cfb4;transition:width .18s ease}.gesture-hint{margin:0;padding:7px 16px;background:rgba(8,11,13,.9);color:#bec9c3;text-align:center;font-size:.76rem}.caption{min-width:0}.caption strong,.caption span{display:block}.caption span{color:#c7ced2;font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.download[hidden]{display:none}.expiry{font-size:.8rem;color:var(--muted);margin-top:32px}
 @media(min-width:680px){.grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.tile{border-radius:16px}}
 @media(min-width:980px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
-@media(max-width:620px){.manual-form{grid-template-columns:1fr}}
+@media(max-width:620px){.manual-form{grid-template-columns:1fr}.manual-form .action-row{display:grid;grid-template-columns:1fr;justify-items:stretch}.manual-form .action-row button{width:100%;white-space:normal}.manual-form .source-row{align-items:flex-start}}
 @media(hover:hover) and (pointer:fine){.tile img{transition:transform .22s ease}.tile:hover img{transform:scale(1.025)}}
 @media(prefers-color-scheme:dark){:root{--ink:#eff3ee;--muted:#afb8b1;--paper:#101411;--card:#181d1a;--line:#3c4741;--accent:#82cfb4;--accent2:#214d40;--danger:#ffb4ab}.tile{background:#202622}.location-chip[data-status="unknown"]{background:#252b28;color:#c3cbc6}.location-chip[data-status="contextual_estimate"]{background:#453b24;color:#e0c47b}}
 :root[data-theme="dark"]{--ink:#eff3ee;--muted:#afb8b1;--paper:#101411;--card:#181d1a;--line:#3c4741;--accent:#82cfb4;--accent2:#214d40;--danger:#ffb4ab}:root[data-theme="dark"] .tile{background:#202622}:root[data-theme="dark"] .location-chip[data-status="unknown"]{background:#252b28;color:#c3cbc6}:root[data-theme="dark"] .location-chip[data-status="contextual_estimate"]{background:#453b24;color:#e0c47b}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+
+/* Story presentation v1. Narrative theme and visual theme intentionally stay separate. */
+html[data-story-theme] body{min-height:100dvh;background:var(--paper);color:var(--ink)}
+html[data-story-theme] .shell{position:relative}
+html[data-story-theme]:not([data-story-theme="map_journey"]) .story-map iframe{height:min(42vw,240px);min-height:180px}
+.presentation-panel{margin:22px 0 30px;border:1px solid var(--line);background:var(--card);border-radius:16px;overflow:hidden}
+.presentation-panel>summary{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:52px;padding:12px 16px;cursor:pointer;font-weight:800;list-style:none}.presentation-panel>summary::-webkit-details-marker{display:none}.presentation-panel>summary::after{content:"스타일 선택";color:var(--accent);font-size:.78rem;font-weight:750}.presentation-panel[open]>summary{border-bottom:1px solid var(--line)}
+.presentation-content{padding:16px}.presentation-intro{margin:0 0 12px;color:var(--muted);font-size:.8rem}
+.theme-choices{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.theme-choice{position:relative;display:grid;align-content:start;gap:6px;min-height:112px;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--paper);cursor:pointer;transition:transform .18s ease,border-color .18s ease,background-color .18s ease}
+.theme-choice input{position:absolute;opacity:0;pointer-events:none}.theme-choice strong{font-size:.9rem;line-height:1.2}.theme-choice span{color:var(--muted);font-size:.72rem;line-height:1.35}.theme-choice::before{content:"";display:block;width:34px;height:8px;background:var(--choice-accent,var(--accent));border-radius:2px}
+.theme-choice:has(input:checked){border-color:var(--accent);box-shadow:inset 0 0 0 2px var(--accent)}
+.theme-choice:has(input:focus-visible){outline:3px solid #ffad0a;outline-offset:3px}
+.theme-choice[data-choice="journal"]{--choice-accent:#153cff}.theme-choice[data-choice="cinema"]{--choice-accent:#ffad0a}.theme-choice[data-choice="memory_book"]{--choice-accent:#ff6b55}.theme-choice[data-choice="map_journey"]{--choice-accent:#2747ff}.theme-choice[data-choice="film_index"]{--choice-accent:#f03b3b}
+.presentation-action{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}.presentation-action span{color:var(--muted);font-size:.76rem}
+.overview-disclosure{margin:10px 0}.overview-disclosure>summary{width:max-content;max-width:100%;cursor:pointer;color:var(--accent);font-size:.82rem;font-weight:760}.overview-disclosure[open]>summary{margin-bottom:10px}
+.theme-gallery{min-width:0}.theme-pagination{display:none}.theme-gallery.swiper{overflow:hidden}.theme-gallery.swiper .grid{display:flex;margin:0}.theme-gallery.swiper .tile{height:auto;flex-shrink:0}.theme-gallery.swiper .theme-pagination{display:flex;justify-content:center;gap:7px;padding:14px 0 2px}.theme-gallery.swiper .swiper-pagination-bullet{width:7px;height:7px;background:currentColor;opacity:.28}.theme-gallery.swiper .swiper-pagination-bullet-active{opacity:1}
+
+/* Cobalt poster: asymmetric editorial blocks, primary default. */
+html[data-story-theme="journal"]{--ink:#12141a;--muted:#515864;--paper:#f4f0e7;--card:#fffdf7;--line:#181b22;--accent:#153cff;--accent2:#dfe5ff;--danger:#c93434}
+html[data-story-theme="journal"] .shell{width:min(1240px,100%);padding-top:clamp(28px,5vw,68px)}
+html[data-story-theme="journal"] .eyebrow{display:inline-block;padding:6px 9px;background:#ffd325;color:#111;letter-spacing:.06em}
+html[data-story-theme="journal"] h1{font-family:system-ui,-apple-system,sans-serif;font-size:clamp(3rem,7vw,6.4rem);font-weight:900;max-width:16ch;overflow-wrap:anywhere;letter-spacing:-.07em;line-height:.88;margin:.55rem 0 1.2rem}
+html[data-story-theme="journal"] .lede{font-weight:650;color:var(--ink);border-left:10px solid #ff3e2f;padding-left:16px}
+html[data-story-theme="journal"] .meta{border-top:2px solid var(--ink);border-bottom:2px solid var(--ink);padding:12px 0;text-transform:uppercase;font-weight:750}
+html[data-story-theme="journal"] .chapter{border-top:5px solid var(--ink);padding-top:18px}
+html[data-story-theme="journal"] .chapter:nth-child(even){margin-left:clamp(0px,8vw,110px)}
+html[data-story-theme="journal"] .chapter h2{font-family:system-ui,-apple-system,sans-serif;font-weight:900;letter-spacing:-.045em}
+html[data-story-theme="journal"] .tile{border-radius:0;border:2px solid var(--ink);box-shadow:6px 6px 0 var(--accent)}
+html[data-story-theme="journal"] .story-map{border:2px solid var(--ink);border-radius:0;box-shadow:8px 8px 0 #ffd325}
+html[data-story-theme="journal"] button,html[data-story-theme="journal"] .button{border-radius:4px}
+
+/* Darkroom cinema: immersive horizontal sequences with restrained amber controls. */
+html[data-story-theme="cinema"]{color-scheme:dark;--ink:#f3edf4;--muted:#b7abb9;--paper:#0b0710;--card:#17101c;--line:#493850;--accent:#ffad0a;--accent2:#352517;--danger:#ff8177}
+html[data-story-theme="cinema"] .shell{width:min(1440px,100%);padding-inline:clamp(18px,4vw,64px)}
+html[data-story-theme="cinema"] .eyebrow{color:var(--accent);letter-spacing:.18em}
+html[data-story-theme="cinema"] h1{font-family:system-ui,-apple-system,sans-serif;font-weight:780;font-size:clamp(3rem,7vw,6.4rem);max-width:17ch;overflow-wrap:anywhere;line-height:.92}
+html[data-story-theme="cinema"] .lede{color:#d1c6d3}
+html[data-story-theme="cinema"] .chapter{border:0;padding:clamp(34px,7vw,88px) 0}
+html[data-story-theme="cinema"] .chapter-head{max-width:760px}
+html[data-story-theme="cinema"] .chapter h2{font-family:system-ui,-apple-system,sans-serif;font-size:clamp(2.3rem,6vw,5.4rem);font-weight:760;letter-spacing:-.055em}
+html[data-story-theme="cinema"] .theme-gallery.swiper{margin-top:18px;margin-inline:calc(clamp(18px,4vw,64px)*-1);padding-inline:clamp(18px,4vw,64px)}
+html[data-story-theme="cinema"] .theme-gallery.swiper .tile{width:min(82vw,920px);aspect-ratio:16/10;border-radius:8px;margin-right:clamp(12px,2vw,28px);background:#19121e}
+html[data-story-theme="cinema"] .tile span{border-radius:3px;background:rgba(11,7,16,.82)}
+html[data-story-theme="cinema"] .story-map{background:#17101c;border-color:#493850}
+html[data-story-theme="cinema"] button,html[data-story-theme="cinema"] .button{color:#18100a}
+
+/* Pop-up playbook: people-first family collage, coral interaction and soft color fields. */
+html[data-story-theme="memory_book"]{--ink:#1c2440;--muted:#53607c;--paper:#eef5ff;--card:#fbfcff;--line:#26345a;--accent:#e84636;--accent2:#ffd9d3;--danger:#b62a30}
+html[data-story-theme="memory_book"] body{background:linear-gradient(180deg,#b9d8ff 0 23rem,#eef5ff 23rem)}
+html[data-story-theme="memory_book"] .shell{width:min(1200px,100%)}
+html[data-story-theme="memory_book"] h1{font-family:system-ui,-apple-system,sans-serif;font-weight:900;letter-spacing:-.06em;max-width:16ch;overflow-wrap:anywhere;transform:rotate(-1deg)}
+html[data-story-theme="memory_book"] .eyebrow{color:#1c2440;background:#ffe34d;padding:5px 10px;border:2px solid #1c2440;border-radius:5px;display:inline-block}
+html[data-story-theme="memory_book"] .chapter{border:2px solid #26345a;background:#fbfcff;padding:clamp(18px,3vw,34px);box-shadow:10px 10px 0 #cdb8ff;border-radius:16px}
+html[data-story-theme="memory_book"] .chapter:nth-child(even){box-shadow:10px 10px 0 #ffe34d;transform:rotate(.35deg)}
+html[data-story-theme="memory_book"] .chapter h2{font-family:system-ui,-apple-system,sans-serif;font-weight:900}
+html[data-story-theme="memory_book"] .grid{grid-template-columns:repeat(12,minmax(0,1fr));grid-auto-flow:dense}
+html[data-story-theme="memory_book"] .tile{grid-column:span 6;border:2px solid #26345a;border-radius:12px}
+html[data-story-theme="memory_book"] .tile:nth-child(5n+1){grid-column:span 7;aspect-ratio:4/3}html[data-story-theme="memory_book"] .tile:nth-child(5n+2){grid-column:span 5}
+html[data-story-theme="memory_book"] button,html[data-story-theme="memory_book"] .button{border-radius:8px}
+
+/* Transit atlas: map-led split composition and location carousel. */
+html[data-story-theme="map_journey"]{--ink:#eff4ff;--muted:#b4c0e3;--paper:#0d1638;--card:#14214b;--line:#415383;--accent:#ff6a2a;--accent2:#27355f;--danger:#ff887f;color-scheme:dark}
+html[data-story-theme="map_journey"] body{background:linear-gradient(90deg,#0d1638,#101c47)}
+html[data-story-theme="map_journey"] .shell{width:min(1320px,100%)}
+html[data-story-theme="map_journey"] h1{font-family:system-ui,-apple-system,sans-serif;font-weight:850;letter-spacing:-.06em;max-width:18ch;overflow-wrap:anywhere}
+html[data-story-theme="map_journey"] .eyebrow{color:#9db9ff}
+html[data-story-theme="map_journey"] .chapter{border-top:1px solid #415383;padding-top:32px}
+html[data-story-theme="map_journey"] .chapter h2{font-family:system-ui,-apple-system,sans-serif;font-weight:820}
+html[data-story-theme="map_journey"] .chapter:has(.story-map){display:grid;grid-template-columns:minmax(280px,.8fr) minmax(0,1.4fr);gap:clamp(24px,4vw,60px);align-items:start}
+html[data-story-theme="map_journey"] .chapter:has(.story-map) .chapter-head,html[data-story-theme="map_journey"] .chapter:has(.story-map) .story-map{grid-column:1}
+html[data-story-theme="map_journey"] .chapter:has(.story-map) .story-map{position:sticky;top:18px;margin:0}
+html[data-story-theme="map_journey"] .chapter:has(.story-map) .location-subchapter{grid-column:2}
+html[data-story-theme="map_journey"] .theme-gallery.swiper .tile{width:min(72vw,560px);aspect-ratio:4/3;border-radius:4px;margin-right:14px}
+html[data-story-theme="map_journey"] button,html[data-story-theme="map_journey"] .button{border-radius:4px}
+
+/* Silver index: compact contact sheet for large libraries. */
+html[data-story-theme="film_index"]{--ink:#121317;--muted:#555b65;--paper:#d9dde3;--card:#eef0f3;--line:#8b929d;--accent:#d72f35;--accent2:#f6cfd1;--danger:#a61f27}
+html[data-story-theme="film_index"] .shell{width:min(1540px,100%);padding-inline:clamp(12px,2vw,30px)}
+html[data-story-theme="film_index"] h1{font:850 clamp(2.5rem,6vw,5.8rem)/.92 system-ui,-apple-system,sans-serif;letter-spacing:-.07em;max-width:18ch;overflow-wrap:anywhere}
+html[data-story-theme="film_index"] .eyebrow{font-family:ui-monospace,monospace;color:var(--accent)}
+html[data-story-theme="film_index"] .chapter{border-top:3px solid var(--ink);padding-top:12px}
+html[data-story-theme="film_index"] .chapter-head{grid-template-columns:minmax(220px,.45fr) minmax(0,1fr);align-items:end}
+html[data-story-theme="film_index"] .chapter-copy{margin:0}
+html[data-story-theme="film_index"] .chapter h2{font-family:system-ui,-apple-system,sans-serif;font-weight:850}
+html[data-story-theme="film_index"] .grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:6px}
+html[data-story-theme="film_index"] .tile{border-radius:0;aspect-ratio:1;border:1px solid #8b929d}
+html[data-story-theme="film_index"] .tile span{left:4px;bottom:4px;border-radius:0;font:600 .62rem ui-monospace,monospace}
+html[data-story-theme="film_index"] button,html[data-story-theme="film_index"] .button{border-radius:2px}
+
+@media(min-width:1180px){html[data-story-theme="film_index"] .grid{grid-template-columns:repeat(8,minmax(0,1fr))}}
+@media(max-width:860px){.theme-choices{grid-template-columns:1fr 1fr}.theme-choice:last-child{grid-column:1/-1}html[data-story-theme="map_journey"] .chapter:has(.story-map){display:block}html[data-story-theme="map_journey"] .chapter:has(.story-map) .story-map{position:relative;top:auto;margin:18px 0 22px}}
+@media(max-width:679px){html[data-story-theme] h1{width:100%;max-width:calc(100vw - 32px);font-size:clamp(2rem,9vw,2.45rem);line-height:.96;letter-spacing:-.05em;overflow-wrap:anywhere;word-break:break-all;white-space:normal}html[data-story-theme] h1 .title-range-start,html[data-story-theme] h1 .title-range-end{display:block}html[data-story-theme="journal"] .chapter:nth-child(even){margin-left:0}html[data-story-theme="memory_book"] .grid{grid-template-columns:repeat(2,minmax(0,1fr))}html[data-story-theme="memory_book"] .tile,html[data-story-theme="memory_book"] .tile:nth-child(n){grid-column:span 1}html[data-story-theme="film_index"] .chapter-head{grid-template-columns:1fr;align-items:start}html[data-story-theme="film_index"] .grid{grid-template-columns:repeat(3,minmax(0,1fr))}.presentation-action{align-items:stretch;flex-direction:column}.presentation-action button{width:100%}}
+@media(max-width:679px){html[data-story-theme]:not([data-story-theme="map_journey"]) .story-map iframe{height:190px;min-height:190px}}
+@media(prefers-reduced-motion:reduce){.theme-choice{transition:none!important}}
 """
 
 
-STORY_JS = r"""
-(()=>{
-const d=document;
-d.querySelectorAll('[data-copy-value]').forEach(button=>button.addEventListener('click',async()=>{const original=button.textContent;try{await navigator.clipboard.writeText(button.dataset.copyValue||'');button.textContent='복사됨'}catch(_error){button.textContent='복사 실패'}setTimeout(()=>{button.textContent=original},1400)}));
-d.querySelectorAll('[data-map-target]').forEach(button=>button.addEventListener('click',()=>{const chapter=button.closest('.chapter'),frame=chapter?.querySelector('[data-map-frame]'),link=chapter?.querySelector('[data-map-link]');if(frame&&button.dataset.mapTarget){frame.src=button.dataset.mapTarget;frame.title=`${button.textContent.trim()} Google 지도`}if(link&&button.dataset.mapOpen)link.href=button.dataset.mapOpen;chapter?.querySelectorAll('[data-map-target]').forEach(item=>item.setAttribute('aria-pressed',item===button?'true':'false'))}));
-const dialog=d.querySelector('[data-viewer]');if(!dialog)return;
-const allTiles=[...d.querySelectorAll('[data-photo]')],filterButtons=[...d.querySelectorAll('[data-person-filter]')],filterStatus=d.querySelector('[data-person-filter-status]');let tiles=[...allTiles];
-function applyPersonFilter(handle,label){allTiles.forEach(tile=>{const facets=(tile.dataset.personFacets||'').split(' ').filter(Boolean);tile.hidden=Boolean(handle)&&!facets.includes(handle)});tiles=allTiles.filter(tile=>!tile.hidden);filterButtons.forEach(button=>button.setAttribute('aria-pressed',button.dataset.personFilter===handle?'true':'false'));if(filterStatus)filterStatus.textContent=handle?`${label} 사진 ${tiles.length}장`:`전체 사진 ${tiles.length}장`;if(dialog.open)dialog.close()}
-filterButtons.forEach(button=>button.addEventListener('click',()=>applyPersonFilter(button.dataset.personFilter||'',button.dataset.personLabel||'선택한 인물')));
-const image=dialog.querySelector('[data-full]'),figure=image.closest('figure'),count=dialog.querySelector('[data-count]'),positionTrack=dialog.querySelector('[data-position-progress]'),positionFill=dialog.querySelector('[data-position-fill]'),title=dialog.querySelector('[data-title]'),detail=dialog.querySelector('[data-detail]'),download=dialog.querySelector('[data-save]'),zoomReset=dialog.querySelector('[data-zoom-reset]');
-const pointers=new Map();let index=0,scale=1,tx=0,ty=0,startX=0,startY=0,startAt=0,lastTapAt=0,lastTapX=0,lastTapY=0,pinchDistance=0,pinchScale=1,pinching=false;
-const clamp=(value,minimum,maximum)=>Math.max(minimum,Math.min(maximum,value));
-function panLimits(){return{x:Math.max(0,(image.offsetWidth*scale-figure.clientWidth)/2),y:Math.max(0,(image.offsetHeight*scale-figure.clientHeight)/2)}}
-function renderTransform(){const limits=panLimits();tx=clamp(tx,-limits.x,limits.x);ty=clamp(ty,-limits.y,limits.y);image.style.transform=`translate3d(${tx}px,${ty}px,0) scale(${scale})`;figure.classList.toggle('is-zoomed',scale>1.01);zoomReset.textContent=scale===1?'1×':`${scale.toFixed(1)}×`;zoomReset.setAttribute('aria-label',`현재 ${scale.toFixed(1)}배, 원래 크기로`) }
-function resetZoom(){scale=1;tx=0;ty=0;renderTransform()}
-function setZoom(next,clientX,clientY){const previous=scale;next=clamp(next,1,4);if(Math.abs(next-previous)<.001)return;const box=figure.getBoundingClientRect(),focusX=clientX-box.left-figure.clientWidth/2,focusY=clientY-box.top-figure.clientHeight/2;tx=focusX-(focusX-tx)*(next/previous);ty=focusY-(focusY-ty)*(next/previous);scale=next;if(scale<=1.01){scale=1;tx=0;ty=0}renderTransform()}
-function show(next){if(!tiles.length)return;resetZoom();index=(next+tiles.length)%tiles.length;const t=tiles[index],current=index+1;image.src=t.dataset.preview;image.alt=t.dataset.alt||'';count.textContent=`${current} / ${tiles.length}`;positionTrack.setAttribute('aria-valuemax',String(tiles.length));positionTrack.setAttribute('aria-valuenow',String(current));positionTrack.setAttribute('aria-valuetext',`${current} / ${tiles.length}`);positionFill.style.width=`${current/tiles.length*100}%`;title.textContent=t.dataset.title||'사진';detail.textContent=[t.dataset.date,t.dataset.location,t.dataset.people].filter(Boolean).join(' · ');if(t.dataset.download){download.hidden=false;download.href=t.dataset.download;download.setAttribute('download','')}else{download.hidden=true;download.removeAttribute('href')}[-1,1].forEach(offset=>{const adjacent=tiles[(index+offset+tiles.length)%tiles.length];if(adjacent){const preload=new Image();preload.src=adjacent.dataset.preview}})}
-function navigate(offset){show(index+offset)}
-function releaseViewer(){resetZoom();image.removeAttribute('src');image.alt=''}
-allTiles.forEach(tile=>tile.addEventListener('click',()=>{const i=tiles.indexOf(tile);if(i>=0){show(i);dialog.showModal()}}));
-dialog.querySelector('[data-close]').addEventListener('click',()=>dialog.close());
-zoomReset.addEventListener('click',resetZoom);
-dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close()});dialog.addEventListener('close',releaseViewer);
-dialog.addEventListener('keydown',event=>{if(event.key==='ArrowLeft')navigate(-1);if(event.key==='ArrowRight')navigate(1);if(event.key==='+'||event.key==='=')setZoom(scale*1.5,innerWidth/2,innerHeight/2);if(event.key==='-')setZoom(scale/1.5,innerWidth/2,innerHeight/2);if(event.key==='0')resetZoom()});
-figure.addEventListener('pointerdown',event=>{figure.setPointerCapture(event.pointerId);pointers.set(event.pointerId,{x:event.clientX,y:event.clientY});if(pointers.size===1){startX=event.clientX;startY=event.clientY;startAt=performance.now();pinching=false}else if(pointers.size===2){const values=[...pointers.values()];pinchDistance=Math.hypot(values[0].x-values[1].x,values[0].y-values[1].y);pinchScale=scale;pinching=true}});
-figure.addEventListener('pointermove',event=>{const previous=pointers.get(event.pointerId);if(!previous)return;pointers.set(event.pointerId,{x:event.clientX,y:event.clientY});if(pointers.size>=2){const values=[...pointers.values()],distance=Math.hypot(values[0].x-values[1].x,values[0].y-values[1].y),centerX=(values[0].x+values[1].x)/2,centerY=(values[0].y+values[1].y)/2;if(pinchDistance>0)setZoom(pinchScale*distance/pinchDistance,centerX,centerY)}else if(scale>1.01){tx+=event.clientX-previous.x;ty+=event.clientY-previous.y;renderTransform()}});
-function finishPointer(event){const previous=pointers.get(event.pointerId);if(previous)pointers.set(event.pointerId,{x:event.clientX,y:event.clientY});const wasPinching=pinching,dx=event.clientX-startX,dy=event.clientY-startY,elapsed=performance.now()-startAt;pointers.delete(event.pointerId);if(!pointers.size){pinching=false;if(!wasPinching&&Math.abs(dx)<12&&Math.abs(dy)<12){const now=performance.now();if(now-lastTapAt<320&&Math.hypot(event.clientX-lastTapX,event.clientY-lastTapY)<36){setZoom(scale>1.01?1:2.5,event.clientX,event.clientY);lastTapAt=0}else{lastTapAt=now;lastTapX=event.clientX;lastTapY=event.clientY}}else if(scale<=1.01&&!wasPinching){const threshold=Math.max(48,figure.clientWidth*.12);if(Math.abs(dx)>threshold&&Math.abs(dx)>Math.abs(dy)*1.25&&elapsed<850){navigate(dx<0?1:-1);lastTapAt=0;return}}renderTransform()}else if(pointers.size===1){const remaining=[...pointers.values()][0];startX=remaining.x;startY=remaining.y;startAt=performance.now()}}
-figure.addEventListener('pointerup',finishPointer);figure.addEventListener('pointercancel',finishPointer);figure.addEventListener('dragstart',event=>event.preventDefault());figure.addEventListener('wheel',event=>{event.preventDefault();setZoom(scale*(event.deltaY<0?1.2:1/1.2),event.clientX,event.clientY)},{passive:false});image.addEventListener('load',renderTransform);
-})();
-"""
+STORY_CSS += EXPERIENCE_CSS + BOOK_CSS + SPATIAL_CSS + GALLERY_CSS
+STORY_JS = BOOK_JS + SPATIAL_JS + GALLERY_JS + EXPERIENCE_JS
+
+
+def swiper_asset_path(name: str) -> Path | None:
+    """Resolve a pinned Swiper asset in source checkouts and packaged app bundles."""
+
+    if name not in SWIPER_ASSET_NAMES:
+        return None
+    candidates = (
+        Path(__file__).resolve().parents[4]
+        / "resources"
+        / "web"
+        / f"swiper-{SWIPER_VERSION}"
+        / name,
+        Path(sys.executable).resolve().parent.parent / "Resources" / "story-assets" / name,
+    )
+    return next(
+        (path for path in candidates if path.is_file() and path.stat().st_size > 0),
+        None,
+    )
+
+
+def swiper_asset_response(name: str) -> Response:
+    path = swiper_asset_path(name)
+    if path is None:
+        return Response(status_code=404, headers={"X-Content-Type-Options": "nosniff"})
+    media_type = {
+        ".css": "text/css",
+        ".js": "application/javascript",
+    }.get(path.suffix, "text/plain")
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+def story_icon_response() -> Response:
+    return Response(
+        STORY_ICON_SVG,
+        media_type="image/svg+xml",
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 def _e(value: Any) -> str:
     return html.escape(str(value or ""), quote=True)
+
+
+def _story_heading(value: Any) -> str:
+    """Keep long date-range titles readable in narrow WebViews."""
+
+    title = str(value or "")
+    if " — " not in title:
+        return _e(title)
+    start, end = title.split(" — ", 1)
+    return (
+        f'<span class="title-range-start">{_e(start)}</span>'
+        f'<span class="title-range-end"> — {_e(end)}</span>'
+    )
 
 
 def _page(
@@ -104,23 +250,44 @@ def _page(
     *,
     script: bool = True,
     static_base: str = "/story-assets",
+    story_theme: str = "",
+    design_preset: str = "",
 ) -> str:
     base = static_base.rstrip("/")
-    js = f'<script src="{_e(base)}/story.js?v=6" defer></script>' if script else ""
+    vendor_css = (
+        f'<link rel="stylesheet" href="{_e(base)}/swiper-bundle.min.css?v={SWIPER_VERSION}">'
+        if script
+        else ""
+    )
+    js = (
+        f'<script src="{_e(base)}/swiper-bundle.min.js?v={SWIPER_VERSION}" defer></script>'
+        f'<script src="{_e(base)}/story.js?v={STORY_ASSET_VERSION}" defer></script>'
+        if script
+        else ""
+    )
+    root_attributes = (
+        f' data-story-theme="{_e(story_theme)}" data-design-preset="{_e(design_preset)}"'
+        if story_theme
+        else ""
+    )
     return (
-        '<!doctype html><html lang="ko"><head><meta charset="utf-8">'
+        f'<!doctype html><html lang="ko"{root_attributes}><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
-        f'<title>{_e(title)}</title><link rel="stylesheet" href="{_e(base)}/story.css?v=6">{js}'
+        f'<link rel="icon" href="{_e(base)}/favicon.svg" type="image/svg+xml">'
+        f'<title>{_e(title)}</title>{vendor_css}'
+        f'<link rel="stylesheet" href="{_e(base)}/story.css?v={STORY_ASSET_VERSION}">{js}'
         f'</head><body>{body}</body></html>'
     )
 
 
 def _viewer() -> str:
     return """<dialog class="viewer" data-viewer aria-label="사진 크게 보기"><div class="viewer-inner">
-<header class="viewer-top"><div class="viewer-actions"><button class="zoom-control zoom-reset" type="button" data-zoom-reset aria-label="원래 크기">1×</button><button type="button" data-close aria-label="닫기">닫기</button></div></header>
-<div class="stage"><figure><img data-full alt=""></figure></div>
+<header class="viewer-top"><button type="button" data-grid-toggle>전체 사진</button><div class="viewer-actions"><button class="zoom-control zoom-reset" type="button" data-zoom-reset aria-label="화면에 맞춤" hidden>화면에 맞춤</button><button type="button" data-close aria-label="닫기">닫기</button></div></header>
+<div class="stage swiper" data-swiper role="region" aria-label="사진 슬라이드"><div class="swiper-wrapper" data-swiper-wrapper></div></div>
+<div class="viewer-all-grid" data-all-grid role="region" aria-label="전체 사진" hidden></div>
+<nav class="viewer-filmstrip" data-filmstrip aria-label="주변 사진"></nav>
 <div class="position-indicator"><span class="position-count" data-count aria-live="polite"></span><div class="position-track" data-position-progress role="progressbar" aria-label="현재 사진 위치" aria-valuemin="1"><span class="position-fill" data-position-fill></span></div></div>
-<p class="gesture-hint">두 번 탭하거나 두 손가락으로 확대 · 기본 크기에서 좌우로 넘기기</p>
+<p class="gesture-hint">좌우로 넘기기 · 두 번 탭하거나 두 손가락으로 확대</p>
 <footer class="viewer-foot"><div class="caption" aria-live="polite"><strong data-title></strong><span data-detail></span></div><a class="button download" data-save hidden>사진 저장</a></footer></div></dialog>"""
 
 
@@ -133,6 +300,47 @@ def _display_expiry(value: Any) -> str:
         return f"{local.year}년 {local.month}월 {local.day}일 {local:%H:%M}"
     except ValueError:
         return "정해진 시각"
+
+
+def _theme_picker(
+    presentation: dict[str, Any],
+    *,
+    action: str,
+    story_id: str,
+) -> str:
+    if not action or not story_id:
+        return ""
+    selected = str(presentation.get("theme_id") or "journal")
+    choices = "".join(
+        '<label class="theme-choice" '
+        f'data-choice="{_e(item["theme_id"])}">'
+        f'<input type="radio" name="theme_id" value="{_e(item["theme_id"])}" '
+        f'{"checked" if item["theme_id"] == selected else ""}>'
+        f'<strong>{_e(item["display_name"])}</strong>'
+        f'<span>{_e(item["description"])}</span></label>'
+        for item in STORY_THEME_DEFINITIONS
+        if item["theme_id"] in CURRENT_STORY_THEME_IDS
+    )
+    selected_name = next(
+        (
+            item["display_name"]
+            for item in STORY_THEME_DEFINITIONS
+            if item["theme_id"] == selected
+        ),
+        "스크롤 시네마",
+    )
+    return (
+        '<details class="presentation-panel">'
+        f'<summary><span>Story 스타일</span><strong data-selected-theme>{_e(selected_name)}</strong></summary>'
+        '<div class="presentation-content"><p class="presentation-intro">'
+        '사진은 그대로 두고 표현 방식만 바꿉니다.</p>'
+        f'<form method="post" action="{_e(action)}">'
+        f'<input type="hidden" name="story_id" value="{_e(story_id)}">'
+        f'<input type="hidden" name="presentation_revision" value="{_e(presentation.get("presentation_revision") or 1)}">'
+        f'<div class="theme-choices">{choices}</div>'
+        '<div class="presentation-action"><span>선택한 스타일은 재분석 뒤에도 유지됩니다.</span>'
+        '<button type="submit">스타일 적용</button></div></form></div></details>'
+    )
 
 
 def _photo_card(
@@ -160,7 +368,7 @@ def _photo_card(
         if str(value).startswith("pf_")
     )
     return (
-        f'<button class="tile" type="button" data-photo data-preview="{_e(prefix)}/preview" '
+        f'<button class="tile" type="button" data-photo data-preview="{_e(prefix)}/preview" data-thumb="{_e(prefix)}/gallery" '
         f'data-download="{_e(download)}" data-title="{_e(photo.get("title"))}" '
         f'data-alt="{_e(photo.get("alt"))}" data-date="{_e(photo.get("capture_date"))}" '
         f'data-location="{_e(photo.get("location"))}" data-people="{_e(people_caption)}" '
@@ -168,6 +376,18 @@ def _photo_card(
         f'aria-label="{_e(photo.get("alt") or "사진 크게 보기")}">'
         f'<img src="{_e(prefix)}/thumb" alt="{_e(photo.get("alt"))}" loading="lazy" decoding="async">'
         f'<span>{_e(photo.get("capture_date"))}</span></button>'
+    )
+
+
+def _photo_gallery(cards: str, *, label: str) -> str:
+    return (
+        '<div class="theme-gallery" data-theme-gallery>'
+        f'<div class="grid" data-theme-gallery-track role="group" aria-label="{_e(label)}">{cards}</div>'
+        '<div class="theme-pagination" data-theme-pagination aria-hidden="true"></div>'
+        '<div class="gallery-controls"><button type="button" data-gallery-prev aria-label="이전 사진">이전</button>'
+        '<span class="gallery-count" data-gallery-count aria-live="polite"></span>'
+        '<button type="button" data-gallery-next aria-label="다음 사진">다음</button></div>'
+        '</div>'
     )
 
 
@@ -234,7 +454,14 @@ def render_story(
     download_enabled: bool = False,
     asset_base: str = "",
     static_base: str = "/story-assets",
+    presentation: dict[str, Any] | None = None,
+    theme_action: str = "",
 ) -> str:
+    visual = normalize_story_presentation(
+        presentation or story.get("presentation") or automatic_story_presentation(story)
+    )
+    if not public:
+        visual = owner_story_presentation(visual)
     photos = [photo for photo in story.get("photos") or [] if isinstance(photo, dict)]
     id_key = "public_asset_id" if public else "asset_id"
     photos_by_id = {str(photo.get(id_key) or ""): photo for photo in photos}
@@ -298,9 +525,12 @@ def render_story(
                 "unknown": "위치 정보 없음",
             }.get(str(location_group.get("status") or ""), "")
             subchapters.append(
-                '<section class="location-subchapter">'
+                ('<section class="location-subchapter" data-location-unknown>'
+                 if str(location_group.get("status") or "") == "unknown"
+                 else '<section class="location-subchapter">')
+                +
                 f'<h3>{_e(location_group.get("label") or "위치 미상")}<span>{_e(status_label)}</span></h3>'
-                f'<div class="grid" aria-label="{_e(location_group.get("label") or "위치 미상")}">{cards}</div>'
+                f'{_photo_gallery(cards, label=str(location_group.get("label") or "위치 미상"))}'
                 '</section>'
             )
         ungrouped = [
@@ -320,8 +550,8 @@ def render_story(
                 for photo in ungrouped
             )
             subchapters.append(
-                '<section class="location-subchapter"><h3>위치 미상<span>위치 정보 없음</span></h3>'
-                f'<div class="grid" aria-label="위치 미상">{cards}</div></section>'
+                '<section class="location-subchapter" data-location-unknown><h3>위치 미상<span>위치 정보 없음</span></h3>'
+                f'{_photo_gallery(cards, label="위치 미상")}</section>'
             )
         rendered_ids.update(chapter_id_set)
         if map_buttons:
@@ -345,10 +575,10 @@ def render_story(
             f'<h2>{_e(chapter.get("title") or "사진 모음")}</h2>'
             f'<p class="chapter-copy">{_e(chapter.get("summary"))}</p>'
             f'{people_caption}'
-            f'{place_list}'
             '</header>'
-            f'{map_html}'
             f'{"".join(subchapters)}'
+            + (f'<details class="chapter-details"><summary>촬영 장소와 지도</summary>{place_list}{map_html}</details>'
+               if place_list or map_html else '') +
             '</article>'
         )
     remaining = [
@@ -369,23 +599,14 @@ def render_story(
             '<article class="chapter"><header class="chapter-head">'
             '<span class="chapter-date">Archive</span><h2>사진 모음</h2>'
             f'<p class="chapter-copy">추천 사진 {len(remaining)}장입니다.</p></header>'
-            f'<section class="grid" aria-label="추천 사진">{cards}</section></article>'
+            f'{_photo_gallery(cards, label="추천 사진")}</article>'
         )
     content = (
         f'<section class="chapters">{"".join(chapter_html)}</section>'
         if chapter_html
         else '<section class="empty"><h2>아직 추천 사진이 없습니다</h2><p>다음 자동 정리가 끝나면 이곳에 표시됩니다.</p></section>'
     )
-    generation = story.get("generation") if isinstance(story.get("generation"), dict) else {}
-    status = ""
-    if not public and generation:
-        source = (
-            "Linux Qwen 편집"
-            if generation.get("source") == "hermes-router"
-            else "안전 기본 편집"
-        )
-        status = f'<span class="story-status">{_e(source)}</span>'
-    date_range = " — ".join(
+    date_range = " - ".join(
         value
         for value in (
             str(story.get("date_from") or ""),
@@ -403,31 +624,45 @@ def render_story(
         if story.get("closing")
         else ""
     )
+    location_overview_items = [
+        item
+        for item in story.get("location_overview") or []
+        if isinstance(item, dict)
+    ]
     overview = "".join(
         f'<span class="location-chip" data-status="{_e(item.get("status"))}">'
         f'{_e(item.get("label") or "위치 미상")} · {_e(item.get("count") or 0)}장</span>'
-        for item in story.get("location_overview") or []
-        if isinstance(item, dict)
+        for item in location_overview_items
     )
     overview_html = (
-        f'<nav class="location-overview" aria-label="위치별 사진 요약">{overview}</nav>'
+        (
+            '<details class="overview-disclosure"><summary>'
+            f'장소 {len(location_overview_items)}곳 보기</summary>'
+            f'<nav class="location-overview" aria-label="위치별 사진 요약">{overview}</nav>'
+            '</details>'
+            if len(location_overview_items) > 6
+            else f'<nav class="location-overview" aria-label="위치별 사진 요약">{overview}</nav>'
+        )
         if overview
         else ""
     )
+    people_items = [
+        item
+        for item in story.get("people_overview") or []
+        if isinstance(item, dict) and str(item.get("display_name") or "").strip()
+    ]
     people_filter_buttons = "".join(
         f'<button class="person-chip" type="button" data-person-filter="{_e(item.get("facet_handle"))}" '
         f'data-person-label="{_e(item.get("display_name"))}" aria-pressed="false">'
         f'{_e(item.get("display_name"))} · {_e(item.get("photo_count") or 0)}장</button>'
-        for item in story.get("people_overview") or []
-        if isinstance(item, dict)
-        and str(item.get("display_name") or "").strip()
+        for item in people_items
+        if str(item.get("display_name") or "").strip()
         and str(item.get("facet_handle") or "").startswith("pf_")
     )
     people_static = "".join(
         f'<span class="person-chip">{_e(item.get("display_name"))} · {_e(item.get("photo_count") or 0)}장</span>'
-        for item in story.get("people_overview") or []
-        if isinstance(item, dict)
-        and str(item.get("display_name") or "").strip()
+        for item in people_items
+        if str(item.get("display_name") or "").strip()
         and not str(item.get("facet_handle") or "").startswith("pf_")
     )
     people_overview_html = (
@@ -442,12 +677,43 @@ def render_story(
             if people_static else ""
         )
     )
+    if people_overview_html and len(people_items) > 6:
+        people_overview_html = (
+            '<details class="overview-disclosure"><summary>'
+            f'함께한 사람 {len(people_items)}명 보기</summary>'
+            f'{people_overview_html}</details>'
+        )
     policy_prefix = "" if public else "/photos"
+    picker = (
+        _theme_picker(
+            visual,
+            action=theme_action,
+            story_id=str(story.get("story_id") or ""),
+        )
+        if not public
+        else ""
+    )
+    cover = ""
+    if photos:
+        cover = _photo_card(photos[0], public=public, share_id=share_id,
+                            download_enabled=download_enabled, asset_base=asset_base)
+        cover = cover.replace('class="tile"', 'class="cover-photo"').replace(' data-photo ', ' data-cover-open ')
+        cover = cover.replace('/thumb"', '/preview"').replace('loading="lazy"', 'loading="eager" fetchpriority="high"')
+        # A cover is a shortcut, not another member of the photo sequence.
+        cover = cover[:cover.rfind('<span>')] + '</button>'
     body = (
-        '<main class="shell"><p class="eyebrow">Photo story</p>'
-        f'<h1>{_e(story.get("title"))}</h1><p class="lede">{_e(story.get("subtitle"))}</p>'
-        f'<div class="meta"><span>{len(photos)}장</span><span>{_e(date_range)}</span>{status}</div>{overview_html}{people_overview_html}'
-        f'{content}{closing}{expiry}<footer class="legal"><span>장소·지도 © Google</span>'
+        '<main class="shell"><nav class="story-nav" aria-label="Story 탐색">'
+        '<span class="story-brand">PhotosMCP</span><div class="story-nav-actions">'
+        f'<button type="button" data-all-photos {"disabled" if not photos else ""}>전체 사진</button>'
+        '<button type="button" data-info-open>정보와 보기 설정</button></div></nav>'
+        '<header class="story-cover"><div class="cover-copy">'
+        f'<p class="cover-date">{_e(date_range)}</p><h1>{_story_heading(story.get("title"))}</h1>'
+        f'<p class="lede">{_e(story.get("subtitle"))}</p><p class="cover-count">사진 {len(photos)}장</p></div>{cover}</header>'
+        '<details class="story-information" data-story-info><summary>정보와 보기 설정</summary><div class="story-information-content">'
+        f'<div class="meta"><span>{len(photos)}장</span><span>{_e(date_range)}</span></div>{picker}{overview_html}{people_overview_html}'
+        '</div></details><div class="story-content">'
+        f'{content}<p class="story-filter-empty" data-filter-empty hidden>이 인물이 포함된 사진이 없습니다.</p></div>'
+        f'{closing}{expiry}<footer class="legal"><span>장소·지도 © Google</span>'
         f'<a href="{policy_prefix}/privacy">개인정보 안내</a>'
         f'<a href="{policy_prefix}/terms">이용 안내</a></footer></main>'
         f'{_viewer()}'
@@ -456,12 +722,15 @@ def render_story(
         str(story.get("title") or "사진 이야기"),
         body,
         static_base=static_base,
+        story_theme=str(visual["theme_id"]),
+        design_preset=str(visual["design_preset"]),
     )
 
 
 def render_owner(
     story: dict[str, Any],
     *,
+    presentation: dict[str, Any] | None = None,
     created: dict[str, Any] | None = None,
     passcode: str = "",
     public_base: str = "",
@@ -505,7 +774,7 @@ def render_owner(
         story_id = str(candidate.get("story_id") or "")
         if not story_id:
             continue
-        date_range = " — ".join(
+        date_range = " - ".join(
             value for value in (str(candidate.get("date_from") or ""), str(candidate.get("date_to") or "")) if value
         )
         story_cards.append(
@@ -528,7 +797,7 @@ def render_owner(
             continue
         operation_cards.append(
             '<article class="story-card"><div><strong>Story 작업 진행 중</strong>'
-            f'<p>{_e(operation.get("date_from"))} — {_e(operation.get("date_to"))} · {_e(status)}</p>'
+            f'<p>{_e(operation.get("date_from"))} - {_e(operation.get("date_to"))} · {_e(status)}</p>'
             '</div></article>'
         )
     operations = (
@@ -570,7 +839,16 @@ def render_owner(
         if share_cards
         else ""
     )
-    story_html = render_story(story, public=False)
+    story_html = render_story(
+        story,
+        public=False,
+        presentation=presentation,
+        theme_action=(
+            f'/photos/stories/{_e(story.get("story_id"))}/presentation'
+            if story.get("story_id")
+            else ""
+        ),
+    )
     return story_html.replace(
         '<div class="meta">',
         notice + manual_controls + operations + story_list + controls + shares + '<div class="meta">',
@@ -663,6 +941,12 @@ def build_public_share_app(
     async def js(_request) -> Response:
         return PlainTextResponse(STORY_JS, media_type="application/javascript", headers={"Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff"})
 
+    async def vendor_asset(request) -> Response:
+        return swiper_asset_response(str(request.path_params.get("asset_name") or ""))
+
+    async def favicon(_request) -> Response:
+        return story_icon_response()
+
     async def privacy(_request) -> Response:
         return HTMLResponse(render_policy_page("privacy"), headers=PUBLIC_HEADERS)
 
@@ -722,7 +1006,7 @@ def build_public_share_app(
         share_id = str(request.path_params["share_id"])
         public_asset_id = str(request.path_params["asset_id"])
         kind = str(request.path_params["kind"])
-        if kind not in {"thumb", "preview", "download"}:
+        if kind not in {"thumb", "gallery", "preview", "download"}:
             return Response(status_code=404)
         package, state = service.get_active(share_id)
         if package is None:
@@ -756,6 +1040,8 @@ def build_public_share_app(
         routes=[
             Route("/story-assets/story.css", css, methods=["GET"]),
             Route("/story-assets/story.js", js, methods=["GET"]),
+            Route("/story-assets/favicon.svg", favicon, methods=["GET"]),
+            Route("/story-assets/{asset_name}", vendor_asset, methods=["GET"]),
             Route("/privacy", privacy, methods=["GET"]),
             Route("/terms", terms, methods=["GET"]),
             Route("/s/{share_id}", story, methods=["GET"]),

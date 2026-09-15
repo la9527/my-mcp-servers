@@ -138,11 +138,20 @@ smoke_person_runtime() {
 	env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$runtime_pythonpath" \
 		"$bundle_path/Contents/MacOS/python" - <<'PY'
 from photos_mcp.application.person_indexing import face_runtime_status
+from photos_mcp.infrastructure.vendor_adapter.loader import prepare_vendor_runtime
 
 status = face_runtime_status()
 if status.status != "ready":
     raise SystemExit(f"person runtime is not ready: {status.error_code}")
 print(f"person-runtime-ready:{status.model_fingerprint}")
+
+prepare_vendor_runtime("photo-ranker")
+from photos_mcp_vendor_photo_ranker.engines.face import FaceEngine
+
+engine = FaceEngine()
+if not engine.is_available or engine._backend != "opencv":
+    raise SystemExit(f"photo ranker face backend is not ready: {engine._backend!r}")
+print("photo-ranker-face-runtime-ready:opencv-yunet-sface")
 PY
 }
 

@@ -47,6 +47,12 @@ FACE_MODEL_NAMES = (
     "face_detection_yunet_2023mar.onnx",
     "face_recognition_sface_2021dec.onnx",
 )
+SWIPER_VERSION = "14.2.0"
+SWIPER_ASSET_NAMES = (
+    "swiper-bundle.min.css",
+    "swiper-bundle.min.js",
+    "LICENSE",
+)
 class Py2AppDistribution(Distribution):
     def __init__(self, attrs=None):
         super().__init__(attrs)
@@ -193,9 +199,16 @@ def build_site_packages_resources() -> list[tuple[str, list[str]]]:
     return [(f"lib/python{sys.version_info.major}.{sys.version_info.minor}", site_package_entries)]
 
 
-def build_ui_resources() -> list[tuple[str, list[str]]]:
-    # Navigation and status glyphs use SF Symbols and require no raster resources.
-    return []
+def build_ui_resources(source_root: Path | None = None) -> list[tuple[str, list[str]]]:
+    """Bundle the pinned, self-hosted story viewer dependency and its license."""
+
+    root = source_root or PROJECT_ROOT / "resources" / "web" / f"swiper-{SWIPER_VERSION}"
+    paths = [root / name for name in SWIPER_ASSET_NAMES]
+    missing = [path for path in paths if not path.is_file() or path.stat().st_size <= 0]
+    if missing:
+        missing_names = ", ".join(path.name for path in missing)
+        raise FileNotFoundError(f"missing required Swiper assets: {missing_names}")
+    return [("story-assets", [str(path) for path in paths])]
 
 
 def build_face_model_resources(source_root: Path | None = None) -> list[tuple[str, list[str]]]:

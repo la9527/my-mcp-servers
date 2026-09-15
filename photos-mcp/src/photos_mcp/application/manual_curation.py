@@ -264,6 +264,7 @@ def soft_delete_story(
                 "deleted_at": observed.isoformat(),
             }
         )
+        repository.delete_story_presentation(story_id)
     revoked = 0
     for package in repository.list_shared_story_packages(story_id=story_id, limit=500):
         if str(package.get("status") or "") != "active":

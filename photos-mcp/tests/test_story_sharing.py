@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 import io
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from PIL import Image
 from starlette.testclient import TestClient
 
@@ -14,14 +15,14 @@ from photos_mcp.application.story_sharing import (
     build_recommendation_story,
 )
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
-from photos_mcp.interfaces.http.story_web import build_public_share_app
 from photos_mcp.interfaces.http.story_web import (
+    STORY_CSS,
     STORY_JS,
+    build_public_share_app,
     configured_owner_logins,
     render_owner,
     render_story,
 )
-
 
 NOW = datetime(2026, 9, 6, 2, 0, tzinfo=UTC)
 SECRET = b"test-share-session-secret-that-is-long-enough-0001"
@@ -107,6 +108,48 @@ def _repository(tmp_path: Path) -> tuple[RunRepository, Path]:
         }
     )
     return repository, root
+
+
+def test_gallery_derivative_preserves_ratio_and_strips_metadata(tmp_path: Path) -> None:
+    repository, source_root = _repository(tmp_path)
+    service = ShareImageService(repository, source_root=source_root, cache_root=tmp_path / "cache")
+    path = service.derivative(
+        share_id="owner-gallery", public_asset_id="local-asset-000000000001",
+        local_asset_id="local-asset-000000000001", kind="gallery",
+    )
+    with Image.open(path) as image:
+        assert image.size == (768, 461)
+        assert not image.getexif()
+    square = service.derivative(
+        share_id="owner-gallery", public_asset_id="local-asset-000000000001",
+        local_asset_id="local-asset-000000000001", kind="thumb",
+    )
+    assert square != path
+    with Image.open(square) as image:
+        assert image.size == (640, 640)
+
+
+def test_gallery_derivative_applies_exif_orientation(tmp_path: Path) -> None:
+    repository, source_root = _repository(tmp_path)
+    source = source_root / "2026/2026-09-05/photo.jpg"
+    exif = Image.Exif()
+    exif[274] = 6
+    Image.new("RGB", (1800, 3000), "#cf8b62").save(source, exif=exif)
+    service = ShareImageService(repository, source_root=source_root, cache_root=tmp_path / "cache")
+    path = service.derivative(
+        share_id="owner-gallery", public_asset_id="local-asset-000000000001",
+        local_asset_id="local-asset-000000000001", kind="gallery",
+    )
+    with Image.open(path) as image:
+        assert image.size == (768, 461)
+        assert not image.getexif()
+
+
+def test_independent_themes_keep_original_map_nodes_accessible() -> None:
+    assert "function restorePlaces()" in STORY_JS
+    assert "item.anchor.after(item.details)" in STORY_JS
+    assert "item.group.append(item.details)" in STORY_JS
+    assert "button.closest('.chapter,[data-theme-place]')" in STORY_JS
 
 
 def test_derivative_reuses_legacy_preview_without_reencoding(tmp_path: Path) -> None:
@@ -424,6 +467,36 @@ def test_owner_story_person_chip_filters_the_same_photo_set_as_viewer(tmp_path: 
     assert "let tiles=[...allTiles]" in STORY_JS
 
 
+def test_story_viewer_fits_each_photo_to_the_visible_stage_before_zooming(
+    tmp_path: Path,
+) -> None:
+    repository, _root = _repository(tmp_path)
+    story = build_recommendation_story(repository, now=NOW)
+
+    rendered = render_story(story, public=False)
+
+    assert 'story.css?v=11' in rendered
+    assert 'story.js?v=11' in rendered
+    assert 'swiper-bundle.min.css?v=14.2.0' in rendered
+    assert 'swiper-bundle.min.js?v=14.2.0' in rendered
+    assert rendered.index("swiper-bundle.min.css") < rendered.index("story.css?v=11")
+    assert rendered.index("swiper-bundle.min.js") < rendered.index("story.js?v=11")
+    assert "function fitImage(image)" in STORY_JS
+    assert "availableWidth=stage.clientWidth" in STORY_JS
+    assert "availableHeight=stage.clientHeight" in STORY_JS
+    assert "Math.min(availableWidth/naturalWidth,availableHeight/naturalHeight)" in STORY_JS
+    assert "image.addEventListener('load',()=>{fitImage(image)" in STORY_JS
+    assert "new window.Swiper(stage" in STORY_JS
+    assert "zoom:{enabled:true,maxRatio:4,minRatio:1,toggle:true}" in STORY_JS
+    assert "stage.addEventListener('dblclick'" in STORY_JS
+    assert "performance.now()-lastDoubleTap<350" in STORY_JS
+    assert "window.addEventListener('keydown'" in STORY_JS
+    assert "if(!dialog.open||dialog.classList.contains('is-grid'))return" in STORY_JS
+    assert "[-1,0,1].forEach" in STORY_JS
+    assert "prefers-reduced-motion: reduce" in STORY_JS
+    assert ".stage img{display:block;width:auto;height:auto;max-width:none;max-height:none" in STORY_CSS
+
+
 def test_owner_created_share_exposes_separate_copy_controls_once(tmp_path: Path) -> None:
     repository, _root = _repository(tmp_path)
     story = build_recommendation_story(repository, now=NOW)
@@ -442,6 +515,51 @@ def test_owner_created_share_exposes_separate_copy_controls_once(tmp_path: Path)
     assert "코드 복사" in rendered
     assert 'data-copy-value="654321"' in rendered
     assert "654321" not in str(stored)
+
+
+@pytest.mark.parametrize("theme_id", ["quiet_memories", "moment_clusters", "scroll_cinema", "spatial_ribbon", "memory_volume"])
+def test_share_snapshots_visual_theme_and_owner_picker_is_not_public(tmp_path: Path, theme_id: str) -> None:
+    repository, _root = _repository(tmp_path)
+    story = build_recommendation_story(repository, now=NOW)
+    repository.upsert_story_presentation(
+        story["story_id"],
+        {
+            "schema_version": 1,
+            "theme_id": theme_id,
+            "presentation_revision": 1,
+            "selection_mode": "manual",
+        },
+    )
+    service = StoryShareService(repository, session_secret=SECRET, now_fn=lambda: NOW)
+    created, _ = service.create(story, passcode="123456")
+    repository.upsert_story_presentation(
+        story["story_id"],
+        {
+            "schema_version": 1,
+            "theme_id": "scroll_cinema",
+            "design_preset": "scroll-cinema-v1",
+            "presentation_revision": 2,
+            "selection_mode": "manual",
+        },
+        expected_revision=1,
+    )
+
+    public_html = render_story(created, public=True, share_id=created["share_id"])
+    owner_html = render_owner(
+        story,
+        presentation=repository.get_story_presentation(story["story_id"]),
+    )
+
+    assert created["presentation"]["theme_id"] == theme_id
+    assert f'data-story-theme="{theme_id}"' in public_html
+    assert "Story 스타일" not in public_html
+    assert 'data-story-theme="scroll_cinema"' in owner_html
+    assert "Story 스타일" in owner_html
+    assert "스크롤 시네마" in owner_html
+    assert "공간을 흐르는 사진" in owner_html
+    assert "팝업 플레이북" not in owner_html
+    assert "트랜짓 아틀라스" not in owner_html
+    assert "실버 인덱스" not in owner_html
 
 
 def test_owner_login_allowlist_uses_private_runtime_file_fallback(
@@ -480,6 +598,7 @@ def test_public_unlock_gallery_and_download_are_session_and_allowlist_protected(
         assert client.get("/photos").status_code == 404
         locked = client.get(f"/s/{share_id}")
         forbidden_image = client.get(f"/s/{share_id}/assets/{public_asset_id}/thumb")
+        forbidden_ratio_image = client.get(f"/s/{share_id}/assets/{public_asset_id}/gallery")
         wrong = client.post(f"/s/{share_id}", data={"passcode": "000000"})
         unlocked = client.post(
             f"/s/{share_id}",
@@ -487,16 +606,26 @@ def test_public_unlock_gallery_and_download_are_session_and_allowlist_protected(
             follow_redirects=False,
         )
         gallery = client.get(f"/s/{share_id}")
-        stylesheet = client.get("/story-assets/story.css?v=5")
-        script = client.get("/story-assets/story.js?v=5")
+        stylesheet = client.get("/story-assets/story.css?v=11")
+        script = client.get("/story-assets/story.js?v=11")
+        swiper_css = client.get("/story-assets/swiper-bundle.min.css?v=14.2.0")
+        swiper_js = client.get("/story-assets/swiper-bundle.min.js?v=14.2.0")
+        favicon = client.get("/story-assets/favicon.svg")
+        unknown_vendor = client.get("/story-assets/not-allowed.js")
         missing = client.get(f"/s/{share_id}/assets/not-allowed-asset/download")
         download = client.get(f"/s/{share_id}/assets/{public_asset_id}/download")
+        ratio_image = client.get(f"/s/{share_id}/assets/{public_asset_id}/gallery")
 
     assert locked.status_code == 200
     assert "공유 잠금 해제" in locked.text
     assert story["title"] not in locked.text
     assert "private-provider-id" not in locked.text
     assert forbidden_image.status_code == 401
+    assert forbidden_ratio_image.status_code == 401
+    assert ratio_image.status_code == 200
+    with Image.open(io.BytesIO(ratio_image.content)) as ratio:
+        assert ratio.size == (768, 461)
+        assert not ratio.getexif()
     assert wrong.status_code == 401
     assert unlocked.status_code == 303
     assert "Secure" in unlocked.headers["set-cookie"]
@@ -509,8 +638,8 @@ def test_public_unlock_gallery_and_download_are_session_and_allowlist_protected(
     assert "data-zoom-reset" in gallery.text
     assert '<button class="nav"' not in gallery.text
     assert "data-position-progress" in gallery.text
-    assert "image.removeAttribute('src')" in script.text
-    assert "dialog.addEventListener('close',releaseViewer)" in script.text
+    assert "wrapper.replaceChildren()" in script.text
+    assert "dialog.addEventListener('close',()=>{" in script.text
     assert "title=dialog.querySelector('[data-title]')" in script.text
     assert "title=d.querySelector('[data-title]')" not in script.text
     assert ".tile img{transition:transform" not in stylesheet.text.split("@media(hover:hover)", 1)[0]
@@ -521,12 +650,20 @@ def test_public_unlock_gallery_and_download_are_session_and_allowlist_protected(
     assert "prefers-color-scheme:dark" in stylesheet.text
     assert ':root[data-theme="dark"]' in stylesheet.text
     assert "min-height:48px" in stylesheet.text
-    assert "touch-action:none" in stylesheet.text
+    assert ".stage.swiper" in stylesheet.text
+    assert swiper_css.status_code == 200
+    assert swiper_js.status_code == 200
+    assert "Swiper 14.2.0" in swiper_js.text
+    assert "immutable" in swiper_js.headers["cache-control"]
+    assert favicon.status_code == 200
+    assert favicon.headers["content-type"].startswith("image/svg+xml")
+    assert '/story-assets/favicon.svg' in gallery.text
+    assert unknown_vendor.status_code == 404
     assert "dialog.querySelector('[data-save]')" in script.text
-    assert "pointerdown" in script.text
-    assert "pointermove" in script.text
-    assert "setZoom" in script.text
-    assert "scale<=1.01" in script.text
+    assert "new window.Swiper(stage" in script.text
+    assert "followFinger:true" in script.text
+    assert "swiper.zoom.in(next)" in script.text
+    assert "next<=1.01" in script.text
     assert "local-asset-000000000001" not in gallery.text
     assert "private-provider-id" not in gallery.text
     assert missing.status_code == 404

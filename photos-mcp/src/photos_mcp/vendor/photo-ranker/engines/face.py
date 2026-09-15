@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import io
 import logging
-import os
 import urllib.request
 from pathlib import Path
 
 import numpy as np
 
-from photos_mcp.infrastructure.vendor_adapter.compat import photo_ranker_model_cache_root
+from photos_mcp.infrastructure.vendor_adapter.compat import (
+    DETECTOR_MODEL,
+    RECOGNIZER_MODEL,
+    bounded_detector_image,
+    face_to_source_coordinates,
+    photo_ranker_model_cache_root,
+    resolve_face_models,
+)
 
 from ..models import FaceResult
 
@@ -32,12 +39,21 @@ def _mediapipe_model_path() -> Path:
 
 
 class FaceEngine:
-    """Detects faces using insightface (preferred), mediapipe, or face-recognition."""
+    """Detect faces with a self-contained backend and optional fallbacks.
+
+    The packaged macOS app already ships OpenCV together with the pinned YuNet
+    and SFace models used by the people-indexing service.  Prefer that runtime
+    after InsightFace so batch ranking and people indexing use the same face
+    geometry and 128-dimensional embeddings even when MediaPipe/dlib are not
+    bundled.
+    """
 
     def __init__(self) -> None:
-        self._backend: str | None = None  # "insightface" | "mediapipe" | "face_recognition" | ""
+        self._backend: str | None = None
         self._mp_detector = None
         self._insight_app = None
+        self._opencv_detector = None
+        self._opencv_recognizer = None
 
     def _check_available(self) -> None:
         if self._backend is not None:
@@ -56,12 +72,38 @@ class FaceEngine:
             self._backend = "insightface"
             logger.info("Face detection backend: insightface (ArcFace 512-dim)")
             return
-        except (ImportError, Exception) as exc:
+        except Exception as exc:  # noqa: BLE001 - optional native runtime probe
             logger.debug("insightface not available: %s", exc)
+
+        # Prefer the OpenCV runtime that is shipped with PhotosMcp.app.  This
+        # keeps the standalone app independent from development-site packages
+        # such as MediaPipe and dlib/face-recognition.
+        try:
+            import cv2
+
+            models = resolve_face_models()
+            if DETECTOR_MODEL not in models or RECOGNIZER_MODEL not in models:
+                raise FileNotFoundError("pinned OpenCV face models are unavailable")
+            self._opencv_detector = cv2.FaceDetectorYN_create(
+                str(models[DETECTOR_MODEL]),
+                "",
+                (320, 320),
+                0.65,
+                0.3,
+                5000,
+            )
+            self._opencv_recognizer = cv2.FaceRecognizerSF_create(
+                str(models[RECOGNIZER_MODEL]),
+                "",
+            )
+            self._backend = "opencv"
+            logger.info("Face detection backend: OpenCV YuNet + SFace (128-dim)")
+            return
+        except Exception as exc:  # noqa: BLE001 - optional native runtime probe
+            logger.debug("OpenCV YuNet/SFace backend not available: %s", exc)
 
         # Try mediapipe (no embeddings, detection only)
         try:
-            import mediapipe as mp
             from mediapipe.tasks.python import BaseOptions, vision
 
             model_path = _mediapipe_model_path()
@@ -77,7 +119,7 @@ class FaceEngine:
             self._backend = "mediapipe"
             logger.info("Face detection backend: mediapipe")
             return
-        except (ImportError, Exception) as exc:
+        except Exception as exc:  # noqa: BLE001 - optional native runtime probe
             logger.debug("mediapipe not available: %s", exc)
 
         # Fall back to face-recognition (requires dlib)
@@ -93,7 +135,8 @@ class FaceEngine:
         self._backend = ""  # empty string = nothing available
         logger.warning(
             "No face detection backend available. "
-            "Install insightface, mediapipe, or face-recognition."
+            "Prepare OpenCV YuNet/SFace models or install insightface, "
+            "mediapipe, or face-recognition."
         )
 
     @property
@@ -142,8 +185,8 @@ class FaceEngine:
                                 int(l / scale),
                             )
                         logger.debug("Upscale retry found %d faces", len(results))
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - best-effort detection retry
+                logger.debug("Face detection upscale retry failed: %s", exc)
 
         return results
 
@@ -151,9 +194,66 @@ class FaceEngine:
         """Dispatch to the active backend."""
         if self._backend == "insightface":
             return self._detect_insightface(image_b64)
+        if self._backend == "opencv":
+            return self._detect_opencv(image_b64)
         if self._backend == "mediapipe":
             return self._detect_mediapipe(image_b64)
         return self._detect_face_recognition(image_b64)
+
+    def _detect_opencv(self, image_b64: str) -> list[FaceResult]:
+        """Detect with YuNet and create stable SFace embeddings.
+
+        Detection runs on a bounded proxy because full-resolution phone images
+        reduce YuNet reliability and consume unnecessary memory.  Landmarks are
+        mapped back to the original image before SFace alignment so stored
+        embeddings remain compatible with the people-indexing service.
+        """
+        import cv2
+        from PIL import Image
+
+        try:
+            img_bytes = base64.b64decode(image_b64)
+            rgb_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        except (ValueError, OSError, binascii.Error):
+            logger.warning("Failed to decode image for face detection")
+            return []
+
+        image = cv2.cvtColor(np.asarray(rgb_image), cv2.COLOR_RGB2BGR)
+        detector_image, scale_x, scale_y = bounded_detector_image(image, cv2)
+        detector_height, detector_width = detector_image.shape[:2]
+        self._opencv_detector.setInputSize((detector_width, detector_height))
+        _status, detected = self._opencv_detector.detect(detector_image)
+        if detected is None:
+            return []
+
+        height, width = image.shape[:2]
+        results: list[FaceResult] = []
+        for detector_face in detected:
+            face = face_to_source_coordinates(detector_face, scale_x, scale_y)
+            x, y, box_width, box_height = (float(value) for value in face[:4])
+            left = max(0, min(round(x), width - 1))
+            top = max(0, min(round(y), height - 1))
+            right = max(left + 1, min(round(x + box_width), width))
+            bottom = max(top + 1, min(round(y + box_height), height))
+            try:
+                aligned = self._opencv_recognizer.alignCrop(image, face)
+                embedding = (
+                    self._opencv_recognizer.feature(aligned)
+                    .reshape(-1)
+                    .astype("float32")
+                    .tolist()
+                )
+            except Exception as exc:  # noqa: BLE001 - OpenCV uses native exception types
+                logger.debug("SFace embedding failed for one detected face: %s", exc)
+                embedding = None
+            results.append(
+                FaceResult(
+                    bbox=(top, right, bottom, left),
+                    embedding=embedding,
+                    expression="unknown",
+                )
+            )
+        return results
 
     def _detect_insightface(self, image_b64: str) -> list[FaceResult]:
         """Detect faces via insightface (RetinaFace detection + ArcFace embeddings)."""
@@ -162,7 +262,7 @@ class FaceEngine:
         try:
             img_bytes = base64.b64decode(image_b64)
             image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        except Exception:
+        except (ValueError, OSError, binascii.Error):
             logger.warning("Failed to decode image for face detection")
             return []
 
@@ -207,14 +307,12 @@ class FaceEngine:
         try:
             img_bytes = base64.b64decode(image_b64)
             image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        except Exception:
+        except (ValueError, OSError, binascii.Error):
             logger.warning("Failed to decode image for face detection")
             return []
         img_array = np.array(image)
 
-        mp_image = mp.Image(
-            image_format=mp.ImageFormat.SRGB, data=img_array
-        )
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_array)
         mp_result = self._mp_detector.detect(mp_image)
 
         if not mp_result.detections:
@@ -277,8 +375,10 @@ class FaceEngine:
             # mediapipe FaceDetection doesn't produce embeddings
             return []
 
-        if self._backend == "insightface":
-            return self._compare_insightface(known_embeddings, face_embedding, tolerance)
+        if self._backend in {"insightface", "opencv"}:
+            return self._compare_insightface(
+                known_embeddings, face_embedding, tolerance
+            )
 
         import face_recognition
 

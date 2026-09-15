@@ -15,6 +15,10 @@ from photos_mcp.application.story_generation import (
     ensure_recommendation_story,
     normalize_story_person_evidence,
 )
+from photos_mcp.application.story_presentation import (
+    automatic_story_presentation,
+    owner_story_presentation,
+)
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
 
 
@@ -294,6 +298,14 @@ class StoryShareService:
                 in {"day_in_life", "weekend_journal", "seasonal_digest", "mixed_archive"}
                 else "mixed_archive"
             ),
+            # Snapshot the visual presentation so an already-issued family
+            # share never changes appearance when the owner edits the Story.
+            "presentation": owner_story_presentation(
+                self.repository.get_story_presentation(
+                    str(story.get("story_id") or "")
+                )
+                or automatic_story_presentation(story)
+            ),
             "date_from": str(story.get("date_from") or ""),
             "date_to": str(story.get("date_to") or ""),
             "photos": public_photos,
@@ -481,6 +493,7 @@ class StoryShareService:
                 "location_overview",
                 "people_overview",
                 "person_names_included",
+                "presentation",
             )
         }
         if include_story:

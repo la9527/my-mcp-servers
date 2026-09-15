@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PhotosMcp Story 테마 시안</title>
+  <link rel="stylesheet" href="../themes/default.css">
+  <link rel="stylesheet" href="../../../resources/web/swiper-14.2.0/swiper-bundle.min.css">
+  <style>
+    *{box-sizing:border-box}
+    html{background:#252b28}
+    body{margin:0;color:var(--color-text);font-family:var(--font-sans);background:#252b28;line-height:1.55}
+    button,a{font:inherit}button{cursor:pointer}
+    .review-shell{width:100%;min-height:100dvh;margin:auto;background:var(--color-bg);transition:max-width .2s ease,box-shadow .2s ease}
+    .review-shell.phone{max-width:390px;box-shadow:0 24px 80px rgb(0 0 0/.36)}
+    .review-shell.tablet{max-width:820px;box-shadow:0 24px 80px rgb(0 0 0/.36)}
+    .review-head{position:sticky;top:0;z-index:50;padding:14px clamp(14px,3vw,32px);border-bottom:1px solid var(--color-border);background:rgb(247 249 246/.94);backdrop-filter:blur(18px)}
+    .review-title{display:flex;justify-content:space-between;gap:16px;align-items:start;max-width:1440px;margin:auto}.review-title h1{font-size:clamp(1.2rem,2.4vw,1.8rem);margin:0;letter-spacing:-.035em}.review-title p{margin:2px 0 0;color:var(--color-text-muted);font-size:.84rem}.recommendation{display:inline-flex;white-space:nowrap;padding:6px 10px;border-radius:999px;background:#d9efe7;color:#155443;font-size:.72rem;font-weight:800}
+    .theme-tabs{max-width:1440px;margin:12px auto 0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}.theme-tab{min-height:58px;text-align:left;border:1px solid var(--color-border);border-radius:12px;background:white;color:#28312e;padding:8px 10px;transition:border-color .18s ease,transform .18s ease,background .18s ease}.theme-tab:hover{transform:translateY(-1px);border-color:#81968d}.theme-tab:focus-visible{outline:3px solid #e08855;outline-offset:2px}.theme-tab.active{background:#193f35;color:white;border-color:#193f35}.theme-tab strong,.theme-tab span{display:block}.theme-tab strong{font-size:.82rem}.theme-tab span{font-size:.67rem;opacity:.72;margin-top:2px}
+    .story-theme{display:none;min-height:calc(100dvh - 135px)}.story-theme.active{display:block}.theme-note{display:flex;gap:12px;justify-content:space-between;align-items:center;padding:9px 16px;background:#17231f;color:#eef5f1;font-size:.76rem}.theme-note span:last-child{color:#a9bab2}
+    .lightbox{border:0;padding:0;width:100vw;height:100dvh;max-width:none;max-height:none;background:#070a09;color:white}.lightbox::backdrop{background:#070a09}.lightbox-inner{height:100%;display:grid;grid-template-rows:auto 1fr auto}.lightbox-head,.lightbox-foot{padding:max(12px,env(safe-area-inset-top)) 18px 12px;display:flex;justify-content:space-between;align-items:center;background:#0d1210}.lightbox-foot{padding:12px 18px max(12px,env(safe-area-inset-bottom));color:#bac6c0}.lightbox-close{width:48px;height:48px;border:0;border-radius:50%;background:#27302d;color:white;font-size:1.25rem}.lightbox img{display:block;width:100%;height:100%;min-height:0;object-fit:contain;background:#070a09}
+    .sketch-tools{position:fixed;right:12px;bottom:12px;z-index:100;background:rgb(8 13 11/.84);color:white;padding:8px;border-radius:10px;opacity:.52;transition:opacity .2s ease;display:flex;gap:6px}.sketch-tools:hover,.sketch-tools:focus-within{opacity:1}.sketch-tools button{border:1px solid rgb(255 255 255/.22);background:transparent;color:white;border-radius:7px;padding:6px 8px;font-size:.7rem}.sketch-tools button.active{background:white;color:#111}
+    .clickable{cursor:zoom-in}
+
+    /* A. Journal */
+    .journal{--paper:#f4f5f1;--ink:#17201d;--pine:#1d6552;background:var(--paper);color:var(--ink)}
+    .journal .cover{min-height:72dvh;display:grid;grid-template-columns:minmax(280px,.85fr) minmax(0,1.4fr);align-items:end;gap:clamp(24px,5vw,72px);padding:clamp(28px,6vw,88px);max-width:1440px;margin:auto}.journal .cover-copy{padding-bottom:5vh}.journal .kicker{font-size:.78rem;font-weight:800;color:var(--pine);letter-spacing:.08em}.journal h2{font-family:var(--font-serif);font-size:clamp(2.8rem,7vw,7.2rem);font-weight:500;line-height:.94;letter-spacing:-.06em;margin:14px 0 22px}.journal .cover p{max-width:38ch;color:#5b6661}.journal .cover img{width:100%;height:min(68dvh,760px);object-fit:cover;border-radius:2px}.journal .article{max-width:1160px;margin:auto;padding:70px clamp(20px,5vw,60px) 110px}.journal .chapter-title{max-width:700px;margin:0 0 36px}.journal .chapter-title small{color:var(--pine);font-weight:800}.journal .chapter-title h3{font:500 clamp(2rem,5vw,4rem)/1 var(--font-serif);margin:7px 0 13px}.journal .chapter-title p{color:#63706a}.journal .spread{display:grid;grid-template-columns:1.45fr .8fr;gap:clamp(12px,3vw,38px);align-items:end;margin:48px 0 84px}.journal figure{margin:0}.journal figure img{width:100%;display:block}.journal figcaption{max-width:42ch;padding-top:10px;color:#65706b;font-size:.84rem}.journal .portrait-note{border-top:1px solid #bcc6c0;padding-top:22px;font:500 clamp(1.2rem,2vw,1.7rem)/1.35 var(--font-serif)}
+
+    /* B. Cinema */
+    .cinema{height:calc(100dvh - 135px);min-height:560px;background:#080b0a;color:#f6f8f6;overflow:hidden}.cinema .swiper{height:100%}.cinema .swiper-slide{position:relative;overflow:hidden;background:#0d1110}.cinema .swiper-slide::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgb(6 9 8/.88) 0%,rgb(6 9 8/.18) 53%,rgb(6 9 8/.1)),linear-gradient(0deg,rgb(6 9 8/.8),transparent 45%)}.cinema .swiper-slide img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}.cinema .frame-copy{position:absolute;z-index:2;left:clamp(22px,7vw,110px);bottom:clamp(64px,12vh,132px);max-width:min(560px,74vw)}.cinema .frame-copy small{font-size:.75rem;color:#9ed6c5;font-weight:800}.cinema .frame-copy h2{font-size:clamp(2.6rem,7vw,7rem);line-height:.95;letter-spacing:-.06em;margin:10px 0 18px}.cinema .frame-copy p{font-size:clamp(1rem,2vw,1.35rem);max-width:38ch;color:#d5dfda}.cinema .swiper-pagination{bottom:26px!important}.cinema .swiper-pagination-bullet{background:#fff;opacity:.35}.cinema .swiper-pagination-bullet-active{opacity:1;width:28px;border-radius:99px}.cinema .swiper-button-prev,.cinema .swiper-button-next{color:white;width:48px;height:48px;border-radius:50%;background:rgb(0 0 0/.35)}.cinema .swiper-button-prev::after,.cinema .swiper-button-next::after{font-size:17px}.cinema .counter{position:absolute;z-index:3;right:26px;top:22px;font:700 .8rem var(--font-mono)}
+
+    /* C. Contact sheet */
+    .contact{background:#e5e7e4;color:#111}.contact-head{max-width:1450px;margin:auto;padding:30px clamp(16px,4vw,54px) 18px;display:flex;align-items:end;justify-content:space-between;gap:24px;border-bottom:3px solid #151918}.contact-head h2{font-size:clamp(2rem,5vw,5rem);letter-spacing:-.065em;line-height:.92;margin:0}.contact-head p{margin:0;font:700 .75rem var(--font-mono);text-align:right}.contact-layout{max-width:1450px;margin:auto;padding:24px clamp(16px,4vw,54px) 90px;display:grid;grid-template-columns:1.35fr .8fr;gap:24px}.film-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-content:start}.film-cell{border:0;background:#151918;padding:7px;color:white;text-align:left}.film-cell img{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;filter:saturate(.88)}.film-cell span{display:flex;justify-content:space-between;padding-top:5px;font:700 .64rem var(--font-mono)}.film-cell[aria-pressed=true]{outline:4px solid #d65f36;outline-offset:2px}.contact-detail{position:sticky;top:158px;align-self:start;background:#f7f8f5;border:1px solid #b8bebb;padding:16px}.contact-detail img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#171b19;display:block}.contact-detail h3{font-size:1.4rem;margin:16px 0 4px}.contact-detail p{font-size:.86rem;color:#57615c}.film-data{display:grid;grid-template-columns:1fr 1fr;gap:8px;border-top:1px solid #aeb5b1;padding-top:12px;font:600 .7rem var(--font-mono)}
+
+    /* D. Journey */
+    .journey{background:#f3f5f3;color:#1c2823}.journey-head{padding:44px clamp(20px,5vw,70px) 34px;max-width:1500px;margin:auto}.journey-head h2{font:500 clamp(2.8rem,7vw,7rem)/.93 var(--font-serif);letter-spacing:-.055em;margin:0 0 14px}.journey-head p{color:#59655f;max-width:58ch}.journey-layout{display:grid;grid-template-columns:minmax(340px,.95fr) minmax(0,1.05fr);max-width:1500px;margin:auto;min-height:900px}.journey-map{position:sticky;top:135px;height:calc(100dvh - 135px);min-height:580px;overflow:hidden;background:#c9d6cf}.map-sketch{position:absolute;inset:0;background:linear-gradient(118deg,transparent 0 34%,rgb(255 255 255/.66) 35% 38%,transparent 39%),linear-gradient(28deg,transparent 0 48%,rgb(255 255 255/.7) 49% 52%,transparent 53%),linear-gradient(158deg,transparent 0 61%,rgb(255 255 255/.5) 62% 64%,transparent 65%),linear-gradient(90deg,#d5dfd8 0 58%,#bdd7df 58% 100%)}.map-sketch::before{content:"";position:absolute;left:28%;top:20%;width:42%;height:52%;border:5px solid #e06b46;border-color:#e06b46 transparent #e06b46 #e06b46;border-radius:48% 32% 60% 26%;transform:rotate(12deg)}.map-sketch::after{content:"실제 적용 시 Google 지도";position:absolute;right:16px;top:14px;color:#5d7068;font-size:.72rem;font-weight:800}.map-pin{position:absolute;width:34px;height:34px;border:4px solid white;border-radius:50% 50% 50% 0;background:#123b30;transform:rotate(-45deg);box-shadow:0 7px 16px rgb(10 43 34/.23)}.map-pin::after{content:"";position:absolute;inset:8px;border-radius:50%;background:#8fcdbb}.map-pin.one{left:24%;top:20%}.map-pin.two{left:54%;top:47%}.map-pin.three{left:66%;top:70%}.journey-map-label{position:absolute;left:20px;bottom:20px;background:#123b30;color:white;padding:13px 16px;border-radius:12px;box-shadow:var(--shadow-md)}.journey-map-label strong,.journey-map-label span{display:block}.journey-map-label span{font-size:.75rem;color:#b8d0c8}.journey-stops{padding:10px clamp(20px,5vw,66px) 100px}.journey-stop{min-height:72dvh;display:grid;align-content:center;border-bottom:1px solid #ccd3cf}.journey-stop small{font-weight:800;color:#1d6552}.journey-stop h3{font:500 clamp(2rem,4.5vw,4.5rem)/1 var(--font-serif);margin:7px 0 13px}.journey-stop p{max-width:48ch;color:#5d6863}.journey-stop img{margin-top:22px;width:100%;max-height:420px;object-fit:cover;border-radius:2px}
+
+    /* E. Memory book */
+    .memory{background:#dce8e8;color:#183237;padding:clamp(30px,6vw,90px) 20px 120px}.book-cover,.book-spread{max-width:1180px;margin:0 auto 42px;background:#f8fbfa;box-shadow:0 24px 70px rgb(28 66 72/.17);border-radius:3px}.book-cover{min-height:68dvh;display:grid;grid-template-columns:1.1fr .9fr;overflow:hidden}.book-cover img{width:100%;height:100%;object-fit:cover}.book-title{padding:clamp(28px,6vw,82px);display:flex;flex-direction:column;justify-content:space-between}.book-title small{font-weight:800;color:#39777b}.book-title h2{font:500 clamp(2.8rem,6vw,6rem)/.94 var(--font-serif);letter-spacing:-.055em;margin:14px 0}.book-title p{color:#5a7475}.book-people{display:flex;gap:8px;flex-wrap:wrap}.book-people span{padding:6px 10px;border:1px solid #9ebabb;border-radius:999px;font-size:.78rem}.book-spread{padding:clamp(22px,5vw,68px);display:grid;grid-template-columns:1.1fr .9fr;gap:clamp(18px,4vw,58px);align-items:center}.book-spread:nth-of-type(even){grid-template-columns:.9fr 1.1fr}.book-collage{display:grid;grid-template-columns:1.15fr .85fr;grid-template-rows:1fr 1fr;gap:9px}.book-collage img{width:100%;height:100%;min-height:170px;object-fit:cover}.book-collage img:first-child{grid-row:1/3}.book-copy .date{font:800 .74rem var(--font-mono);color:#39777b}.book-copy h3{font:500 clamp(1.8rem,4vw,3.8rem)/1 var(--font-serif);margin:9px 0 18px}.book-copy p{color:#607879;max-width:40ch}.memory-note{display:inline-block;margin-top:18px;padding:10px 14px;background:#f0d889;color:#514513;transform:rotate(-1deg);box-shadow:0 7px 18px rgb(62 70 48/.12);font-size:.84rem}
+
+    @media(max-width:900px){
+      .theme-tabs{display:flex;overflow:auto;scrollbar-width:none}.theme-tab{min-width:145px}.journal .cover,.book-cover,.book-spread,.book-spread:nth-of-type(even),.journey-layout,.contact-layout{grid-template-columns:1fr}.journal .cover{padding-top:44px}.journal .cover-copy{padding-bottom:0}.journal .cover img{height:52dvh}.journal .spread{grid-template-columns:1fr}.journal .spread figure:nth-child(2){width:76%;margin-left:auto}.contact-detail{position:static;order:-1}.film-grid{grid-template-columns:repeat(3,1fr)}.journey-map{position:relative;top:0;height:46dvh;min-height:330px}.journey-stop{min-height:auto;padding:58px 0}.book-cover{min-height:auto}.book-cover img{min-height:48dvh}.book-spread{padding-bottom:42px}.book-collage img{min-height:120px}.cinema .swiper-button-prev,.cinema .swiper-button-next{display:none}
+    }
+    @media(max-width:560px){
+      .review-head{position:relative}.review-title{display:block}.recommendation{margin-top:8px}.story-theme{min-height:calc(100dvh - 190px)}.cinema{height:calc(100dvh - 190px)}.theme-note{display:block}.theme-note span{display:block}.journal h2{font-size:3.1rem}.journal .article{padding-top:42px}.film-grid{grid-template-columns:repeat(2,1fr)}.contact-head{display:block}.contact-head p{text-align:left;margin-top:12px}.journey-map{height:40dvh}.book-collage{grid-template-columns:1fr 1fr}.book-collage img:first-child{grid-column:1/3;grid-row:auto}.memory{padding-inline:10px}.sketch-tools{right:8px;bottom:8px}
+    }
+    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important;transition:none!important}.memory-note{transform:none}}
+  </style>
+</head>
+<body>
+<div class="review-shell" id="review-shell">
+  <header class="review-head">
+    <div class="review-title">
+      <div><h1>PhotosMcp Story 테마 5안</h1><p>같은 사진과 Story 문장을 유지한 채 감상 방식만 바꾸는 시안입니다.</p></div>
+      <span class="recommendation">기본 권장 · 기록지</span>
+    </div>
+    <nav class="theme-tabs" aria-label="Story 테마 선택">
+      <button class="theme-tab active" data-target="journal"><strong>기록지</strong><span>편집 에세이 · 8-80장</span></button>
+      <button class="theme-tab" data-target="cinema"><strong>시네마</strong><span>몰입 Swiper · 3-30장</span></button>
+      <button class="theme-tab" data-target="contact"><strong>필름 인덱스</strong><span>빠른 탐색 · 50-1,000장</span></button>
+      <button class="theme-tab" data-target="journey"><strong>지도 여행기</strong><span>장소 중심 · GPS 충분</span></button>
+      <button class="theme-tab" data-target="memory"><strong>가족 메모리북</strong><span>인물 중심 · 15-120장</span></button>
+    </nav>
+  </header>
+
+  <section class="story-theme journal active" id="theme-journal">
+    <div class="theme-note"><span>현재 스타일의 상위 호환. 글과 장면을 차분히 읽는 기본 테마</span><span>세로 스크롤 + 공통 Swiper 뷰어</span></div>
+    <div class="cover">
+      <div class="cover-copy"><span class="kicker">2026년 8월 14일 · 강릉</span><h2>바다를 따라 걷던 하루</h2><p>푸른 하늘 아래 가족이 함께 멈춰 보고, 걷고, 웃었던 장면을 시간의 흐름으로 엮었습니다.</p></div>
+      <img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/62d344448d6636e57815.jpg" alt="바닷가 산책로에서 어른과 아이가 손을 잡고 서 있는 모습">
+    </div>
+    <article class="article">
+      <header class="chapter-title"><small>아침의 바닷가</small><h3>처음 마주한 수평선</h3><p>솔숲 그늘을 지나자 하늘과 바다가 한 번에 열렸습니다. 아이는 넓어진 풍경을 천천히 바라보았습니다.</p></header>
+      <div class="spread">
+        <figure><img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/9c2eed419dc16960112a.jpg" alt="바닷가 산책로를 바라보는 아이"><figcaption>나무 그늘과 바다 사이에서 잠시 멈춘 순간</figcaption></figure>
+        <div><figure><img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/ab314bd066a560402444.jpg" alt="창가에서 음료를 마시는 아이"><figcaption>창가 자리에서 쉬어 가는 작은 장면</figcaption></figure><p class="portrait-note">“오늘의 이야기는 걷는 속도만큼 천천히 이어졌습니다.”</p></div>
+      </div>
+    </article>
+  </section>
+
+  <section class="story-theme cinema" id="theme-cinema">
+    <div class="theme-note"><span>대표 장면과 짧은 문장을 한 화면씩 감상</span><span>Swiper slide · 자동 재생 없음 · 키보드 지원</span></div>
+    <div class="swiper cinema-swiper" aria-label="시네마 Story 대표 장면">
+      <div class="swiper-wrapper">
+        <article class="swiper-slide"><img src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/62d344448d6636e57815.jpg" alt="바닷가의 가족"><span class="counter">01 / 04</span><div class="frame-copy"><small>강릉 · 아침</small><h2>바다를 따라 걷던 하루</h2><p>손을 잡고 선 첫 장면에서 오늘의 이야기가 시작되었습니다.</p></div></article>
+        <article class="swiper-slide"><img src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/9c2eed419dc16960112a.jpg" alt="산책로를 바라보는 아이"><span class="counter">02 / 04</span><div class="frame-copy"><small>솔숲 산책로</small><h2>잠시 멈춰 본 풍경</h2><p>그늘 끝에서 아이는 파도보다 먼저 푸른 하늘을 발견했습니다.</p></div></article>
+        <article class="swiper-slide"><img src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/ab314bd066a560402444.jpg" alt="창가에서 음료를 마시는 아이"><span class="counter">03 / 04</span><div class="frame-copy"><small>카페 · 오후</small><h2>창가에서 쉬는 시간</h2><p>다시 걸어갈 힘을 채우며 바깥의 소나무를 바라보았습니다.</p></div></article>
+        <article class="swiper-slide"><img src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/ddb5da11b43891887b57.jpg" alt="바닷가에서 함께 걷는 가족"><span class="counter">04 / 04</span><div class="frame-copy"><small>해변 · 오후</small><h2>함께라서 남은 장면</h2><p>사진 속 표정보다 손을 잡은 모습이 더 오래 기억될 하루였습니다.</p></div></article>
+      </div>
+      <div class="swiper-button-prev" aria-label="이전 장면"></div><div class="swiper-button-next" aria-label="다음 장면"></div><div class="swiper-pagination"></div>
+    </div>
+  </section>
+
+  <section class="story-theme contact" id="theme-contact">
+    <div class="theme-note"><span>많은 사진을 빠르게 훑고 큰 화면에서 선별 감상</span><span>contact sheet + 선택 상세 + 공통 Swiper 뷰어</span></div>
+    <header class="contact-head"><h2>강릉, 8월 14일</h2><p>추천 36장<br>전체 68장</p></header>
+    <div class="contact-layout">
+      <div class="film-grid" aria-label="필름 인덱스">
+        <button class="film-cell" aria-pressed="true" data-film data-src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/62d344448d6636e57815.jpg" data-title="손을 잡은 첫 장면"><img src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/62d344448d6636e57815.jpg" alt="바닷가의 가족"><span><b>01</b><b>BEST</b></span></button>
+        <button class="film-cell" aria-pressed="false" data-film data-src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/9c2eed419dc16960112a.jpg" data-title="솔숲 끝의 수평선"><img src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/9c2eed419dc16960112a.jpg" alt="산책로의 아이"><span><b>02</b><b>68</b></span></button>
+        <button class="film-cell" aria-pressed="false" data-film data-src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/03de1f82eaf7bf250b34.jpg" data-title="사진을 남기는 사람"><img src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/03de1f82eaf7bf250b34.jpg" alt="아이의 사진을 찍는 어른"><span><b>03</b><b>64</b></span></button>
+        <button class="film-cell" aria-pressed="false" data-film data-src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/ddb5da11b43891887b57.jpg" data-title="다시 걷기 시작한 순간"><img src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/ddb5da11b43891887b57.jpg" alt="바닷가의 가족"><span><b>04</b><b>BEST</b></span></button>
+        <button class="film-cell" aria-pressed="false" data-film data-src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/ab314bd066a560402444.jpg" data-title="창가의 휴식"><img src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/ab314bd066a560402444.jpg" alt="창가에서 쉬는 아이"><span><b>05</b><b>66</b></span></button>
+        <button class="film-cell" aria-pressed="false" data-film data-src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/bddfd544b88dd3ccfb43.jpg" data-title="작은 음료 한 병"><img src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/bddfd544b88dd3ccfb43.jpg" alt="음료를 들여다보는 아이"><span><b>06</b><b>62</b></span></button>
+        <button class="film-cell" aria-pressed="false" data-film data-src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/5e92797aa0270a062d4d.jpg" data-title="해 질 무렵"><img src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/5e92797aa0270a062d4d.jpg" alt="창밖의 저녁 풍경"><span><b>07</b><b>58</b></span></button>
+        <button class="film-cell" aria-pressed="false" data-film data-src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/2a4987e389a48fad9977.jpg" data-title="하루의 마지막 빛"><img src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/2a4987e389a48fad9977.jpg" alt="해 질 무렵의 창밖"><span><b>08</b><b>57</b></span></button>
+      </div>
+      <aside class="contact-detail"><img id="film-selected-image" class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/62d344448d6636e57815.jpg" alt="선택한 사진"><h3 id="film-selected-title">손을 잡은 첫 장면</h3><p>같은 장면 가운데 구도와 표정이 가장 안정적인 추천 사진입니다.</p><div class="film-data"><span>2026.08.14</span><span>강릉시</span><span>윤지 · 가족</span><span>1.8 MB</span></div></aside>
+    </div>
+  </section>
+
+  <section class="story-theme journey" id="theme-journey">
+    <div class="theme-note"><span>GPS와 장소가 충분할 때 위치 흐름과 사진을 함께 읽는 테마</span><span>sticky map + 장소별 chapter + 소형 Swiper</span></div>
+    <header class="journey-head"><h2>바다와 솔숲 사이</h2><p>강릉의 바닷가 산책로에서 카페까지, 사진 속 장소를 따라 하루를 다시 걷습니다.</p></header>
+    <div class="journey-layout">
+      <div class="journey-map"><div class="map-sketch" role="img" aria-label="강릉의 세 장소를 연결한 지도 미리보기"><i class="map-pin one"></i><i class="map-pin two"></i><i class="map-pin three"></i></div><div class="journey-map-label"><strong id="map-place">경포 해변</strong><span id="map-detail">강릉시 · 사진 18장</span></div></div>
+      <div class="journey-stops">
+        <article class="journey-stop" data-place="경포 해변" data-place-detail="강릉시 · 사진 18장"><small>첫 번째 장소</small><h3>바다가 열리는 곳</h3><p>솔숲 그늘을 벗어나자 가족 앞에 푸른 수평선이 펼쳐졌습니다.</p><img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/62d344448d6636e57815.jpg" alt="경포 해변의 가족"></article>
+        <article class="journey-stop" data-place="해변 산책로" data-place-detail="강릉시 · 사진 12장"><small>두 번째 장소</small><h3>나무 그늘을 걷는 시간</h3><p>아이의 걸음이 느려질 때마다 주변 풍경도 더 오래 남았습니다.</p><img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/9c2eed419dc16960112a.jpg" alt="해변 산책로"></article>
+        <article class="journey-stop" data-place="바닷가 카페" data-place-detail="강릉시 · 사진 6장"><small>마지막 장소</small><h3>창가에 앉아 쉬어 가기</h3><p>유리창 너머의 소나무와 바다를 바라보며 하루를 정리했습니다.</p><img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/ab314bd066a560402444.jpg" alt="바닷가 카페의 아이"></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="story-theme memory" id="theme-memory">
+    <div class="theme-note"><span>반복해서 등장하는 가족과 짧은 기억을 책처럼 구성</span><span>정돈된 collage + 사람별 묶음 + 공통 Swiper 뷰어</span></div>
+    <article class="book-cover"><img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/ddb5da11b43891887b57.jpg" alt="바닷가에서 함께 걷는 가족"><div class="book-title"><div><small>우리 가족의 여름 기록</small><h2>바다를 보러 간 날</h2><p>2026년 8월 14일, 강릉</p></div><div class="book-people"><span>윤지</span><span>엄마</span><span>아빠</span></div></div></article>
+    <article class="book-spread"><div class="book-collage"><img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/62d344448d6636e57815.jpg" alt="바닷가의 가족"><img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/9c2eed419dc16960112a.jpg" alt="산책하는 아이"><img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/03de1f82eaf7bf250b34.jpg" alt="사진을 찍는 가족"></div><div class="book-copy"><span class="date">2026.08.14 · 오전</span><h3>손을 잡고 시작한 산책</h3><p>윤지가 바다 쪽으로 걸음을 옮길 때마다 가족도 천천히 같은 방향으로 움직였습니다.</p><span class="memory-note">오늘 가장 많이 웃은 곳: 바닷가 산책로</span></div></article>
+    <article class="book-spread"><div class="book-copy"><span class="date">2026.08.14 · 오후</span><h3>창가에서 마신 작은 휴식</h3><p>잠깐 앉아 있는 동안에도 윤지는 창밖 풍경과 손에 든 음료를 번갈아 살펴보았습니다.</p><span class="memory-note">함께한 사람: 윤지, 엄마, 아빠</span></div><div class="book-collage"><img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/ab314bd066a560402444.jpg" alt="창가에서 음료를 마시는 아이"><img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/bddfd544b88dd3ccfb43.jpg" alt="음료를 살펴보는 아이"><img class="clickable" data-lightbox src="../../../.runtime/photo-ranker/artifacts/066778d9/previews/5e92797aa0270a062d4d.jpg" alt="저녁 풍경"></div></article>
+  </section>
+</div>
+
+<dialog class="lightbox" id="lightbox"><div class="lightbox-inner"><div class="lightbox-head"><strong>사진 크게 보기</strong><button class="lightbox-close" aria-label="닫기">×</button></div><img id="lightbox-image" alt=""><div class="lightbox-foot"><span id="lightbox-caption">사진</span><span>두 번 탭 확대 · 좌우 넘기기</span></div></div></dialog>
+<div class="sketch-tools" aria-label="시안 보기 도구"><button data-viewport="desktop" class="active">PC</button><button data-viewport="tablet">태블릿</button><button data-viewport="phone">모바일</button></div>
+
+<script src="../../../resources/web/swiper-14.2.0/swiper-bundle.min.js"></script>
+<script>
+  const shell=document.getElementById('review-shell');
+  const tabs=[...document.querySelectorAll('.theme-tab')];
+  const themes=[...document.querySelectorAll('.story-theme')];
+  tabs.forEach(tab=>tab.addEventListener('click',()=>{
+    tabs.forEach(item=>item.classList.toggle('active',item===tab));
+    themes.forEach(theme=>theme.classList.toggle('active',theme.id===`theme-${tab.dataset.target}`));
+    if(tab.dataset.target==='cinema')setTimeout(()=>cinema.update(),0);
+    scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
+  }));
+  const requestedTheme=new URLSearchParams(location.search).get('theme');
+  if(requestedTheme){tabs.find(tab=>tab.dataset.target===requestedTheme)?.click()}
+  document.querySelectorAll('[data-viewport]').forEach(button=>button.addEventListener('click',()=>{
+    document.querySelectorAll('[data-viewport]').forEach(item=>item.classList.toggle('active',item===button));
+    shell.className=`review-shell ${button.dataset.viewport==='desktop'?'':button.dataset.viewport}`;
+    setTimeout(()=>cinema.update(),220);
+  }));
+  const cinema=new Swiper('.cinema-swiper',{speed:matchMedia('(prefers-reduced-motion: reduce)').matches?0:420,keyboard:{enabled:true,onlyInViewport:true},pagination:{el:'.cinema .swiper-pagination',clickable:true},navigation:{nextEl:'.cinema .swiper-button-next',prevEl:'.cinema .swiper-button-prev'},a11y:{enabled:true,prevSlideMessage:'이전 장면',nextSlideMessage:'다음 장면'},rewind:true});
+  document.querySelectorAll('[data-film]').forEach(button=>button.addEventListener('click',()=>{
+    document.querySelectorAll('[data-film]').forEach(item=>item.setAttribute('aria-pressed',item===button?'true':'false'));
+    document.getElementById('film-selected-image').src=button.dataset.src;
+    document.getElementById('film-selected-title').textContent=button.dataset.title;
+  }));
+  const observer=new IntersectionObserver(entries=>{entries.forEach(entry=>{if(entry.isIntersecting){document.getElementById('map-place').textContent=entry.target.dataset.place;document.getElementById('map-detail').textContent=entry.target.dataset.placeDetail}})},{rootMargin:'-35% 0px -45% 0px'});
+  document.querySelectorAll('.journey-stop').forEach(stop=>observer.observe(stop));
+  const dialog=document.getElementById('lightbox'),lightboxImage=document.getElementById('lightbox-image');
+  document.querySelectorAll('[data-lightbox]').forEach(image=>image.addEventListener('click',()=>{lightboxImage.src=image.src;lightboxImage.alt=image.alt;document.getElementById('lightbox-caption').textContent=image.alt;dialog.showModal()}));
+  dialog.querySelector('.lightbox-close').addEventListener('click',()=>dialog.close());
+  dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close()});
+</script>
+</body>
+</html>

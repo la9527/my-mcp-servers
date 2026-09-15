@@ -66,6 +66,10 @@ from photos_mcp.application.story_generation import (
     refresh_all_story_location_projections,
     refresh_scoped_story,
 )
+from photos_mcp.application.story_presentation import (
+    automatic_story_presentation,
+    normalize_story_presentation,
+)
 from photos_mcp.application.story_sharing import StoryShareService
 from photos_mcp.application.recommendation_storage import reconcile_pending_recommendations
 from photos_mcp.application.mobile_location_projection import (
@@ -84,6 +88,8 @@ from photos_mcp.interfaces.http.story_web import (
     configured_owner_logins,
     load_session_secret,
     render_story,
+    story_icon_response,
+    swiper_asset_response,
 )
 
 
@@ -2756,8 +2762,61 @@ class MobileClientHttp:
                 public=False,
                 asset_base=f"{STORY_PREFIX}/assets",
                 static_base=STORY_PREFIX,
+                presentation=(
+                    repository.get_story_presentation(str(story.get("story_id") or ""))
+                    or automatic_story_presentation(story)
+                ),
+                theme_action=f"{STORY_PREFIX}/presentation",
             ),
             headers=PUBLIC_HEADERS,
+        )
+
+    async def story_presentation(self, request: Request) -> Response:
+        token = str(request.cookies.get(MOBILE_SESSION_COOKIE) or "")
+        if self._web_owner(request) is None:
+            return Response(status_code=401, headers=PUBLIC_HEADERS)
+        repository = self._repository()
+        if repository is None:
+            return Response(status_code=503, headers=PUBLIC_HEADERS)
+        story_id = self.client_repository.web_session_story_id(token)
+        story = (
+            repository.get_story_manifest(story_id)
+            if story_id
+            else current_mobile_story(
+                repository,
+                identity_repository=self._identity_repository,
+            )
+        )
+        if story is None or str(story.get("status") or "ready") == "deleted":
+            return Response(status_code=404, headers=PUBLIC_HEADERS)
+        resolved_story_id = str(story.get("story_id") or "")
+        try:
+            form = await request.form()
+            theme_id = str(form.get("theme_id") or "")
+            submitted_revision = int(form.get("presentation_revision") or 0)
+        except (TypeError, ValueError):
+            return Response(status_code=400, headers=PUBLIC_HEADERS)
+        current = repository.get_story_presentation(resolved_story_id)
+        if current is not None and submitted_revision != int(
+            current.get("presentation_revision") or 0
+        ):
+            return Response(status_code=409, headers=PUBLIC_HEADERS)
+        selected = normalize_story_presentation(
+            {"theme_id": theme_id, "selection_mode": "manual"},
+            selection_mode="manual",
+        )
+        repository.upsert_story_presentation(
+            resolved_story_id,
+            selected,
+            expected_revision=(
+                int(current.get("presentation_revision") or 0)
+                if current is not None
+                else None
+            ),
+        )
+        return Response(
+            status_code=303,
+            headers={**PUBLIC_HEADERS, "Location": STORY_PREFIX},
         )
 
     async def story_asset(self, request: Request) -> Response:
@@ -2766,7 +2825,7 @@ class MobileClientHttp:
             return Response(status_code=401, headers=PUBLIC_HEADERS)
         asset_id = str(request.path_params.get("asset_id") or "")
         kind = str(request.path_params.get("kind") or "")
-        if not SAFE_ID.fullmatch(asset_id) or kind not in {"thumb", "preview"}:
+        if not SAFE_ID.fullmatch(asset_id) or kind not in {"thumb", "gallery", "preview"}:
             return Response(status_code=404, headers=PUBLIC_HEADERS)
         repository = self._repository()
         if repository is None:
@@ -2809,6 +2868,16 @@ class MobileClientHttp:
         if self._web_owner(request) is None:
             return Response(status_code=401, headers=PUBLIC_HEADERS)
         return Response(STORY_JS, media_type="application/javascript", headers=PUBLIC_HEADERS)
+
+    async def story_vendor_asset(self, request: Request) -> Response:
+        if self._web_owner(request) is None:
+            return Response(status_code=401, headers=PUBLIC_HEADERS)
+        return swiper_asset_response(str(request.path_params.get("asset_name") or ""))
+
+    async def story_favicon(self, request: Request) -> Response:
+        if self._web_owner(request) is None:
+            return Response(status_code=401, headers=PUBLIC_HEADERS)
+        return story_icon_response()
 
     def route_specs(self) -> list[MobileRouteSpec]:
         return [
@@ -2937,8 +3006,15 @@ class MobileClientHttp:
             ),
             MobileRouteSpec(f"{STORY_PREFIX}/bootstrap", ("POST",), self.story_bootstrap),
             MobileRouteSpec(STORY_PREFIX, ("GET",), self.story_page),
+            MobileRouteSpec(
+                f"{STORY_PREFIX}/presentation", ("POST",), self.story_presentation
+            ),
             MobileRouteSpec(f"{STORY_PREFIX}/story.css", ("GET",), self.story_css),
             MobileRouteSpec(f"{STORY_PREFIX}/story.js", ("GET",), self.story_js),
+            MobileRouteSpec(f"{STORY_PREFIX}/favicon.svg", ("GET",), self.story_favicon),
+            MobileRouteSpec(
+                f"{STORY_PREFIX}/{{asset_name}}", ("GET",), self.story_vendor_asset
+            ),
             MobileRouteSpec(
                 f"{STORY_PREFIX}/assets/{{asset_id}}/{{kind}}", ("GET",), self.story_asset
             ),

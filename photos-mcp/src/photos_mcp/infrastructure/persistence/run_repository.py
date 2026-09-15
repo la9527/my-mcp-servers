@@ -378,6 +378,19 @@ class RunRepository(RecommendationVersionsMixin):
                 CREATE INDEX IF NOT EXISTS idx_story_manifests_updated
                     ON story_manifests(updated_at DESC);
 
+                CREATE TABLE IF NOT EXISTS story_presentations (
+                    story_id TEXT PRIMARY KEY,
+                    theme_id TEXT NOT NULL,
+                    design_preset TEXT NOT NULL,
+                    presentation_revision INTEGER NOT NULL DEFAULT 1,
+                    selection_mode TEXT NOT NULL DEFAULT 'automatic',
+                    presentation_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_story_presentations_updated
+                    ON story_presentations(updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS shared_story_packages (
                     share_id TEXT PRIMARY KEY,
                     story_id TEXT NOT NULL,
@@ -1963,6 +1976,73 @@ class RunRepository(RecommendationVersionsMixin):
                 (bounded,),
             ).fetchall()
         return [_decode(row["manifest_json"], {}) for row in rows]
+
+    def get_story_presentation(self, story_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT presentation_json FROM story_presentations WHERE story_id = ?",
+                (story_id,),
+            ).fetchone()
+        return _decode(row["presentation_json"], {}) if row is not None else None
+
+    def upsert_story_presentation(
+        self,
+        story_id: str,
+        payload: dict[str, Any],
+        *,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Persist a visual theme using optimistic revision checks."""
+
+        if not story_id:
+            raise ValueError("Story presentation requires story_id")
+        now = _utcnow_iso()
+        with self._lock:
+            existing = self._conn.execute(
+                """SELECT presentation_revision, created_at
+                   FROM story_presentations WHERE story_id = ?""",
+                (story_id,),
+            ).fetchone()
+            current_revision = int(existing["presentation_revision"]) if existing else 0
+            if expected_revision is not None and int(expected_revision) != current_revision:
+                raise ValueError("story_presentation_revision_conflict")
+            normalized = dict(payload)
+            normalized["presentation_revision"] = current_revision + 1
+            created_at = str(existing["created_at"]) if existing else now
+            self._conn.execute(
+                """INSERT INTO story_presentations
+                   (story_id, theme_id, design_preset, presentation_revision,
+                    selection_mode, presentation_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(story_id) DO UPDATE SET
+                     theme_id=excluded.theme_id,
+                     design_preset=excluded.design_preset,
+                     presentation_revision=excluded.presentation_revision,
+                     selection_mode=excluded.selection_mode,
+                     presentation_json=excluded.presentation_json,
+                     updated_at=excluded.updated_at""",
+                (
+                    story_id,
+                    str(normalized.get("theme_id") or ""),
+                    str(normalized.get("design_preset") or ""),
+                    int(normalized["presentation_revision"]),
+                    str(normalized.get("selection_mode") or "automatic"),
+                    _json(normalized),
+                    created_at,
+                    now,
+                ),
+            )
+            self._conn.commit()
+        return self.get_story_presentation(story_id) or normalized
+
+    def delete_story_presentation(self, story_id: str) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM story_presentations WHERE story_id = ?",
+                (story_id,),
+            )
+            self._conn.commit()
+        return bool(cursor.rowcount)
 
     def upsert_shared_story_package(self, payload: dict[str, Any]) -> dict[str, Any]:
         share_id = str(payload.get("share_id") or "")

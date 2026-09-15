@@ -48,6 +48,10 @@ from photos_mcp.application.story_generation import (
     ensure_scoped_story,
     refresh_recommendation_story,
 )
+from photos_mcp.application.story_presentation import (
+    automatic_story_presentation,
+    normalize_story_presentation,
+)
 from photos_mcp.infrastructure.mobile_location import MobileLocationLedger
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore, TERMINAL_JOB_STATUSES, job_snapshot_from_payload
 from photos_mcp.infrastructure.vision.runtime import vision_runtime_summary
@@ -64,6 +68,8 @@ from photos_mcp.interfaces.http.story_web import (
     owner_mutation_allowed,
     render_owner,
     render_policy_page,
+    story_icon_response,
+    swiper_asset_response,
 )
 from photos_mcp.interfaces.http.mobile_client import register_mobile_client_routes
 
@@ -440,6 +446,16 @@ def build_server(
             headers={"Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff"},
         )
 
+    @mcp.custom_route("/story-assets/favicon.svg", methods=["GET"], include_in_schema=False)
+    async def http_story_favicon(_request):
+        return story_icon_response()
+
+    @mcp.custom_route(
+        "/story-assets/{asset_name}", methods=["GET"], include_in_schema=False
+    )
+    async def http_story_vendor_asset(request):
+        return swiper_asset_response(str(request.path_params.get("asset_name") or ""))
+
     @mcp.custom_route("/photos", methods=["GET"], include_in_schema=False)
     async def http_owner_story(request):
         from starlette.responses import HTMLResponse
@@ -472,6 +488,12 @@ def build_server(
         return HTMLResponse(
             render_owner(
                 story,
+                presentation=(
+                    state_store.run_repository.get_story_presentation(
+                        str(story.get("story_id") or "")
+                    )
+                    or automatic_story_presentation(story)
+                ),
                 public_base=default_public_base_url(),
                 active_shares=active_shares,
                 stories=visible_stories,
@@ -515,10 +537,67 @@ def build_server(
         return HTMLResponse(
             render_owner(
                 story,
+                presentation=(
+                    state_store.run_repository.get_story_presentation(story_id)
+                    or automatic_story_presentation(story)
+                ),
                 public_base=default_public_base_url(),
                 stories=state_store.run_repository.list_story_manifests(limit=50),
             ),
             headers=PUBLIC_HEADERS,
+        )
+
+    @mcp.custom_route(
+        "/photos/stories/{story_id}/presentation",
+        methods=["POST"],
+        include_in_schema=False,
+    )
+    async def http_owner_story_presentation(request):
+        from starlette.responses import HTMLResponse, RedirectResponse
+
+        if not owner_mutation_allowed(request):
+            return HTMLResponse("Forbidden", status_code=403, headers=PUBLIC_HEADERS)
+        if state_store is None:
+            return HTMLResponse("Unavailable", status_code=503, headers=PUBLIC_HEADERS)
+        raw = await request.body()
+        if len(raw) > 2048:
+            return HTMLResponse("Request too large", status_code=413, headers=PUBLIC_HEADERS)
+        story_id = str(request.path_params.get("story_id") or "")
+        story = state_store.run_repository.get_story_manifest(story_id)
+        if story is None or str(story.get("status") or "ready") == "deleted":
+            return HTMLResponse("Story not found", status_code=404, headers=PUBLIC_HEADERS)
+        values = parse_qs(raw.decode("utf-8", errors="replace"), keep_blank_values=True)
+        theme_id = str((values.get("theme_id") or [""])[0])
+        current = state_store.run_repository.get_story_presentation(story_id)
+        try:
+            submitted_revision = int(
+                (values.get("presentation_revision") or ["0"])[0]
+            )
+        except ValueError:
+            submitted_revision = -1
+        if current is not None and submitted_revision != int(
+            current.get("presentation_revision") or 0
+        ):
+            return HTMLResponse(
+                "Story style changed in another window",
+                status_code=409,
+                headers=PUBLIC_HEADERS,
+            )
+        selected = normalize_story_presentation(
+            {"theme_id": theme_id, "selection_mode": "manual"},
+            selection_mode="manual",
+        )
+        state_store.run_repository.upsert_story_presentation(
+            story_id,
+            selected,
+            expected_revision=(
+                int(current.get("presentation_revision") or 0)
+                if current is not None
+                else None
+            ),
+        )
+        return RedirectResponse(
+            f"/photos/stories/{story_id}", status_code=303, headers=PUBLIC_HEADERS
         )
 
     @mcp.custom_route(
@@ -665,6 +744,12 @@ def build_server(
         return HTMLResponse(
             render_owner(
                 story,
+                presentation=(
+                    state_store.run_repository.get_story_presentation(
+                        str(story.get("story_id") or "")
+                    )
+                    or automatic_story_presentation(story)
+                ),
                 created=created,
                 passcode=passcode,
                 public_base=default_public_base_url(),
@@ -721,7 +806,7 @@ def build_server(
             return Response(status_code=503, headers=PUBLIC_HEADERS)
         asset_id = str(request.path_params.get("asset_id") or "")
         kind = str(request.path_params.get("kind") or "")
-        if kind not in {"thumb", "preview"}:
+        if kind not in {"thumb", "gallery", "preview"}:
             return Response(status_code=404, headers=PUBLIC_HEADERS)
         try:
             path = owner_assets(state_store.run_repository).derivative(

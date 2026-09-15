@@ -1,5 +1,14 @@
 # 실행 검증 보고서
 
+- [2026-09-15 Story 5종 물리 표현·비율 목록 통합 품질 검증](58-five-story-themes-physical-quality-validation-2026-09-15.md): 3개 에이전트의 R1~R4 시각 개선, 물리 책장·공간 무대·원본 비율 목록, 인증 경로와 반복 조작 검증을 기록한다. 운영 배포·실기기 검증은 문서의 미완료 항목과 구분한다.
+
+- [2026-09-15 기억의 책 물리 표현과 3차 화면 검토](57-story-book-physical-rendering-notes-2026-09-15.md): 곡면 종이, 양면 Canvas 표면, PC·모바일 페이지 및 실제 드래그 검증과 교차 디자인 검토를 기록했다.
+
+- [2026-09-15 승인된 Story UX 구현·검증](56-approved-story-ux-implementation-2026-09-15.md): 스크롤 시네마 기본, 얕은 공간형 선택 테마, 화면 맞춤·하단 필름스트립 공통 뷰어를 연결했다. 실제 315장 PC/모바일 브라우저와 1,084개 회귀를 검증했다. 기존 5종 테마는 과거 공유 호환용으로 보존한다.
+- [2026-09-14 5종 Story 테마 운영 구현·배포 검증](55-five-story-theme-runtime-validation-2026-09-14.md): 분석 데이터와 표현 계층을 분리해 `코발트 포스터`, `암실 시네마`, `팝업 플레이북`, `트랜짓 아틀라스`, `실버 인덱스`를 Mac·Android WebView·30일 공유에 연결했다. 1,083개 회귀, 실제 315장 desktop/mobile 화면, standalone smoke·코드서명·재기동을 검증했다.
+- [2026-09-13 Story Swiper 통합·설정 검증](54-story-swiper-integration-validation-2026-09-13.md): Story 큰 사진 뷰어를 self-hosted Swiper 14.2.0 기반으로 전환했다. 최대 1,000장 slide의 인접 3장 지연 로딩, 화면 맞춤, touch·mouse 플릭, pinch·double tap·wheel 확대, 키보드·접근성·reduced motion, 닫기 시 메모리 해제와 Mac/Tailscale/Android WebView/30일 공유 경로를 검증했다.
+- [2026-09-13 Story 브라우저 화면 맞춤 뷰어 복구](53-story-browser-fit-viewer-2026-09-13.md): PC Chrome에서 `1×` 세로 사진이 stage보다 크게 계산되어 잘리던 문제를 실제 운영 Story로 재현하고, 원본 종횡비 기반 contain 계산·dialog 표시 순서·창 크기 재맞춤·캐시 버전을 교정했다. 세로·가로·모바일 화면, 확대와 복귀, 키보드 이동을 Chrome 153에서 검증했다.
+- [2026-09-13 PC 앱 사진 분석 얼굴 런타임 복구](52-packaged-face-runtime-recovery-2026-09-13.md): 설치형 앱의 photo-ranker가 이미 번들된 OpenCV YuNet/SFace를 사용하지 못하던 경로를 복구했다. 통합 작업 108장·추천 41장 완료를 확인하고, 1,075개 회귀와 설치본 실제 얼굴 검출·128차원 임베딩·코드서명·재기동을 검증했다.
 - [2026-09-13 이미 확정된 얼굴의 Apple Photos 이름 후보 완료](51-already-confirmed-provider-alias-completion-2026-09-13.md): 얼굴 연결 2건은 완료됐지만 provider alias만 남아 있던 막힌 상태를 Mac·Android 공통 완료 경로로 복구하고, 이후 얼굴 확인에서 유일한 이름 후보를 같은 transaction에 포함하도록 보완했다.
 - [2026-09-12 Apple Photos 이름 후보 다중 얼굴 복구](50-provider-alias-multi-face-recovery-2026-09-12.md): 고해상도 그룹 사진의 YuNet 검출 스케일을 교정하고, 이름 후보 전용 얼굴 projection·번호 미리보기·사진 단위 복구 동작을 Mac과 Android 공통 경로에 연결했다. 운영 2인 사진과 전체 1,047개 회귀, standalone 설치본을 검증했다.
 - [2026-09-12 예외 중심 인물 인식 Mac/Android 구현](49-exception-only-people-recognition-mac-android-implementation-2026-09-12.md): schema v6 예외 큐, 반복 새 인물 묶음 확정, 자동 인식 profile, macOS/Android 동등 UI, 0.8.3 실기기 설치와 Tailnet Google 지도 경로를 검증했다.
