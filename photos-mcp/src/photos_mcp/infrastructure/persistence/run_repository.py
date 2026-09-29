@@ -2414,6 +2414,7 @@ class RunRepository(RecommendationVersionsMixin):
         *,
         statuses: set[str] | None = None,
         limit: int = 50,
+        newest_first: bool = False,
     ) -> list[dict[str, Any]]:
         sql = "SELECT payload_json FROM user_action_requests"
         params: list[Any] = []
@@ -2421,7 +2422,11 @@ class RunRepository(RecommendationVersionsMixin):
             placeholders = ",".join("?" for _ in statuses)
             sql += f" WHERE status IN ({placeholders})"  # noqa: S608
             params.extend(sorted(statuses))
-        sql += " ORDER BY created_at ASC LIMIT ?"
+        # Most persistence consumers retain chronological order.  Inbox-like
+        # consumers, however, must be able to prioritise a just-created
+        # actionable request even when historical notifications have filled
+        # the bounded result window.
+        sql += " ORDER BY created_at " + ("DESC" if newest_first else "ASC") + " LIMIT ?"
         params.append(max(1, min(int(limit), 200)))
         with self._lock:
             rows = self._conn.execute(sql, tuple(params)).fetchall()

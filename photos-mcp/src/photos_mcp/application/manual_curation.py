@@ -536,6 +536,11 @@ async def dispatch_next_manual_curation(
         return None
     operation_id = str(operation["operation_id"])
     request = dict(operation.get("request") or {})
+    # A mobile GPS handoff is an audit receipt, not a transient queue hint.
+    # Keep it while the normal dispatcher adds its acceptance state and later
+    # terminal result; otherwise a successful resume would erase the evidence
+    # that authorised this PC-originated Google request.
+    prior_result = dict(operation.get("result") or {})
     request["operation_id"] = operation_id
     try:
         begin_manual_recommendation_version(repository, operation)
@@ -547,7 +552,7 @@ async def dispatch_next_manual_curation(
             operation_id,
             status="running",
             run_id=run_id,
-            result={"accepted": True},
+            result={**prior_result, "accepted": True},
         )
     except Exception as exc:
         if repository.get_recommendation_generation(operation_id):
@@ -558,7 +563,11 @@ async def dispatch_next_manual_curation(
         return repository.update_curation_operation(
             operation_id,
             status="failed",
-            result={"error_code": "manual_dispatch_failed", "error_type": type(exc).__name__},
+            result={
+                **prior_result,
+                "error_code": "manual_dispatch_failed",
+                "error_type": type(exc).__name__,
+            },
             completed_at=_utcnow().isoformat(),
         )
 
@@ -604,6 +613,7 @@ def reconcile_manual_curation_operations(
                 story_id = ""
                 status = "completed_empty" if status == "completed" else status
         result = {
+            **dict(operation.get("result") or {}),
             "story_id": story_id,
             "story_status": (
                 "ready"

@@ -290,6 +290,13 @@ async def test_desktop_google_request_waits_for_mobile_gps_then_rejoins_queue(tm
 
     dispatched = await dispatch_next_manual_curation(repository=repository, starter=starter)
     assert dispatched["status"] == "running"
+    assert dispatched["result"]["mobile_location_handoff"] == {
+        "date_from": "2026-09-01",
+        "date_to": "2026-09-07",
+        "scanned_count": 42,
+        "gps_manifest_count": 9,
+        "completed_at": "2026-09-08T00:00:00+00:00",
+    }
 
 
 def test_stranded_dispatch_claim_is_requeued_after_restart(tmp_path) -> None:

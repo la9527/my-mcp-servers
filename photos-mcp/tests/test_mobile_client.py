@@ -2178,6 +2178,60 @@ def test_android_can_resume_the_same_mac_operation_after_gps_handoff(tmp_path) -
         assert repository.list_user_action_requests(statuses={"pending"}) == []
 
 
+def test_android_inbox_prioritises_new_gps_handoff_over_old_notifications(tmp_path) -> None:
+    async def starter(_request):
+        return {"automation_run_id": "combined-newest-handoff"}
+
+    app, ingest_device, ingest_key, _client_repository = _fixture(
+        tmp_path, controls_enabled=True, manual_starter=starter
+    )
+    repository = app.state.run_repository
+    # Reproduce a long-lived inbox: a bounded oldest-first query used to hide
+    # the newly-created handoff behind these retained notifications.
+    for index in range(55):
+        repository.save_user_action_request(
+            {
+                "request_id": f"historical-notification-{index:03d}",
+                "dedupe_key": f"historical-notification-key-{index:03d}",
+                "request_type": "mobile_location_prefetch",
+                "provider": "mobile_location",
+                "status": "notified",
+                "operation_id": f"historical-operation-{index:03d}",
+                "date_from": "2026-01-01",
+                "date_to": "2026-01-01",
+                "created_at": f"2026-01-{(index % 28) + 1:02d}T00:{index:02d}:00+00:00",
+            }
+        )
+    operation, _created = mobile_client_http.enqueue_manual_curation(
+        repository=repository,
+        request={
+            "date_from": "2026-09-29",
+            "date_to": "2026-09-29",
+            "timezone": "Asia/Seoul",
+            "sources": ["google"],
+            "limit": 1,
+            "provider_limits": {"google": 1},
+            "timeout_seconds": 21600,
+            "require_mobile_location": True,
+        },
+        idempotency_key="newest-location-handoff-0001",
+        device_id="photos-mcp-mac-app",
+        origin="mac_app",
+    )
+    with TestClient(app, base_url="https://photos.example") as client:
+        token, _owner_key_id, _owner_key, _challenge = _owner_session(
+            client, ingest_device, ingest_key
+        )
+        response = client.get(
+            "/mobile-client/v1/events", headers={"Authorization": f"Bearer {token}"}
+        )
+    assert response.status_code == 200
+    events = response.json()["data"]
+    assert len(events) == 50
+    assert events[0]["category"] == "mobile_location_handoff"
+    assert events[0]["operation_id"] == operation["operation_id"]
+
+
 def test_story_reanalysis_and_delete_require_signed_owner_commands(tmp_path) -> None:
     async def starter(_request):
         return {"automation_run_id": "combined-story-reanalysis"}

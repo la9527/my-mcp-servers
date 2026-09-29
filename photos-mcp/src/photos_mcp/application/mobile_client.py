@@ -723,8 +723,11 @@ def mobile_events(
     # enrolled phone reads its original GPS metadata.  Surface that durable
     # action in the same inbox as workflow completion notifications so the
     # user never has to discover a hidden "waiting" queue.
-    for action in reversed(
-        repository.list_user_action_requests(statuses={"pending", "notified"}, limit=limit)
+    # The inbox has a bounded payload.  Fetch newest-first rather than taking
+    # the oldest 50 and reversing afterwards, otherwise a newly-created GPS
+    # handoff can be invisible behind accumulated historical notifications.
+    for action in repository.list_user_action_requests(
+        statuses={"pending", "notified"}, limit=limit, newest_first=True
     ):
         if str(action.get("request_type") or "") != "mobile_location_prefetch":
             continue
