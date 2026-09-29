@@ -32,6 +32,7 @@ from AppKit import (
 )
 from Foundation import NSMakeRange, NSObject
 
+from photos_mcp.application.analysis_limits import MAX_RESULT_GALLERY_ITEMS
 from photos_mcp.application.face_identity_review import face_measurements_path
 from photos_mcp.application.person_identity_management import (
     PeopleCatalog,
@@ -1163,7 +1164,7 @@ class PhotosMcpPeopleManagerController(NSObject):
             if not job_id:
                 continue
             try:
-                payload = self._menu_controller._daemon_controller.get_job_review_result(job_id, top_n=1000)
+                payload = self._menu_controller._daemon_controller.get_job_review_result(job_id, top_n=MAX_RESULT_GALLERY_ITEMS)
             except (AttributeError, OSError, ValueError):
                 continue
             if payload.get("error"):

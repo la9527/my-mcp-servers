@@ -14,6 +14,7 @@ from photos_mcp.domain.models.source import (
     SourceDescriptor,
 )
 from photos_mcp.domain.ports.photo_picker import PhotoPickerPort
+from photos_mcp.application.analysis_limits import MAX_PICKER_SESSION_PHOTOS
 
 
 def _utc_now() -> datetime:
@@ -43,13 +44,16 @@ class CloudSelectionService:
         self,
         source: SourceDescriptor,
         *,
-        max_item_count: int = 1000,
+        max_item_count: int = MAX_PICKER_SESSION_PHOTOS,
     ) -> PickingSession:
         if source.provider is not PhotoProvider.GOOGLE_PHOTOS:
             raise ValueError("interactive cloud selection currently requires Google Photos")
+        # Google coerces values above 2,000.  Explicitly clamp here so a
+        # logical 10,000-photo operation can be split by its coordinator
+        # without silently producing a smaller one-session request.
         session = await self._picker.create_session(
             source,
-            max_item_count=max_item_count,
+            max_item_count=max(1, min(int(max_item_count), MAX_PICKER_SESSION_PHOTOS)),
         )
         return self._repository.save(session)
 

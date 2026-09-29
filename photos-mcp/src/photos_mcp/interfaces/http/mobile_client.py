@@ -33,6 +33,10 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
+from photos_mcp.application.analysis_limits import (
+    MAX_ANALYSIS_PHOTOS,
+    MAX_LOCATION_PREFETCH_PHOTOS,
+)
 from photos_mcp.application.mobile_client import (
     current_mobile_story,
     list_mobile_runs,
@@ -59,6 +63,7 @@ from photos_mcp.application.manual_curation import (
     normalize_manual_request,
     preview_manual_curation,
     reconcile_manual_curation_operations,
+    resume_waiting_mobile_location,
     soft_delete_story,
     story_reanalysis_request,
 )
@@ -227,8 +232,8 @@ class LocationPrefetchPayload(BaseModel):
     date_from: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     date_to: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     timezone: Literal["Asia/Seoul"] = "Asia/Seoul"
-    scanned_count: int = Field(ge=0, le=1000)
-    gps_manifest_count: int = Field(ge=0, le=1000)
+    scanned_count: int = Field(ge=0, le=MAX_LOCATION_PREFETCH_PHOTOS)
+    gps_manifest_count: int = Field(ge=0, le=MAX_LOCATION_PREFETCH_PHOTOS)
     remaining_batches: Literal[0] = 0
     extractor_version: Literal["android-bridge-2"] = "android-bridge-2"
     client_version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
@@ -240,6 +245,15 @@ class StoryCommandPayload(BaseModel):
 
     schema_version: int = Field(default=1, ge=1, le=1)
     location_prefetch: LocationPrefetchPayload | None = None
+
+
+class MobileLocationHandoffPayload(BaseModel):
+    """Proof that the enrolled phone completed the date-bounded GPS scan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    location_prefetch: LocationPrefetchPayload
 
 
 class PersonConsentPayload(BaseModel):
@@ -398,7 +412,7 @@ class ManualCurationPayload(BaseModel):
         default="balanced",
         pattern=r"^(balanced|people_present|landscape|specific_person)$",
     )
-    limit: int = Field(default=1000, ge=1, le=1000)
+    limit: int = Field(default=MAX_ANALYSIS_PHOTOS, ge=1, le=MAX_ANALYSIS_PHOTOS)
     provider_limits: dict[str, int] = Field(default_factory=dict)
     exclude_screenshots: bool = True
     timeout_seconds: int = Field(default=21600, ge=600, le=21600)
@@ -421,7 +435,7 @@ class ManualCurationPayload(BaseModel):
     def provider_limits_are_bounded(cls, values: dict[str, int]) -> dict[str, int]:
         if any(key not in {"apple", "google"} for key in values):
             raise ValueError("invalid provider")
-        if any(not 1 <= int(value) <= 1000 for value in values.values()):
+        if any(not 1 <= int(value) <= MAX_ANALYSIS_PHOTOS for value in values.values()):
             raise ValueError("invalid provider limit")
         return values
 
@@ -640,6 +654,7 @@ class MobileClientHttp:
                     date_from=str(scope.get("date_from") or ""),
                     date_to=str(scope.get("date_to") or ""),
                     origin_run_id=str(scope.get("origin_run_id") or ""),
+                    source_snapshot_id=str(scope.get("source_snapshot_id") or ""),
                     collection_ids=collection_ids,
                     reanalysis_spec=(
                         dict(scope.get("reanalysis_spec") or {})
@@ -973,7 +988,7 @@ class MobileClientHttp:
                     "api_version": "v1",
                     "latest_android_app_version": ANDROID_APP_VERSION,
                     "minimum_android_app_version": ANDROID_APP_VERSION,
-                    "max_photos_per_run": 1000,
+                    "max_photos_per_run": MAX_ANALYSIS_PHOTOS,
                     "max_run_seconds": 21600,
                     "public_location_ingest_readable": False,
                     "features": {
@@ -1251,6 +1266,80 @@ class MobileClientHttp:
             return _json_error(404, "not_found")
         self._ensure_dispatcher()
         return JSONResponse(mobile_envelope(projection), headers=API_HEADERS)
+
+    async def manual_location_handoff(self, request: Request) -> Response:
+        """Resume one desktop-created operation after Android GPS preflight.
+
+        This endpoint accepts only a fresh, device-signed command.  The GPS
+        records remain in the encrypted location ledger; the operation stores
+        only counts and its selected date range.
+        """
+        if not self._controls_enabled or self._manual_starter is None:
+            return _json_error(404, "not_found")
+        device = self._session(request, scope=CONTROL_SCOPE)
+        if device is None:
+            return _json_error(401, "unauthorized")
+        repository = self._repository()
+        if repository is None:
+            return _json_error(503, "service_unavailable")
+        operation_id = str(request.path_params.get("operation_id") or "")
+        if not SAFE_ID.fullmatch(operation_id):
+            return _json_error(404, "not_found")
+        parsed = await _bounded_json(request, MobileLocationHandoffPayload)
+        if not isinstance(parsed, MobileLocationHandoffPayload):
+            return _json_error(400, "invalid_request")
+        path = f"{API_PREFIX}/manual-curations/{operation_id}/location-handoff"
+        try:
+            idempotency_key, nonce = await self._verify_owner_command(
+                request, device=device, path=path
+            )
+        except (ValueError, InvalidSignature, UnsupportedAlgorithm, binascii.Error, TypeError):
+            return _json_error(401, "command_verification_failed")
+        operation = repository.get_curation_operation(operation_id)
+        if operation is None:
+            return _json_error(404, "not_found")
+        scope = dict(operation.get("request") or {})
+        prefetch_error = self._location_prefetch_error(
+            device=device,
+            prefetch=parsed.location_prefetch,
+            date_from=str(scope.get("date_from") or ""),
+            date_to=str(scope.get("date_to") or ""),
+            required=True,
+        )
+        if prefetch_error:
+            return _json_error(428, prefetch_error)
+        request_hash = canonical_request_hash(
+            {
+                "operation_id": operation_id,
+                "location_prefetch": parsed.location_prefetch.model_dump(mode="json"),
+            }
+        )
+        device_fingerprint = hashlib.sha256(device.device_id.encode("utf-8")).hexdigest()[:24]
+        if not repository.consume_curation_command_nonce(
+            device_fingerprint=device_fingerprint,
+            nonce=nonce,
+            request_hash=request_hash,
+        ):
+            return _json_error(409, "command_replay")
+        try:
+            released = resume_waiting_mobile_location(
+                repository,
+                operation_id=operation_id,
+                idempotency_key=idempotency_key,
+                prefetch_summary=parsed.location_prefetch.model_dump(mode="json"),
+            )
+        except ValueError as exc:
+            code = str(exc)
+            if code == "operation_not_found":
+                return _json_error(404, code)
+            if code == "operation_not_waiting_for_mobile_location":
+                return _json_error(409, code)
+            return _json_error(422, code[:48] or "invalid_mobile_location_handoff")
+        self._ensure_dispatcher()
+        projection = manual_operation_projection(
+            repository, str(released.get("operation_id") or operation_id)
+        )
+        return JSONResponse(mobile_envelope(projection), status_code=202, headers=API_HEADERS)
 
     async def story_reanalyze(self, request: Request) -> Response:
         if not self._controls_enabled or self._manual_starter is None:
@@ -2895,6 +2984,11 @@ class MobileClientHttp:
                 f"{API_PREFIX}/manual-curations/{{operation_id}}",
                 ("GET",),
                 self.manual_operation,
+            ),
+            MobileRouteSpec(
+                f"{API_PREFIX}/manual-curations/{{operation_id}}/location-handoff",
+                ("POST",),
+                self.manual_location_handoff,
             ),
             MobileRouteSpec(f"{API_PREFIX}/dashboard", ("GET",), self.dashboard),
             MobileRouteSpec(

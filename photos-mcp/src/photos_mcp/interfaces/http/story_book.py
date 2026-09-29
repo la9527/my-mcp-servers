@@ -52,7 +52,19 @@ BOOK_CSS = r"""
 .memory-volume.is-compact .book-leaf h2{font-size:1.22rem}.memory-volume.is-compact .book-paragraph{font-size:.88rem;line-height:1.9}.memory-volume.is-compact .book-toolbar{margin-bottom:16px}.memory-volume.is-compact .book-toolbar p{font-size:.77rem}.memory-volume.is-compact .book-photos.is-pair{gap:10px}
 .memory-volume.is-compact .book-photo figcaption{font-size:.71rem}.memory-volume.is-compact .book-navigation{gap:10px}.memory-volume.is-compact .book-navigation button{min-width:72px;padding-inline:10px}
 .book-empty{padding:64px 24px;text-align:center;color:var(--muted)}
-@media(prefers-color-scheme:dark){.memory-volume{--book-paper:#dfdbd2;--book-ink:#26251f;--book-muted:#5e5b52}.book-stage::before{box-shadow:0 20px 30px -12px #0009,0 4px 8px #0006}}
+.memory-volume{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:24px;padding:12px 0 20px}
+.book-heading{margin:0 0 16px;max-width:100%;min-width:0}.book-heading h1{font-size:clamp(1.3rem,2vw,1.9rem);margin-bottom:4px}.book-heading p{font-size:.78rem}
+html[data-story-theme="memory_volume"] .book-heading h1{max-width:none}
+.book-toolbar{margin:0 0 16px;gap:8px;align-self:center}.book-toolbar p{font-size:.74rem;white-space:nowrap}.book-toolbar button{font-size:.8rem}
+.book-stage,.book-toc,.book-navigation,.book-hint,.book-empty{grid-column:1/-1}
+.book-stage{margin-bottom:18px}.book-navigation{min-height:44px}.book-hint{margin-top:4px}
+.book-leaf{padding:clamp(20px,2.2vw,34px);gap:10px}
+.book-leaf.is-left{padding-right:clamp(24px,2.8vw,44px)}.book-leaf.is-right{padding-left:clamp(24px,2.8vw,44px)}
+.book-photos.is-stacked{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) minmax(0,1fr)}
+.book-photos.is-pair{align-items:stretch}.book-photos.is-pair .book-photo:first-child{padding-bottom:16px}.book-photos.is-pair .book-photo:last-child{padding-top:16px}
+.book-photos.is-stacked .book-photo{padding:0}
+.book-leaf h2{font-size:clamp(1.1rem,1.7vw,1.65rem);line-height:1.4}
+@media(max-width:760px){.memory-volume{column-gap:8px}.book-heading{grid-column:1/-1;margin-bottom:4px}.book-heading h1{font-size:1.3rem}.book-toolbar{grid-column:1/-1;width:100%;margin-bottom:12px}.book-toolbar p{max-width:none}.memory-volume.is-compact .book-toolbar{margin-bottom:12px}}
 @media(prefers-reduced-motion:reduce){.book-strip{will-change:auto}}
 """
 
@@ -123,7 +135,16 @@ BOOK_JS = r"""
       if(page.date&&page.date!==page.title)el.append(node('p','book-page-date',page.date));
       if(page.title)el.append(node('h2','',page.title));
       if(page.text)el.append(node('p','book-paragraph',page.text));
-      if(page.photos.length){const photos=node('div',`book-photos${page.photos.length>1?' is-pair':''}`);page.photos.forEach(t=>photos.append(photo(t)));el.append(photos);}
+      if(page.photos.length){
+        const photos=node('div',`book-photos${page.photos.length>1?' is-pair':''}`);
+        const ratios=page.photos.map(t=>{const i=t.querySelector('img');return Number(t.dataset.width)/Number(t.dataset.height)||i?.naturalWidth/i?.naturalHeight||.75;});
+        // Two landscape photographs read more clearly one above the other;
+        // portrait pairs retain the familiar facing photo-book arrangement.
+        if(page.photos.length===2&&ratios.every(r=>r>1.2))photos.classList.add('is-stacked');
+        page.photos.forEach(t=>photos.append(photo(t)));
+        const arrange=()=>{const images=[...photos.querySelectorAll('img')];if(images.length===2&&images.every(i=>i.naturalWidth>0))photos.classList.toggle('is-stacked',images.every(i=>i.naturalWidth/i.naturalHeight>1.2));};
+        photos.addEventListener('load',arrange,true);arrange();el.append(photos);
+      }
       else{const spacer=node('div');spacer.style.flex='1';el.append(spacer);}
       el.append(node('p','book-folio',String(id+1)));return el;
     }
@@ -143,8 +164,10 @@ BOOK_JS = r"""
     function render(){bed.replaceChildren(leaf(current,compact?'single':'left'));if(!compact)bed.append(leaf(current+1,'right'));update();warmNearby();}
     function measure(){
       const hostStyle=getComputedStyle(host),available=host.clientWidth-parseFloat(hostStyle.paddingLeft||0)-parseFloat(hostStyle.paddingRight||0);
-      width=compact?Math.min(available-8,520):Math.min((available-16)/2,580);
-      width=Math.max(140,width);height=Math.max(compact?440:420,Math.min(width*1.34,Math.max(compact?440:420,window.innerHeight-stage.getBoundingClientRect().top-125),760));
+      const top=stage.getBoundingClientRect().top+window.scrollY,viewport=window.visualViewport?.height||window.innerHeight;
+      const room=Math.max(compact?440:360,viewport-top-96);
+      width=compact?Math.min(available-8,520):Math.min((available-16)/2,580,room*.96);
+      width=Math.max(140,width);height=Math.max(compact?440:360,Math.min(width*1.34,room,760));
       stage.style.width=`${width*size}px`;stage.style.height=`${height}px`;
     }
     function clearTurn(){cancelAnimationFrame(frame);if(turn){turn.layer.remove();turn=null;}stage.classList.remove('is-turning');shadow.style.opacity='0';bed.style.visibility='';}
@@ -224,7 +247,8 @@ BOOK_JS = r"""
     function release(e,cancelled=false){if(!gesture||gesture.id!==e.pointerId)return;const g=gesture;gesture=null;if(!g.started)return;suppressClick=true;setTimeout(()=>{suppressClick=false;},0);const distance=Math.abs(e.clientX-g.x),speed=distance/Math.max(1,performance.now()-g.time),commit=!cancelled&&(distance>width*.18||speed>.4);if(turn)settle(commit);else if(commit)go(g.target);if(stage.hasPointerCapture(e.pointerId))stage.releasePointerCapture(e.pointerId);}
     on(stage,'pointerup',e=>release(e));on(stage,'pointercancel',e=>release(e,true));
     let resizeFrame=0;const observer=new ResizeObserver(()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(()=>{if(destroyed)return;clearTurn();measure();render();});});observer.observe(host);
-    measure();render();
+    on(window,'resize',()=>{clearTurn();measure();render();});
+    on(document,'toggle',()=>requestAnimationFrame(()=>{if(!destroyed){clearTurn();measure();render();}}),true);measure();render();
     function activeTile(){
       for(let i=current;i<Math.min(pages.length,current+size);i++)if(pages[i].photos.length)return pages[i].photos[0];
       for(let i=current-1;i>=0;i--)if(pages[i].photos.length)return pages[i].photos[0];

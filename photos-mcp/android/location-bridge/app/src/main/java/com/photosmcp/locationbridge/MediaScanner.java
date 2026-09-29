@@ -24,7 +24,10 @@ import java.util.List;
 import java.util.Locale;
 
 final class MediaScanner {
-    private static final int MAX_SCAN = 1000;
+    // One manual Story may cover 10,000 photos.  Upload remains segmented into
+    // 100-record encrypted batches so the device never keeps the whole range
+    // in one request or one database transaction.
+    private static final int MAX_SCAN = 10_000;
     private static final int BATCH_SIZE = 100;
     private final Context context;
 

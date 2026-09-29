@@ -378,6 +378,18 @@ class RunRepository(RecommendationVersionsMixin):
                 CREATE INDEX IF NOT EXISTS idx_story_manifests_updated
                     ON story_manifests(updated_at DESC);
 
+                CREATE TABLE IF NOT EXISTS story_source_snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    source_kind TEXT NOT NULL,
+                    origin_run_id TEXT NOT NULL DEFAULT '',
+                    content_hash TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_story_source_snapshots_origin
+                    ON story_source_snapshots(origin_run_id, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS story_presentations (
                     story_id TEXT PRIMARY KEY,
                     theme_id TEXT NOT NULL,
@@ -913,6 +925,34 @@ class RunRepository(RecommendationVersionsMixin):
             )
             self._conn.commit()
         return self.get_curation_operation(operation_id)
+
+    def release_waiting_mobile_location_operation(
+        self,
+        operation_id: str,
+        *,
+        result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Atomically release one GPS-gated operation back into the FIFO queue.
+
+        The status predicate is intentional: two signed clients cannot both
+        turn the same waiting command into independent dispatchable work.
+        """
+        now = _utcnow_iso()
+        with self._lock:
+            cursor = self._conn.execute(
+                """UPDATE curation_operations
+                   SET status = 'queued', result_json = ?, updated_at = ?
+                   WHERE operation_id = ? AND status = 'waiting_mobile_location'""",
+                (_json(result), now, operation_id),
+            )
+            self._conn.commit()
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM curation_operations WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+        return self._curation_operation_row(row) if row is not None else None
 
     def claim_next_curation_operation(self) -> dict[str, Any] | None:
         """Claim one queued command while no combined analysis is active."""
@@ -1959,6 +1999,51 @@ class RunRepository(RecommendationVersionsMixin):
                 (story_id,),
             ).fetchone()
         return _decode(row["manifest_json"], {}) if row is not None else None
+
+    def upsert_story_source_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist an immutable, path-free input reference for a Story."""
+        snapshot_id = str(payload.get("snapshot_id") or "")
+        source_kind = str(payload.get("source_kind") or "")
+        content_hash = str(payload.get("content_hash") or "")
+        if not snapshot_id or not source_kind or not content_hash:
+            raise ValueError(
+                "Story source snapshot requires snapshot_id, source_kind, and content_hash"
+            )
+        normalized = dict(payload)
+        now = _utcnow_iso()
+        created_at = str(normalized.get("created_at") or now)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO story_source_snapshots
+                   (snapshot_id, source_kind, origin_run_id, content_hash, snapshot_json,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(snapshot_id) DO UPDATE SET
+                     source_kind=excluded.source_kind,
+                     origin_run_id=excluded.origin_run_id,
+                     content_hash=excluded.content_hash,
+                     snapshot_json=excluded.snapshot_json,
+                     updated_at=excluded.updated_at""",
+                (
+                    snapshot_id,
+                    source_kind,
+                    str(normalized.get("origin_run_id") or ""),
+                    content_hash,
+                    _json(normalized),
+                    created_at,
+                    now,
+                ),
+            )
+            self._conn.commit()
+        return self.get_story_source_snapshot(snapshot_id) or normalized
+
+    def get_story_source_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT snapshot_json FROM story_source_snapshots WHERE snapshot_id = ?",
+                (str(snapshot_id),),
+            ).fetchone()
+        return _decode(row["snapshot_json"], {}) if row is not None else None
 
     def list_story_manifests(
         self,

@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from photos_mcp.application.analysis_limits import MAX_ANALYSIS_PHOTOS
 from photos_mcp.application.person_identity_repository import (
     FaceObservationInput,
     PersonIdentityRepository,
@@ -133,8 +134,8 @@ class PersonIndexingService:
         self._suggestion_review_kinds: dict[str, str] = {}
 
     def index_recommendation_assets(self, *, limit: int = 50) -> PersonIndexResult:
-        if not 1 <= limit <= 1000:
-            raise ValueError("limit must be between 1 and 1000")
+        if not 1 <= limit <= MAX_ANALYSIS_PHOTOS:
+            raise ValueError(f"limit must be between 1 and {MAX_ANALYSIS_PHOTOS}")
         assets, skipped_google = self._eligible_assets(limit)
         return self._index_assets(
             assets,
@@ -151,8 +152,10 @@ class PersonIndexingService:
         """Index an explicit photo scope, used by alias and opened-photo reviews."""
 
         ordered_ids = tuple(dict.fromkeys(str(value) for value in local_asset_ids if str(value)))
-        if not ordered_ids or len(ordered_ids) > 1000:
-            raise ValueError("between 1 and 1000 local asset ids are required")
+        if not ordered_ids or len(ordered_ids) > MAX_ANALYSIS_PHOTOS:
+            raise ValueError(
+                f"between 1 and {MAX_ANALYSIS_PHOTOS} local asset ids are required"
+            )
         assets: list[dict[str, Any]] = []
         skipped_google = 0
         for local_asset_id in ordered_ids:

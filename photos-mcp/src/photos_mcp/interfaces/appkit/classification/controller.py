@@ -450,7 +450,7 @@ class PhotosMcpDirectClassificationController(NSWindowController):
         self._limit_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(284.0, 28.0, column_width - 302.0, 32.0), False
         )
-        self._limit_popup.addItemsWithTitles_(["10장", "25장", "50장", "100장", "250장", "500장", "1000장"])
+        self._limit_popup.addItemsWithTitles_(["10장", "25장", "50장", "100장", "250장", "500장", "1000장", "2500장", "5000장", "10000장"])
         self._limit_popup.selectItemWithTitle_("50장")
         self._limit_popup.setTarget_(self)
         self._limit_popup.setAction_("scopeChanged:")

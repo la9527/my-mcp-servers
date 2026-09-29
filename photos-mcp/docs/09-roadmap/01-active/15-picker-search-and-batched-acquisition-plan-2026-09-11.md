@@ -3,7 +3,9 @@
 - 작성일: 2026-09-11 KST
 - 상태: 1단계 구현·실계정 소량 20회 및 운영 경로 250장 검증 완료. 2단계 항목 원장·중단 재개 확장은 후속 진행.
 - 검토: 에이전트 3개(브라우저 제어, 분할 수집·복구, Google 공식 기능 조사)의 독립 검토를 종합.
-- 목적: 최대 1,000장·전체 최대 6시간 정책을 유지하면서 선택 부담, 모델 왕복, 중복 수집, 실패 후 재작업을 줄인다.
+- 목적: 최대 10,000장·전체 최대 6시간 정책을 유지하면서 선택 부담, 모델 왕복, 중복 수집, 실패 후 재작업을 줄인다.
+
+> **2026-09-25 구현 정정:** 이 문서의 과거 `1,000장` 표현은 당시 단계의 규모다. 현재 논리 작업 상한은 10,000장이고 Google Picker는 최대 2,000장씩 다섯 개의 내구 세션으로 순차 처리한다. 각 세션의 materialize receipt가 terminal이 되기 전에는 다음 세션을 열지 않으며, 마지막 세션 전에는 Google-first Apple gate도 열리지 않는다. 구현 상세·회귀 근거는 [23번 계획](23-pc-mobile-feature-parity-and-result-to-story-plan-2026-09-24.md)을 우선한다.
 
 ## 1. 권장 결정
 
@@ -25,7 +27,7 @@ LLM은 최초 검색 전략·화면 적응·예외 복구에 사용하고, 정�
 
 Picker는 최근 사진부터 시작하며, 내부에서 키워드·날짜·위치·앨범 제목으로 검색할 수 있다. 완료 후 추가 선택에는 새 세션이 필요하다. 검색 문법, 검색 결과 정렬, 전체선택 버튼, 앨범 전체 일괄 승인은 공식 API 계약으로 가정하지 않는다. 검색창을 Chrome MCP로 조작하는 것은 이 프로젝트의 UI 자동화 구현이며 Google의 무인 검색 API가 아니다. [공식 선택 화면 안내](https://developers.google.com/photos/picker/guides/picking-experience)
 
-`PickingConfig`의 공개 선택 옵션은 `maxItemCount`이다. 기본/최대는 2,000개이며 프로젝트는 기존 최대 1,000장을 유지한다. 날짜·앨범·검색어를 사전 주입하는 공개 필드는 없다. 세션 만료는 반환된 `expireTime`을 사용한다. [세션 리소스](https://developers.google.com/photos/picker/reference/rest/v1/sessions)
+`PickingConfig`의 공개 선택 옵션은 `maxItemCount`이다. 기본/최대는 2,000개이며, 현재 프로젝트의 10,000장 논리 요청은 이 제한에 맞춰 최대 다섯 세션으로 분할한다. 날짜·앨범·검색어를 사전 주입하는 공개 필드는 없다. 세션 만료는 반환된 `expireTime`을 사용한다. [세션 리소스](https://developers.google.com/photos/picker/reference/rest/v1/sessions)
 
 `mediaItems.list`는 선택 완료 후 사용한다. `pageSize=100`은 응답 페이지 최대 크기이지 Picker 선택 상한이나 다운로드 완료 단위가 아니다. 응답이 100개 미만 또는 빈 페이지여도 `nextPageToken`이 있으면 계속 조회한다. [목록 API](https://developers.google.com/photos/picker/reference/rest/v1/mediaItems/list)
 

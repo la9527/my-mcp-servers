@@ -278,13 +278,28 @@ final class OwnerApiClient {
     }
 
     JSONObject getResults() throws Exception {
-        return getJson(API + "/results?limit=48");
+        return getResults("", "", 100);
     }
 
     JSONObject getResults(String storyId) throws Exception {
-        if (storyId == null || storyId.isEmpty()) return getResults();
-        requireSafeId(storyId);
-        return getJson(API + "/results?limit=100&story_id=" + storyId);
+        return getResults(storyId, "", 100);
+    }
+
+    JSONObject getResults(String storyId, String cursor, int limit) throws Exception {
+        if (storyId != null && !storyId.isEmpty()) requireSafeId(storyId);
+        String safeCursor = cursor == null ? "" : cursor.trim();
+        if (!safeCursor.isEmpty() && !safeCursor.matches("[0-9]{1,8}")) {
+            throw new IllegalArgumentException("invalid result cursor");
+        }
+        int safeLimit = Math.max(1, Math.min(100, limit));
+        StringBuilder path = new StringBuilder(API + "/results?limit=" + safeLimit);
+        if (storyId != null && !storyId.isEmpty()) {
+            path.append("&story_id=").append(storyId);
+        }
+        if (!safeCursor.isEmpty()) {
+            path.append("&cursor=").append(safeCursor);
+        }
+        return getJson(path.toString());
     }
 
     JSONObject getStories() throws Exception {
@@ -341,6 +356,33 @@ final class OwnerApiClient {
     JSONObject getManualOperation(String operationId) throws Exception {
         requireSafeId(operationId);
         return getJson(API + "/manual-curations/" + operationId);
+    }
+
+    JSONObject resumeManualLocationHandoff(
+            String operationId, JSONObject locationPrefetch) throws Exception {
+        requireSafeId(operationId);
+        if (locationPrefetch == null) {
+            throw new IllegalArgumentException("location prefetch is required");
+        }
+        String path = API + "/manual-curations/" + operationId + "/location-handoff";
+        JSONObject payload = new JSONObject();
+        payload.put("schema_version", 1);
+        payload.put("location_prefetch", locationPrefetch);
+        String body = payload.toString();
+        String bodyHash = BridgeKeys.hex(
+                MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8)));
+        String idempotencyKey = "location-handoff-" + UUID.randomUUID();
+        String nonce = "nonce-" + UUID.randomUUID();
+        String createdAt = Instant.now().toString();
+        String message = "OWNER-COMMAND-V1\nPOST\n" + path + "\n" + bodyHash + "\n"
+                + nonce + "\n" + idempotencyKey + "\n" + createdAt;
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Idempotency-Key", idempotencyKey);
+        headers.put("X-Command-Nonce", nonce);
+        headers.put("X-Command-Created-At", createdAt);
+        headers.put("X-Device-Signature", BridgeKeys.signOwner(
+                message.getBytes(StandardCharsets.UTF_8)));
+        return authorized("POST", path, body, true, headers);
     }
 
     private JSONObject signedStoryCommand(

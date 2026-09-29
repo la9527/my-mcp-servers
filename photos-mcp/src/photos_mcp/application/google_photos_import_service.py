@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from photos_mcp.application.cloud_selection_service import CloudSelectionService
+from photos_mcp.application.analysis_limits import MAX_PICKER_SESSION_PHOTOS
 from photos_mcp.application.run_support import call_vendor, parse_payload
 from photos_mcp.application.run_service import photos_run
 from photos_mcp.domain.models.source import (
@@ -115,7 +116,7 @@ class GooglePhotosImportService:
         self,
         source: SourceDescriptor,
         *,
-        max_item_count: int = 1000,
+        max_item_count: int = MAX_PICKER_SESSION_PHOTOS,
     ) -> PickingSession:
         if source.provider is not PhotoProvider.GOOGLE_PHOTOS:
             raise ValueError("Google Photos import requires a google_photos source")
@@ -133,7 +134,7 @@ class GooglePhotosImportService:
         session_id: str,
         *,
         max_pixels: int | None = None,
-        limit: int = 1000,
+        limit: int = MAX_PICKER_SESSION_PHOTOS,
         exclude_asset_keys: set[str] | None = None,
         expected_item_count: int | None = None,
         progress_callback: PreparationProgress | None = None,
@@ -345,7 +346,7 @@ class GooglePhotosImportService:
         *,
         selection_profile: str = "general",
         mode: str = "classify",
-        limit: int = 1000,
+        limit: int = MAX_PICKER_SESSION_PHOTOS,
     ) -> dict[str, Any]:
         """Submit an explicitly confirmed analysis for already downloaded photos."""
 
@@ -443,7 +444,7 @@ class GooglePhotosImportService:
         selection_profile: str = "general",
         mode: str = "classify",
         max_pixels: int = 4096,
-        limit: int = 1000,
+        limit: int = MAX_PICKER_SESSION_PHOTOS,
         progress_callback: PreparationProgress | None = None,
     ) -> dict[str, Any]:
         """Compatibility wrapper for callers that still expect prepare-and-submit."""

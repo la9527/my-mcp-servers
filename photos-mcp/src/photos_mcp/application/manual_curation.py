@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable
 import uuid
 from zoneinfo import ZoneInfo
 
+from photos_mcp.application.analysis_limits import MAX_ANALYSIS_PHOTOS
 from photos_mcp.application.story_generation import StoryIdentityRepository, ensure_scoped_story
 from photos_mcp.application.recommendation_lifecycle import (
     begin_manual_recommendation_version, recommendation_version_projection,
@@ -158,8 +159,8 @@ def normalize_manual_request(payload: dict[str, Any], *, today: date | None = No
     if not sources or any(source not in {"apple", "google"} for source in sources):
         raise ValueError("unsupported_source")
     selection_mode, selection_profile = resolve_selection_contract(payload, sources=sources)
-    limit = int(payload.get("limit") or 1000)
-    if not 1 <= limit <= 1000:
+    limit = int(payload.get("limit") or MAX_ANALYSIS_PHOTOS)
+    if not 1 <= limit <= MAX_ANALYSIS_PHOTOS:
         raise ValueError("limit_out_of_range")
     raw_provider_limits = payload.get("provider_limits") or {}
     if not isinstance(raw_provider_limits, dict):
@@ -170,7 +171,7 @@ def normalize_manual_request(payload: dict[str, Any], *, today: date | None = No
         apple_limit = int(raw_provider_limits.get("apple") or limit // 2)
         google_limit = int(raw_provider_limits.get("google") or limit - apple_limit)
         provider_limits = {"apple": apple_limit, "google": google_limit}
-    if any(value < 1 or value > 1000 for value in provider_limits.values()):
+    if any(value < 1 or value > MAX_ANALYSIS_PHOTOS for value in provider_limits.values()):
         raise ValueError("provider_limit_out_of_range")
     if sum(provider_limits.values()) > limit:
         raise ValueError("provider_limits_exceed_total")
@@ -193,6 +194,11 @@ def normalize_manual_request(payload: dict[str, Any], *, today: date | None = No
         "publication_policy": "none",
         "story_policy": "run_scoped",
         "scope_kind": "capture_date_bounded",
+        # A desktop user may explicitly ask the enrolled phone to read its
+        # original GPS metadata before a Google-backed Story begins.  This is
+        # a control-flow flag only: no coordinates or device asset IDs are
+        # persisted in the curation command.
+        "require_mobile_location": bool(payload.get("require_mobile_location", False)),
     }
 
 
@@ -237,7 +243,16 @@ def _manual_collection_ids(
         storage = child.get("recommendation_storage")
         if not isinstance(storage, dict):
             continue
-        collection_id = str(storage.get("collection_id") or "")
+        # Single-provider runs use collection_id.  A >2,000 Google Picker
+        # request is an aggregate of sequential provider sessions and keeps
+        # all of its durable collections in collection_ids.  Include both so
+        # the later Story reconciliation cannot discard earlier Picker batches.
+        aggregated = storage.get("collection_ids")
+        if isinstance(aggregated, (list, tuple, set)):
+            collection_ids.update(
+                str(value).strip() for value in aggregated if str(value or "").strip()
+            )
+        collection_id = str(storage.get("collection_id") or "").strip()
         if collection_id:
             collection_ids.add(collection_id)
     return collection_ids
@@ -360,7 +375,10 @@ async def preview_manual_curation(
             "apple",
             date_from=normalized["date_from"],
             date_to=normalized["date_to"],
-            limit=min(1001, source_limit + 1),
+            # Fetch one extra candidate at the same logical product cap.  The
+            # old fixed 1,001 probe made a 10,000-photo request look as if
+            # only 1,000 Apple Photos were available before it was submitted.
+            limit=min(MAX_ANALYSIS_PHOTOS + 1, source_limit + 1),
         )
         bounded_items = items[:source_limit]
         already_analyzed = sum(
@@ -414,6 +432,8 @@ def enqueue_manual_curation(
     request_hash = canonical_request_hash(normalized)
     operation_id = f"manual-op-{uuid.uuid4().hex[:24]}"
     device_fingerprint = hashlib.sha256(device_id.encode("utf-8")).hexdigest()[:24]
+    waiting_for_mobile_location = bool(
+        normalized.get("require_mobile_location")) and "google" in normalized["sources"]
     operation, created = repository.enqueue_curation_operation(
         {
             "operation_id": operation_id,
@@ -421,12 +441,89 @@ def enqueue_manual_curation(
             "request_hash": request_hash,
             "origin": origin,
             "device_fingerprint": device_fingerprint,
-            "status": "queued",
+            "status": "waiting_mobile_location" if waiting_for_mobile_location else "queued",
             "request": normalized,
+            "result": (
+                {
+                    "error_code": "location_prefetch_required",
+                    "error_stage": "mobile_location_handoff",
+                    "message": "휴대폰에서 선택 기간의 GPS 동기화를 완료하면 같은 작업을 시작합니다.",
+                }
+                if waiting_for_mobile_location
+                else {}
+            ),
             "created_at": (now or _utcnow()).isoformat(),
         }
     )
+    if created and waiting_for_mobile_location:
+        observed = now or _utcnow()
+        repository.save_user_action_request(
+            {
+                "request_id": f"mobile-location-{operation['operation_id']}",
+                "dedupe_key": f"mobile-location:{operation['operation_id']}",
+                "request_type": "mobile_location_prefetch",
+                "provider": "mobile_location",
+                "status": "pending",
+                "operation_id": operation["operation_id"],
+                "date_from": normalized["date_from"],
+                "date_to": normalized["date_to"],
+                "title": "휴대폰 GPS 동기화가 필요합니다",
+                "message": "선택 기간의 원본 GPS를 확인하면 Mac의 같은 Story 작업을 계속합니다.",
+                "created_at": observed.isoformat(),
+            }
+        )
     return operation, created
+
+
+def resume_waiting_mobile_location(
+    repository: RunRepository,
+    *,
+    operation_id: str,
+    idempotency_key: str,
+    prefetch_summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Release exactly one PC-originated command after Android GPS proof.
+
+    The encrypted GPS payload stays in the mobile ledger.  The operation only
+    stores a small, audit-friendly receipt so the dispatcher can safely move
+    it from ``waiting_mobile_location`` to the normal FIFO queue.
+    """
+    operation = repository.get_curation_operation(operation_id)
+    if operation is None:
+        raise ValueError("operation_not_found")
+    request = dict(operation.get("request") or {})
+    if not bool(request.get("require_mobile_location")) or "google" not in request.get("sources", []):
+        raise ValueError("mobile_location_not_required")
+    result = dict(operation.get("result") or {})
+    existing_key = str(result.get("mobile_location_handoff_idempotency_key") or "")
+    if str(operation.get("status") or "") != "waiting_mobile_location":
+        if existing_key and existing_key == idempotency_key:
+            return operation
+        raise ValueError("operation_not_waiting_for_mobile_location")
+    receipt = {
+        "date_from": str(prefetch_summary.get("date_from") or ""),
+        "date_to": str(prefetch_summary.get("date_to") or ""),
+        "scanned_count": max(0, int(prefetch_summary.get("scanned_count") or 0)),
+        "gps_manifest_count": max(0, int(prefetch_summary.get("gps_manifest_count") or 0)),
+        "completed_at": str(prefetch_summary.get("completed_at") or ""),
+    }
+    released = repository.release_waiting_mobile_location_operation(
+        operation_id,
+        result={
+            "mobile_location_handoff": receipt,
+            "mobile_location_handoff_idempotency_key": idempotency_key,
+        },
+    )
+    if released is None:
+        latest = repository.get_curation_operation(operation_id) or operation
+        latest_result = dict(latest.get("result") or {})
+        if str(latest_result.get("mobile_location_handoff_idempotency_key") or "") == idempotency_key:
+            return latest
+        raise ValueError("operation_not_waiting_for_mobile_location")
+    for action in repository.list_user_action_requests(statuses={"pending", "notified"}, limit=200):
+        if str(action.get("operation_id") or "") == operation_id:
+            repository.update_user_action_status(str(action.get("request_id") or ""), "completed")
+    return released or operation
 
 
 async def dispatch_next_manual_curation(
@@ -610,4 +707,14 @@ def manual_operation_projection(repository: RunRepository, operation_id: str) ->
         "source_errors": failure["source_errors"],
         "retry_available": bool((parent or {}).get("retry_available", True)),
         "recommendation_version": recommendation_version_projection(repository, operation_id),
+        "mobile_location_handoff": (
+            {
+                "required": True,
+                "date_from": request.get("date_from"),
+                "date_to": request.get("date_to"),
+                "instruction": "PhotosMcp Android 앱에서 GPS 동기화 후 계속을 선택해 주세요.",
+            }
+            if str(operation.get("status") or "") == "waiting_mobile_location"
+            else None
+        ),
     }

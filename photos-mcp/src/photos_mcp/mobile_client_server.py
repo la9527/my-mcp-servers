@@ -19,6 +19,10 @@ from photos_mcp.application.combined_curation import (
     reconcile_combined_curation,
     start_combined_curation,
 )
+from photos_mcp.application.analysis_limits import (
+    MAX_ANALYSIS_PHOTOS,
+    MAX_PICKER_SESSION_PHOTOS,
+)
 from photos_mcp.application.daily_curation import start_daily_curation
 from photos_mcp.application.person_identity_repository import PersonIdentityRepository
 from photos_mcp.application.run_service import photos_run
@@ -41,7 +45,7 @@ def _picker_model_mission_timeout(*, workflow_timeout: int, limit: int) -> int:
     """Allocate a count-aware Qwen budget within the six-hour workflow cap."""
 
     bounded_workflow = max(600, min(int(workflow_timeout), 21_600))
-    requested_photos = max(1, min(int(limit), 1000))
+    requested_photos = max(1, min(int(limit), MAX_PICKER_SESSION_PHOTOS))
     return min(bounded_workflow, max(600, min(7_200, requested_photos * 4)))
 
 
@@ -191,11 +195,18 @@ def create_app():
         if not action_request_id or not child_run_id or not parent_run_id:
             raise RuntimeError("Google Picker worker binding is incomplete")
         provider_limits = dict(request.get("provider_limits") or {})
-        limit = max(1, min(int(provider_limits.get("google") or 100), 1000))
+        # One Google Picker session is capped at 2,000 by the provider. The
+        # worker receives the parent target and the workflow makes durable
+        # 2,000-photo acquisition sessions under that one child run.
+        requested_limit = max(
+            1,
+            min(int(provider_limits.get("google") or 100), MAX_ANALYSIS_PHOTOS),
+        )
+        session_limit = min(requested_limit, MAX_PICKER_SESSION_PHOTOS)
         timeout = max(600, min(int(request.get("timeout_seconds") or 21600), 21600))
         model_mission_timeout = _picker_model_mission_timeout(
             workflow_timeout=timeout,
-            limit=limit,
+            limit=session_limit,
         )
         command = [
             sys.executable,
@@ -203,9 +214,9 @@ def create_app():
             "--browser-control-mode",
             "qwen-agent",
             "--limit",
-            str(limit),
+            str(requested_limit),
             "--preselect-count",
-            str(limit),
+            str(session_limit),
             "--timeout-seconds",
             str(timeout),
             "--model-mission-timeout-seconds",
@@ -246,7 +257,7 @@ def create_app():
             "workflow_timeout=%d model_mission_timeout=%d",
             child_run_id,
             int(getattr(process, "pid", 0) or 0),
-            limit,
+            requested_limit,
             timeout,
             model_mission_timeout,
         )
@@ -283,7 +294,7 @@ def create_app():
             options={
                 "source": "all" if len(sources) == 2 else sources[0],
                 "sources": sources,
-                "limit": int(request.get("limit") or 1000),
+                "limit": int(request.get("limit") or MAX_ANALYSIS_PHOTOS),
                 "apple_limit": int(provider_limits.get("apple") or 0),
                 "google_limit": int(provider_limits.get("google") or 0),
                 "lookback_days": int(request.get("lookback_days") or 1),

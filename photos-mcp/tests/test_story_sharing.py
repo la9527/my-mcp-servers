@@ -475,12 +475,12 @@ def test_story_viewer_fits_each_photo_to_the_visible_stage_before_zooming(
 
     rendered = render_story(story, public=False)
 
-    assert 'story.css?v=11' in rendered
-    assert 'story.js?v=11' in rendered
+    assert 'story.css?v=14' in rendered
+    assert 'story.js?v=14' in rendered
     assert 'swiper-bundle.min.css?v=14.2.0' in rendered
     assert 'swiper-bundle.min.js?v=14.2.0' in rendered
-    assert rendered.index("swiper-bundle.min.css") < rendered.index("story.css?v=11")
-    assert rendered.index("swiper-bundle.min.js") < rendered.index("story.js?v=11")
+    assert rendered.index("swiper-bundle.min.css") < rendered.index("story.css?v=14")
+    assert rendered.index("swiper-bundle.min.js") < rendered.index("story.js?v=14")
     assert "function fitImage(image)" in STORY_JS
     assert "availableWidth=stage.clientWidth" in STORY_JS
     assert "availableHeight=stage.clientHeight" in STORY_JS
@@ -606,8 +606,8 @@ def test_public_unlock_gallery_and_download_are_session_and_allowlist_protected(
             follow_redirects=False,
         )
         gallery = client.get(f"/s/{share_id}")
-        stylesheet = client.get("/story-assets/story.css?v=11")
-        script = client.get("/story-assets/story.js?v=11")
+        stylesheet = client.get("/story-assets/story.css?v=14")
+        script = client.get("/story-assets/story.js?v=14")
         swiper_css = client.get("/story-assets/swiper-bundle.min.css?v=14.2.0")
         swiper_js = client.get("/story-assets/swiper-bundle.min.js?v=14.2.0")
         favicon = client.get("/story-assets/favicon.svg")

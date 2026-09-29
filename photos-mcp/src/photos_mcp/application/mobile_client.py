@@ -7,6 +7,7 @@ import hashlib
 import json
 from typing import Any, Callable
 
+from photos_mcp.application.analysis_limits import MAX_ANALYSIS_PHOTOS
 from photos_mcp.application.combined_curation import combined_curation_status
 from photos_mcp.application.person_identity_repository import PersonIdentityRepository
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
@@ -122,7 +123,7 @@ def mobile_run_projection(repository: RunRepository, run_id: str) -> dict[str, A
         "operation_id": _text(status.get("operation_id"), 80),
         "story_id": _text(status.get("story_id"), 160),
         "lookback_days": _bounded_int(status.get("lookback_days")),
-        "requested_limit": min(1000, _bounded_int(status.get("requested_limit"))),
+        "requested_limit": min(MAX_ANALYSIS_PHOTOS, _bounded_int(status.get("requested_limit"))),
         "timeout_seconds": min(21600, _bounded_int(status.get("timeout_seconds"))),
         "remaining_seconds": min(21600, _bounded_int(status.get("remaining_seconds"))),
         "created_at": _text(status.get("created_at"), 48),
@@ -718,6 +719,35 @@ def mobile_events(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
+    # Desktop-created Google Story commands can intentionally pause until the
+    # enrolled phone reads its original GPS metadata.  Surface that durable
+    # action in the same inbox as workflow completion notifications so the
+    # user never has to discover a hidden "waiting" queue.
+    for action in reversed(
+        repository.list_user_action_requests(statuses={"pending", "notified"}, limit=limit)
+    ):
+        if str(action.get("request_type") or "") != "mobile_location_prefetch":
+            continue
+        event_id = _text(action.get("request_id"), 120)
+        operation_id = _text(action.get("operation_id"), 80)
+        if not event_id or not operation_id:
+            continue
+        events.append(
+            {
+                "event_id": event_id,
+                "category": "mobile_location_handoff",
+                "status": "waiting_mobile_location",
+                "operation_id": operation_id,
+                "date_from": _text(action.get("date_from"), 32),
+                "date_to": _text(action.get("date_to"), 32),
+                "title": _text(action.get("title") or "휴대폰 GPS 동기화가 필요합니다", 120),
+                "message": _text(action.get("message"), 240),
+                "created_at": _text(action.get("created_at"), 48),
+                "acknowledged": event_id in acknowledged,
+            }
+        )
+        if len(events) >= limit:
+            return events
     for item in reversed(repository.list_automation_runs()):
         if str(item.get("provider") or "") != "combined":
             continue

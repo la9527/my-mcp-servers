@@ -11,6 +11,7 @@ from photos_mcp.application.manual_curation import (
     normalize_manual_request,
     preview_manual_curation,
     reconcile_manual_curation_operations,
+    resume_waiting_mobile_location,
     soft_delete_story,
     story_reanalysis_request,
 )
@@ -150,6 +151,26 @@ async def test_preview_counts_apple_without_claiming_google_count(tmp_path) -> N
 
 
 @pytest.mark.asyncio
+async def test_preview_probes_full_ten_thousand_apple_scope(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "jobs.db")
+    source = FakeSource([{"id": f"apple-{index}"} for index in range(10_001)])
+
+    result = await preview_manual_curation(
+        repository=repository,
+        source_port=source,
+        request=_request(
+            sources=["apple"],
+            limit=10_000,
+            provider_limits={"apple": 10_000},
+        ),
+    )
+
+    assert source.calls[0][1]["limit"] == 10_001
+    assert result["providers"]["apple"]["count"] == 10_000
+    assert result["providers"]["apple"]["count_status"] == "capped"
+
+
+@pytest.mark.asyncio
 async def test_reanalysis_preview_counts_existing_apple_assets_as_new_work(tmp_path) -> None:
     repository = RunRepository(tmp_path / "jobs.db")
     source = FakeSource([{"id": "apple-one"}, {"id": "apple-two"}])
@@ -223,6 +244,52 @@ async def test_manual_queue_is_idempotent_and_waits_for_active_parent(tmp_path) 
     )
     assert dispatched["status"] == "running"
     assert dispatched["run_id"] == "combined-manual"
+
+
+@pytest.mark.asyncio
+async def test_desktop_google_request_waits_for_mobile_gps_then_rejoins_queue(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "jobs.db")
+    operation, created = enqueue_manual_curation(
+        repository=repository,
+        request=_request(require_mobile_location=True),
+        idempotency_key="manual-location-handoff-0001",
+        device_id="photos-mcp-mac-app",
+        origin="mac_app",
+        now=datetime(2026, 9, 8, tzinfo=UTC),
+    )
+    assert created is True
+    assert operation["status"] == "waiting_mobile_location"
+    assert await dispatch_next_manual_curation(
+        repository=repository,
+        starter=lambda _request: (_ for _ in ()).throw(AssertionError("must wait for GPS")),
+    ) is None
+    pending = repository.list_user_action_requests(statuses={"pending"})
+    assert len(pending) == 1
+    assert pending[0]["operation_id"] == operation["operation_id"]
+
+    released = resume_waiting_mobile_location(
+        repository,
+        operation_id=operation["operation_id"],
+        idempotency_key="location-handoff-0001",
+        prefetch_summary={
+            "date_from": "2026-09-01",
+            "date_to": "2026-09-07",
+            "scanned_count": 42,
+            "gps_manifest_count": 9,
+            "completed_at": "2026-09-08T00:00:00+00:00",
+        },
+    )
+    assert released["status"] == "queued"
+    assert repository.list_user_action_requests(statuses={"pending"}) == []
+    projection = manual_operation_projection(repository, operation["operation_id"])
+    assert projection["mobile_location_handoff"] is None
+
+    async def starter(request):
+        assert request["date_from"] == "2026-09-01"
+        return {"automation_run_id": "combined-location-handoff"}
+
+    dispatched = await dispatch_next_manual_curation(repository=repository, starter=starter)
+    assert dispatched["status"] == "running"
 
 
 def test_stranded_dispatch_claim_is_requeued_after_restart(tmp_path) -> None:

@@ -446,6 +446,7 @@ class ChromeDevToolsMcpAssistant:
         today: date | None = None,
         wait_attempts: int = 20,
         wait_interval_seconds: float = 1.0,
+        selection_offset: int = 0,
     ) -> dict[str, object]:
         """Select individual photos dated within the inclusive recent-day window."""
         reference_date = today or date.today()
@@ -458,6 +459,7 @@ class ChromeDevToolsMcpAssistant:
                 marker_date=reference_date,
                 wait_attempts=wait_attempts,
                 wait_interval_seconds=wait_interval_seconds,
+                selection_offset=selection_offset,
             )
         return await self._preselect_date_window(
             count,
@@ -466,6 +468,7 @@ class ChromeDevToolsMcpAssistant:
             marker_date=reference_date,
             wait_attempts=wait_attempts,
             wait_interval_seconds=wait_interval_seconds,
+            selection_offset=selection_offset,
         )
 
     async def preselect_date_range(
@@ -476,6 +479,7 @@ class ChromeDevToolsMcpAssistant:
         date_to: date,
         wait_attempts: int = 20,
         wait_interval_seconds: float = 1.0,
+        selection_offset: int = 0,
     ) -> dict[str, object]:
         """Select only photos inside an explicit inclusive capture-date range."""
         if date_to < date_from or (date_to - date_from).days > 30:
@@ -488,6 +492,7 @@ class ChromeDevToolsMcpAssistant:
                 marker_date=date.today(),
                 wait_attempts=wait_attempts,
                 wait_interval_seconds=wait_interval_seconds,
+                selection_offset=selection_offset,
             )
         return await self._preselect_date_window(
             count,
@@ -496,6 +501,7 @@ class ChromeDevToolsMcpAssistant:
             marker_date=date.today(),
             wait_attempts=wait_attempts,
             wait_interval_seconds=wait_interval_seconds,
+            selection_offset=selection_offset,
         )
 
     async def _search_picker_date(
@@ -727,10 +733,12 @@ class ChromeDevToolsMcpAssistant:
         marker_date: date,
         wait_attempts: int,
         wait_interval_seconds: float,
+        selection_offset: int = 0,
     ) -> dict[str, object]:
         """Select newest-first using adaptive five-day probes and daily fallback."""
 
-        bounded_count = max(1, min(int(count), 1000))
+        bounded_count = max(1, min(int(count), 2_000))
+        remaining_offset = max(0, int(selection_offset))
         total_clicked = 0
         total_scrolls = 0
         total_discovered = 0
@@ -832,6 +840,11 @@ class ChromeDevToolsMcpAssistant:
                     marker_date=marker_date,
                     wait_attempts=wait_attempts,
                     wait_interval_seconds=wait_interval_seconds,
+                    selection_offset=remaining_offset,
+                )
+                remaining_offset = max(
+                    0,
+                    remaining_offset - int(result.get("skipped_candidate_count") or 0),
                 )
                 per_date = dict(result.get("candidate_counts_by_date") or {})
                 days_with_photos += len(per_date)
@@ -866,6 +879,8 @@ class ChromeDevToolsMcpAssistant:
                 "clicked_count": 0,
                 "selected_after": 0,
                 "requested_count": bounded_count,
+                "selection_offset": max(0, int(selection_offset)),
+                "skipped_candidate_count": max(0, int(selection_offset)) - remaining_offset,
                 "recent_days": (date_to - date_from).days + 1,
                 "cutoff_date": date_from.isoformat(),
                 "latest_date": date_to.isoformat(),
@@ -886,6 +901,8 @@ class ChromeDevToolsMcpAssistant:
             "clicked_count": total_clicked,
             "selected_after": selected_after,
             "requested_count": bounded_count,
+            "selection_offset": max(0, int(selection_offset)),
+            "skipped_candidate_count": max(0, int(selection_offset)) - remaining_offset,
             "recent_days": (date_to - date_from).days + 1,
             "cutoff_date": date_from.isoformat(),
             "latest_date": date_to.isoformat(),
@@ -912,10 +929,12 @@ class ChromeDevToolsMcpAssistant:
         marker_date: date,
         wait_attempts: int,
         wait_interval_seconds: float,
+        selection_offset: int = 0,
     ) -> dict[str, object]:
         if self._session is None:
             raise RuntimeError("Chrome DevTools MCP assistant is not connected")
-        bounded_count = max(1, min(int(count), 1000))
+        bounded_count = max(1, min(int(count), 2_000))
+        remaining_offset = max(0, int(selection_offset))
         initial_selected: int | None = None
         selected_after = 0
         clicked_count = 0
@@ -979,6 +998,10 @@ class ChromeDevToolsMcpAssistant:
                 break
 
             visible_unselected = [entry for entry in eligible if not entry["checked"]]
+            if remaining_offset:
+                skipped = min(remaining_offset, len(visible_unselected))
+                remaining_offset -= skipped
+                visible_unselected = visible_unselected[skipped:]
             candidates = visible_unselected[: max(0, effective_limit - selected_after)]
             if candidates:
                 dom_checkbox_mode = {
@@ -1191,6 +1214,8 @@ class ChromeDevToolsMcpAssistant:
             "clicked_count": clicked_count,
             "selected_after": selected_after,
             "requested_count": bounded_count,
+            "selection_offset": max(0, int(selection_offset)),
+            "skipped_candidate_count": max(0, int(selection_offset)) - remaining_offset,
             "recent_days": (latest - earliest).days + 1,
             "cutoff_date": earliest.isoformat(),
             "latest_date": latest.isoformat(),
@@ -1253,7 +1278,7 @@ class ChromeDevToolsMcpAssistant:
     ) -> dict[str, object]:
         if self._session is None:
             raise RuntimeError("Chrome DevTools MCP assistant is not connected")
-        bounded_max = max(1, min(int(max_selected_count), 1000))
+        bounded_max = max(1, min(int(max_selected_count), 2_000))
         for attempt in range(max(1, int(wait_attempts))):
             result = await self._session.call_tool("take_snapshot", {"verbose": False})
             if bool(getattr(result, "isError", False)):

@@ -364,7 +364,7 @@ def _mission_tools(phase: str) -> list[dict[str, Any]]:
                     "type": "object",
                     "properties": {
                         "status": {"type": "string", "enum": statuses},
-                        "selected_count": {"type": "integer", "minimum": 0, "maximum": 1000},
+                        "selected_count": {"type": "integer", "minimum": 0, "maximum": 2000},
                         "reason": {"type": "string", "maxLength": 240},
                     },
                     "required": ["status", "selected_count", "reason"],
@@ -426,7 +426,7 @@ def _mission_tools(phase: str) -> list[dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "selected_count": {"type": "integer", "minimum": 1, "maximum": 1000}
+                        "selected_count": {"type": "integer", "minimum": 1, "maximum": 2000}
                     },
                     "required": ["selected_count"],
                     "additionalProperties": False,
@@ -1175,7 +1175,8 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
     ) -> dict[str, object]:
         reference = today or date.today()
         bounded_days = max(1, min(int(recent_days), 31))
-        if {"fill", "press_key"} <= self._discovered_tools:
+        selection_offset = max(0, int(_kwargs.get("selection_offset") or 0))
+        if {"fill", "press_key"} <= self._discovered_tools or selection_offset:
             result = await ChromeDevToolsMcpAssistant.preselect_recent(
                 self,
                 count,
@@ -1208,7 +1209,8 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
     ) -> dict[str, object]:
         if date_to < date_from or (date_to - date_from).days > 30:
             raise ValueError("Google Picker date range is invalid")
-        if {"fill", "press_key"} <= self._discovered_tools:
+        selection_offset = max(0, int(_kwargs.get("selection_offset") or 0))
+        if {"fill", "press_key"} <= self._discovered_tools or selection_offset:
             result = await ChromeDevToolsMcpAssistant.preselect_date_range(
                 self,
                 count,
@@ -1272,7 +1274,7 @@ class QwenChromeDevToolsMcpAssistant(ChromeDevToolsMcpAssistant):
         date_to: date,
         marker_date: date,
     ) -> dict[str, object]:
-        self._selection_limit = max(1, min(int(count), 1000))
+        self._selection_limit = max(1, min(int(count), 2_000))
         self._recent_days = (date_to - date_from).days + 1
         self._reference_date = date_to
         self._marker_date = marker_date

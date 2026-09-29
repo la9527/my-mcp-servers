@@ -9,6 +9,7 @@ import pytest
 from photos_mcp.application.google_picker_assisted_workflow import (
     run_google_picker_assisted_workflow,
 )
+import photos_mcp.application.google_picker_assisted_workflow as workflow_module
 from photos_mcp.domain.models.source import PickingSession, PickingSessionState
 
 
@@ -100,6 +101,168 @@ class FakeRepository:
 
 
 @pytest.mark.asyncio
+async def test_ten_thousand_target_uses_five_durable_picker_sessions(monkeypatch) -> None:
+    calls = []
+
+    async def fake_session(**kwargs):
+        calls.append(kwargs)
+        index = len(calls)
+        return {
+            "status": "completed",
+            "session_id": f"picker-{index}",
+            "analysis_run_id": f"analysis-{index}",
+            "selected_photo_count": 2000,
+            "excluded_video_count": 0,
+        }
+
+    async def fake_materialize(**kwargs):
+        index = int(str(kwargs["analysis_run_id"]).rsplit("-", 1)[-1])
+        return {
+            "status": "completed",
+            "collection_id": f"collection-{index}",
+            "recommended_count": 1,
+            "materialized_count": 1,
+        }
+
+    class BatchRepository(FakeRepository):
+        def __init__(self):
+            super().__init__()
+            self.runs = {"google-child": {"automation_run_id": "google-child"}}
+
+        def get_automation_run(self, run_id):
+            return dict(self.runs.get(run_id) or {})
+
+        def upsert_automation_run(self, payload):
+            self.runs[str(payload["automation_run_id"])] = dict(payload)
+
+    monkeypatch.setattr(workflow_module, "_run_google_picker_assisted_session", fake_session)
+    monkeypatch.setattr(workflow_module, "materialize_recommendations_for_run", fake_materialize)
+    repository = BatchRepository()
+
+    result = await run_google_picker_assisted_workflow(
+        runtime=FakeRuntime(),
+        browser_assistant=FakeBrowser(),
+        repository=repository,
+        limit=10_000,
+        preselect_count=2_000,
+        automation_run_id="google-child",
+    )
+
+    assert [call["limit"] for call in calls] == [2000, 2000, 2000, 2000, 2000]
+    assert [call["selection_offset"] for call in calls] == [0, 2000, 4000, 6000, 8000]
+    assert [call["complete_action"] for call in calls] == [False, False, False, False, True]
+    assert result["selected_photo_count"] == 10_000
+    assert result["picker_batch_completed_count"] == 5
+    assert repository.runs["google-child"]["recommendation_storage"]["materialized_count"] == 5
+    assert repository.runs["google-child"]["recommendation_storage"]["collection_ids"] == (
+        "collection-1",
+        "collection-2",
+        "collection-3",
+        "collection-4",
+        "collection-5",
+    )
+    assert repository.runs["google-child"]["recommendation_storage"]["collection_id"] == "collection-5"
+
+
+@pytest.mark.asyncio
+async def test_next_picker_batch_waits_for_prior_analysis_storage_receipt(monkeypatch) -> None:
+    session_calls: list[str] = []
+    materialize_calls: list[str] = []
+    progress: list[str] = []
+
+    async def fake_session(**_kwargs):
+        index = len(session_calls) + 1
+        session_calls.append(f"analysis-{index}")
+        return {
+            "status": "analysis_submitted",
+            "session_id": f"picker-{index}",
+            "analysis_run_id": f"analysis-{index}",
+            "selected_photo_count": 2000,
+        }
+
+    first_analysis_attempts = 0
+
+    async def fake_materialize(**kwargs):
+        nonlocal first_analysis_attempts
+        analysis_id = str(kwargs["analysis_run_id"])
+        materialize_calls.append(analysis_id)
+        if analysis_id == "analysis-1":
+            first_analysis_attempts += 1
+            if first_analysis_attempts == 1:
+                return {"status": "pending", "analysis_status": "running"}
+        return {
+            "status": "completed",
+            "collection_id": f"collection-{analysis_id[-1]}",
+            "recommended_count": 1,
+            "materialized_count": 1,
+        }
+
+    monkeypatch.setattr(workflow_module, "_run_google_picker_assisted_session", fake_session)
+    monkeypatch.setattr(workflow_module, "materialize_recommendations_for_run", fake_materialize)
+
+    result = await run_google_picker_assisted_workflow(
+        runtime=FakeRuntime(),
+        browser_assistant=FakeBrowser(),
+        repository=FakeRepository(),
+        limit=4000,
+        preselect_count=2000,
+        sleep=lambda _seconds: _completed_sleep(),
+        progress_callback=lambda stage, _payload: progress.append(stage),
+    )
+
+    assert session_calls == ["analysis-1", "analysis-2"]
+    assert materialize_calls == ["analysis-1", "analysis-1", "analysis-2"]
+    assert progress.count("picker_batch_materialization_waiting") == 1
+    assert result["recommendation_storage"]["collection_ids"] == (
+        "collection-1",
+        "collection-2",
+    )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_filtered_picker_items_do_not_expand_logical_ten_thousand_cap(monkeypatch) -> None:
+    calls = []
+
+    async def fake_session(**kwargs):
+        calls.append(kwargs)
+        index = len(calls)
+        return {
+            "status": "completed",
+            "session_id": f"picker-{index}",
+            "analysis_run_id": f"analysis-{index}",
+            # The first session still selected its whole provider quota, but
+            # 500 images were already processed and are not submitted again.
+            "selected_photo_count": 1500 if index == 1 else 2000,
+            "picker_selected_count": 2000,
+        }
+
+    async def fake_materialize(**kwargs):
+        index = str(kwargs["analysis_run_id"])[-1]
+        return {
+            "status": "completed",
+            "collection_id": f"collection-{index}",
+            "recommended_count": 1,
+            "materialized_count": 1,
+        }
+
+    monkeypatch.setattr(workflow_module, "_run_google_picker_assisted_session", fake_session)
+    monkeypatch.setattr(workflow_module, "materialize_recommendations_for_run", fake_materialize)
+
+    result = await run_google_picker_assisted_workflow(
+        runtime=FakeRuntime(),
+        browser_assistant=FakeBrowser(),
+        repository=FakeRepository(),
+        limit=4000,
+        preselect_count=2000,
+    )
+
+    assert [call["limit"] for call in calls] == [2000, 2000]
+    assert [call["selection_offset"] for call in calls] == [0, 2000]
+    assert result["picker_selected_count"] == 4000
+    assert result["selected_photo_count"] == 3500
+
+
+@pytest.mark.asyncio
 async def test_assisted_workflow_waits_for_user_then_submits_analysis() -> None:
     progress = []
 
@@ -118,6 +281,7 @@ async def test_assisted_workflow_waits_for_user_then_submits_analysis() -> None:
         "session_id": "picker-session-1",
         "analysis_run_id": "job-123",
         "selected_photo_count": 2,
+        "picker_selected_count": 3,
         "excluded_video_count": 1,
         "action_request_id": "",
     }

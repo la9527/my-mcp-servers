@@ -2110,6 +2110,74 @@ def test_google_manual_command_requires_completed_selected_date_location_prefetc
         assert "location_prefetch" not in operation["request"]
 
 
+def test_android_can_resume_the_same_mac_operation_after_gps_handoff(tmp_path) -> None:
+    async def starter(_request):
+        return {"automation_run_id": "combined-mac-handoff"}
+
+    app, ingest_device, ingest_key, _client_repository = _fixture(
+        tmp_path, controls_enabled=True, manual_starter=starter
+    )
+    repository = app.state.run_repository
+    operation, _created = mobile_client_http.enqueue_manual_curation(
+        repository=repository,
+        request={
+            "date_from": "2026-09-01",
+            "date_to": "2026-09-07",
+            "timezone": "Asia/Seoul",
+            "sources": ["google"],
+            "limit": 20,
+            "provider_limits": {"google": 20},
+            "timeout_seconds": 21600,
+            "require_mobile_location": True,
+        },
+        idempotency_key="mac-location-handoff-0001",
+        device_id="photos-mcp-mac-app",
+        origin="mac_app",
+    )
+    assert operation["status"] == "waiting_mobile_location"
+
+    with TestClient(app, base_url="https://photos.example") as client:
+        token, _owner_key_id, owner_key, _challenge = _owner_session(
+            client, ingest_device, ingest_key
+        )
+        events = client.get(
+            "/mobile-client/v1/events", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert events.status_code == 200
+        handoff_event = next(
+            item
+            for item in events.json()["data"]
+            if item["category"] == "mobile_location_handoff"
+        )
+        assert handoff_event["operation_id"] == operation["operation_id"]
+        path = (
+            "/mobile-client/v1/manual-curations/"
+            + operation["operation_id"]
+            + "/location-handoff"
+        )
+        body = json.dumps(
+            {
+                "schema_version": 1,
+                "location_prefetch": _location_prefetch(
+                    date_from="2026-09-01", date_to="2026-09-07", scanned=42, gps=0
+                ),
+            },
+            separators=(",", ":"),
+        )
+        resumed = client.post(
+            path,
+            content=body,
+            headers=_signed_command_headers(
+                token, owner_key, path=path, body=body, prefix="mac-location-handoff"
+            ),
+        )
+        assert resumed.status_code == 202, resumed.text
+        assert resumed.json()["data"]["operation_id"] == operation["operation_id"]
+        assert resumed.json()["data"]["status"] == "queued"
+        assert repository.get_curation_operation(operation["operation_id"])["status"] == "queued"
+        assert repository.list_user_action_requests(statuses={"pending"}) == []
+
+
 def test_story_reanalysis_and_delete_require_signed_owner_commands(tmp_path) -> None:
     async def starter(_request):
         return {"automation_run_id": "combined-story-reanalysis"}

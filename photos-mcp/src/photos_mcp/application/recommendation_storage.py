@@ -40,6 +40,7 @@ DEFAULT_RECOMMENDATION_ROOT = Path(
     "/Volumes/ExtData/02_Services/PhotosMcp/recommendations"
 )
 DEFAULT_RECOMMENDATION_POLICY_VERSION = "scene-recommendations-v1"
+DEFAULT_EXPLICIT_SELECTION_POLICY_VERSION = "explicit-user-selection-v1"
 DEFAULT_OWNER_STORY_URL = (
     "https://byoungyoung-macmini.tail53bcc7.ts.net/photos"
 )
@@ -708,8 +709,16 @@ async def materialize_recommendations_for_run(
     local_run_date: str = "",
     root: str | Path | None = None,
     call_vendor_fn: VendorCallable = call_vendor,
+    explicit_photo_ids: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
-    """Resolve one completed analysis job and persist only exact recommendations."""
+    """Resolve one completed analysis job and persist a bounded immutable set.
+
+    With no ``explicit_photo_ids`` this preserves the original scene-best
+    recommendation policy.  When a desktop user has explicitly selected
+    photo IDs, re-read that persisted selection from photo-ranker and verify
+    every requested ID belongs to it before materializing.  Client-provided
+    paths are never used as the authority for a Story source.
+    """
 
     summary = await call_vendor_fn("photo-ranker", "get_job_summary", analysis_run_id)
     if not isinstance(summary, dict) or summary.get("error") or summary.get("error_code"):
@@ -733,18 +742,72 @@ async def materialize_recommendations_for_run(
             "analysis_run_id": analysis_run_id,
             "error_code": "recommendation_analysis_not_completed",
         }
-    items = await call_vendor_fn(
-        "photo-ranker",
-        "get_recommended_items",
-        analysis_run_id,
-        top_n=100000,
+    normalized_explicit_ids = tuple(
+        dict.fromkeys(
+            str(photo_id).strip()
+            for photo_id in explicit_photo_ids
+            if str(photo_id or "").strip()
+        )
     )
-    if not isinstance(items, list):
-        return {
-            "status": "failed",
-            "analysis_run_id": analysis_run_id,
-            "error_code": "invalid_recommendation_result",
+    selection_policy = "recommended_scene_best"
+    policy_version = DEFAULT_RECOMMENDATION_POLICY_VERSION
+    if normalized_explicit_ids:
+        selected_items = await call_vendor_fn(
+            "photo-ranker",
+            "get_review_items",
+            analysis_run_id,
+            top_n=10000,
+            selected_only=True,
+        )
+        if not isinstance(selected_items, list):
+            return {
+                "status": "failed",
+                "analysis_run_id": analysis_run_id,
+                "error_code": "invalid_explicit_selection_result",
+            }
+        selected_by_id = {
+            str(item.get("photo_id") or ""): item
+            for item in selected_items
+            if isinstance(item, dict) and str(item.get("photo_id") or "")
         }
+        missing_ids = [photo_id for photo_id in normalized_explicit_ids if photo_id not in selected_by_id]
+        if missing_ids:
+            return {
+                "status": "failed",
+                "analysis_run_id": analysis_run_id,
+                "error_code": "explicit_selection_not_persisted",
+                "requested_count": len(normalized_explicit_ids),
+                "available_count": len(selected_by_id),
+            }
+        items = []
+        for photo_id in normalized_explicit_ids:
+            item = dict(selected_by_id[photo_id])
+            reason_codes = list(item.get("selection_reason_codes") or [])
+            if "user_selected" not in reason_codes:
+                reason_codes.append("user_selected")
+            items.append(
+                {
+                    **item,
+                    "recommended_in_cluster": True,
+                    "recommendation_slot": 1,
+                    "selection_reason_codes": reason_codes,
+                }
+            )
+        selection_policy = "explicit_user_selection"
+        policy_version = DEFAULT_EXPLICIT_SELECTION_POLICY_VERSION
+    else:
+        items = await call_vendor_fn(
+            "photo-ranker",
+            "get_recommended_items",
+            analysis_run_id,
+            top_n=100000,
+        )
+        if not isinstance(items, list):
+            return {
+                "status": "failed",
+                "analysis_run_id": analysis_run_id,
+                "error_code": "invalid_recommendation_result",
+            }
     request_options = (
         summary.get("request_options")
         if isinstance(summary.get("request_options"), dict)
@@ -772,6 +835,7 @@ async def materialize_recommendations_for_run(
         provider=provider,
         source_id=source_id,
         items=items,
+        policy_version=policy_version,
         local_run_date=local_run_date,
         google_asset_map=google_map,
         enroll_in_publish_groups=publication_policy != "none",
@@ -783,6 +847,7 @@ async def materialize_recommendations_for_run(
     )
     return {
         **storage_result,
+        "selection_policy": selection_policy,
         "excluded_screen_capture_count": max(
             0,
             int(result_summary.get("excluded_screen_capture_count") or 0),

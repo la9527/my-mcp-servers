@@ -252,8 +252,8 @@ def main() -> int:
     parser.add_argument("--timeout-seconds", type=float, default=7200.0, help="Classification timeout")
     parser.add_argument("--poll-seconds", type=float, default=10.0, help="Job status polling interval")
     args = parser.parse_args()
-    if not 1 <= args.limit <= 1000:
-        parser.error("--limit must be between 1 and 1000")
+    if not 1 <= args.limit <= 10000:
+        parser.error("--limit must be between 1 and 10000")
     return asyncio.run(_run(args))
 
 

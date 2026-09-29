@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable
 import uuid
 from zoneinfo import ZoneInfo
 
+from photos_mcp.application.analysis_limits import MAX_ANALYSIS_PHOTOS
 from photos_mcp.domain.models.automation import (
     UserActionRequiredEvent,
     validate_private_action_base_url,
@@ -169,7 +170,7 @@ async def start_daily_curation(
             "error_code": "daily_curate_review_only",
             "hint": "The first automation release supports mode=review_only only.",
         }
-    requested_limit = max(1, min(int(options.get("limit") or 50), 1000))
+    requested_limit = max(1, min(int(options.get("limit") or 50), MAX_ANALYSIS_PHOTOS))
     lookback_days = max(1, min(int(options.get("lookback_days") or 2), 31))
     timeout_seconds = max(600.0, min(float(options.get("timeout_seconds") or 21600.0), 21600.0))
     trigger = str(options.get("trigger") or "scheduled")

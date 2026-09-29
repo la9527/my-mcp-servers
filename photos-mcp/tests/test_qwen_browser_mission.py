@@ -523,7 +523,7 @@ async def test_qwen_agent_accepts_requested_count_above_legacy_100_cap(tmp_path,
         for tool in model.calls[0][1]
         if tool["function"]["name"] == "report_browser_mission"
     )
-    assert terminal_schema["maximum"] == 1000
+    assert terminal_schema["maximum"] == 2000
     assert chrome.confirmed is True
     await assistant.close()
 

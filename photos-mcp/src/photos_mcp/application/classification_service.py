@@ -9,14 +9,17 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from photos_mcp.application.analysis_limits import MAX_ANALYSIS_PHOTOS
 from photos_mcp.application.selection_service import handle_select
 from photos_mcp.infrastructure.vendor_adapter.photo_source import PhotoSourcePort, VendorPhotoSourcePort
 from photos_mcp.infrastructure.sources.local_files.raw_image import RAW_IMAGE_EXTENSIONS
 from photos_mcp.infrastructure.persistence.state_store import PhotosMcpStateStore
 
 
-DEFAULT_SCOPE_SCAN_LIMIT = 4000
-MAX_CLASSIFICATION_LIMIT = 1000
+# Preview more than the requested run so the UI can report a lower-bound count
+# without performing unbounded discovery on the AppKit main thread.
+DEFAULT_SCOPE_SCAN_LIMIT = MAX_ANALYSIS_PHOTOS * 4
+MAX_CLASSIFICATION_LIMIT = MAX_ANALYSIS_PHOTOS
 ALLOWED_MODES = {"classify", "select_best"}
 ALLOWED_SELECTION_PROFILES = {"general", "person", "landscape"}
 ALLOWED_SOURCES = {"apple", "local"}

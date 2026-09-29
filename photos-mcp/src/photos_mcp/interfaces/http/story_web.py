@@ -38,7 +38,7 @@ from photos_mcp.infrastructure.runtime.paths import ensure_private_directory, ph
 
 SESSION_COOKIE = "photos_story_session"
 SWIPER_VERSION = "14.2.0"
-STORY_ASSET_VERSION = "11"
+STORY_ASSET_VERSION = "14"
 SWIPER_ASSET_NAMES = frozenset(
     {"swiper-bundle.min.css", "swiper-bundle.min.js", "LICENSE"}
 )
@@ -737,6 +737,7 @@ def render_owner(
     active_shares: list[dict[str, Any]] | None = None,
     stories: list[dict[str, Any]] | None = None,
     recent_operations: list[dict[str, Any]] | None = None,
+    action_events: list[dict[str, Any]] | None = None,
     notice_message: str = "",
 ) -> str:
     notice = ""
@@ -766,7 +767,8 @@ def render_owner(
 <label>종료일<input type="date" name="date_to" value="{today.isoformat()}" max="{today.isoformat()}" required></label>
 <div class="source-row"><label><input type="checkbox" name="source" value="apple" checked>Apple Photos</label><label><input type="checkbox" name="source" value="google" checked>Google Photos</label></div>
 <label>사진 구성<select name="selection_mode"><option value="balanced" selected>균형 있게</option><option value="people_present">인물 위주</option><option value="landscape">풍경 위주</option></select></label>
-<label>최대 사진 수<input type="number" name="limit" value="500" min="1" max="1000" step="1" required></label>
+<label>최대 사진 수<input type="number" name="limit" value="500" min="1" max="10000" step="1" required></label>
+<label class="check"><input type="checkbox" name="require_mobile_location" value="1" checked>휴대폰 원본 GPS를 먼저 확인하고 시작</label>
 <div class="action-row"><span>스크린샷 제외 · 최대 6시간 · 자동 앨범 변경 없음</span><button type="submit">분석하고 Story 만들기</button></div>
 </form></section>"""
     story_cards = []
@@ -793,11 +795,17 @@ def render_owner(
     operation_cards = []
     for operation in recent_operations or []:
         status = str(operation.get("status") or "")
-        if status not in {"queued", "dispatching", "running"}:
+        if status not in {"queued", "dispatching", "running", "waiting_mobile_location"}:
             continue
+        if status == "waiting_mobile_location":
+            heading = "휴대폰 GPS 동기화 대기"
+            detail = "PhotosMcp Android 앱의 알림에서 GPS 동기화 후 계속을 선택해 주세요."
+        else:
+            heading = "Story 작업 진행 중"
+            detail = status
         operation_cards.append(
-            '<article class="story-card"><div><strong>Story 작업 진행 중</strong>'
-            f'<p>{_e(operation.get("date_from"))} - {_e(operation.get("date_to"))} · {_e(status)}</p>'
+            f'<article class="story-card"><div><strong>{_e(heading)}</strong>'
+            f'<p>{_e(operation.get("date_from"))} - {_e(operation.get("date_to"))} · {_e(detail)}</p>'
             '</div></article>'
         )
     operations = (
@@ -807,12 +815,42 @@ def render_owner(
         if operation_cards
         else ""
     )
+    event_cards = []
+    for event in action_events or []:
+        title = " ".join(str(event.get("title") or "확인 필요").split())[:120]
+        message = " ".join(str(event.get("message") or "").split())[:320]
+        if not title and not message:
+            continue
+        event_cards.append(
+            '<article class="story-card"><div>'
+            f'<strong>{_e(title or "확인 필요")}</strong>'
+            f'<p>{_e(message)}</p></div></article>'
+        )
+    events = (
+        '<section class="stories"><h2>알림·확인 필요</h2><div class="story-list">'
+        + "".join(event_cards)
+        + "</div></section>"
+        if event_cards
+        else ""
+    )
     controls = """<form class="toolbar" method="post" action="/photos/share">
 <label>유효 기간<select name="duration_days"><option value="30" selected>30일</option><option value="7">7일</option><option value="1">24시간</option></select></label>
 <label class="check"><input type="checkbox" name="download_enabled" value="1" checked>공유본 다운로드 허용</label>
 <label class="check"><input type="checkbox" name="include_person_names" value="1">가족 공유에 확인된 인물 이름 포함</label>
 <button type="submit">공유 만들기</button></form>
 <form method="post" action="/photos/story/refresh"><button class="secondary" type="submit">Linux Qwen으로 이야기 새로 구성</button></form>"""
+    story_id = str(story.get("story_id") or "")
+    scope = story.get("scope") if isinstance(story.get("scope"), dict) else {}
+    if story_id:
+        if isinstance(scope.get("reanalysis_spec"), dict):
+            controls += (
+                f'<form method="post" action="/photos/stories/{_e(story_id)}/reanalyze">'
+                '<button class="secondary" type="submit">같은 조건으로 다시 분석</button></form>'
+            )
+        controls += (
+            f'<form method="post" action="/photos/stories/{_e(story_id)}/delete">'
+            '<button class="secondary" type="submit">이 Story 삭제</button></form>'
+        )
     if not story.get("photos"):
         controls = ""
     share_cards = []
@@ -851,7 +889,7 @@ def render_owner(
     )
     return story_html.replace(
         '<div class="meta">',
-        notice + manual_controls + operations + story_list + controls + shares + '<div class="meta">',
+        notice + manual_controls + operations + events + story_list + controls + shares + '<div class="meta">',
         1,
     )
 

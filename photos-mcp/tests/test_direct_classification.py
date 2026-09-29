@@ -45,23 +45,23 @@ def test_command_validates_dates_and_maps_read_only_actions() -> None:
         ClassificationCommand(date_from="2026-08-02", date_to="2026-07-01").validate()
     with pytest.raises(ClassificationValidationError, match="모두"):
         ClassificationCommand(date_from="2026-08-02").validate()
-    assert ClassificationCommand(limit=1000).validate().limit == 1000
-    with pytest.raises(ClassificationValidationError, match="1000장"):
-        ClassificationCommand(limit=1001).validate()
+    assert ClassificationCommand(limit=10_000).validate().limit == 10_000
+    with pytest.raises(ClassificationValidationError, match="10000장"):
+        ClassificationCommand(limit=10_001).validate()
 
 
 @pytest.mark.asyncio
-async def test_scope_preview_supports_a_thousand_photo_run() -> None:
+async def test_scope_preview_supports_a_ten_thousand_photo_run() -> None:
     source = FakePhotoSource(
-        photos=[{"id": str(index), "path": f"/tmp/{index}.jpg"} for index in range(1200)]
+        photos=[{"id": str(index), "path": f"/tmp/{index}.jpg"} for index in range(12_000)]
     )
     service = DirectClassificationService(state_store=None, source_port=source)
 
-    preview = await service.preview(ClassificationCommand(album="대량", limit=1000))
+    preview = await service.preview(ClassificationCommand(album="대량", limit=10_000))
 
-    assert preview.candidate_count == 1200
-    assert preview.run_count == 1000
-    assert source.list_filters["limit"] == 4000
+    assert preview.candidate_count == 12_000
+    assert preview.run_count == 10_000
+    assert source.list_filters["limit"] == 40_000
 
 
 @pytest.mark.asyncio

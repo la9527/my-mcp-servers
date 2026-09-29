@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 import uuid
 from zoneinfo import ZoneInfo
 
+from photos_mcp.application.analysis_limits import MAX_ANALYSIS_PHOTOS
 from photos_mcp.application.manual_curation import resolve_selection_contract
 from photos_mcp.domain.models.automation import validate_private_action_base_url
 from photos_mcp.infrastructure.persistence.run_repository import RunRepository
@@ -308,7 +309,7 @@ async def retry_combined_curation(
         options={
             "source": str(target.get("source") or "all"),
             "sources": sources,
-            "limit": max(1, int(target.get("requested_limit") or 1000)),
+            "limit": max(1, int(target.get("requested_limit") or MAX_ANALYSIS_PHOTOS)),
             "apple_limit": max(0, int(target.get("apple_limit") or 0)),
             "google_limit": max(0, int(target.get("google_limit") or 0)),
             "lookback_days": max(1, int(target.get("lookback_days") or 10)),
@@ -475,7 +476,7 @@ async def start_combined_curation(
         "operation_id": str(options.get("operation_id") or ""),
         "publication_policy": str(options.get("publication_policy") or "approved_groups"),
         "reanalyze": bool(options.get("reanalyze", False)),
-        "requested_limit": int(options.get("limit") or 1000),
+        "requested_limit": int(options.get("limit") or MAX_ANALYSIS_PHOTOS),
         "apple_limit": int(options.get("apple_limit") or 0),
         "google_limit": int(options.get("google_limit") or 0),
         "timeout_seconds": timeout_seconds,

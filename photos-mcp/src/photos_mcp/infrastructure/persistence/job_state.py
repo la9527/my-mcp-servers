@@ -6,11 +6,12 @@ import shutil
 import time
 from typing import Any
 
+from photos_mcp.application.analysis_limits import MAX_RESULT_GALLERY_ITEMS
 from photos_mcp.infrastructure.persistence.state_store import JobSnapshot, is_terminal_job_status, job_snapshot_from_payload, job_status_value
 from photos_mcp.infrastructure.runtime.paths import photo_ranker_runtime_root
 
 
-MAX_REVIEW_RESULT_ITEMS = 1000
+MAX_REVIEW_RESULT_ITEMS = MAX_RESULT_GALLERY_ITEMS
 
 
 @dataclass(frozen=True, slots=True)

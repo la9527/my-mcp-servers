@@ -5,7 +5,7 @@
 ## 화면과 연결 경계
 
 - 홈: Mac 상태, 최신 Apple·Google 통합 run, 분석·추천 수, 최신 이야기
-- 작업: 최대 1,000장·6시간 정책, 완료·부분 완료·남은 사진
+- 작업: 최대 10,000장·6시간 정책, 완료·부분 완료·남은 사진
 - 추천: Apple·Google을 합친 실제 추천 사진 grid, 위치 근거 상태와 큰 사진 preview
 - 이야기: 날짜·위치 chapter, grid와 확대·pan·좌우 fling이 가능한 큰 사진 viewer
 - 설정: GPS Bridge 상태, 마지막 전송, 수동 위치 동기화와 Android 권한
@@ -24,7 +24,7 @@ GPS upload는 휴대폰을 들고 외부에 있는 경우에도 기존 공개 wr
 
 ## 개인정보·권한 경계
 
-- 읽는 범위: 최근 10일 `DCIM/Camera`, 최초 최대 1,000장, 이후 증분
+- 읽는 범위: 최근 10일 `DCIM/Camera`, 최초 최대 10,000장, 이후 증분
 - 전송: GPS, 촬영 시각, 크기·MIME, 비식별 asset key와 content digest
 - 전송하지 않음: 사진 bytes, filename, MediaStore ID
 - 권한: 사진 읽기, 원본 EXIF 위치, 인터넷과 네트워크 상태

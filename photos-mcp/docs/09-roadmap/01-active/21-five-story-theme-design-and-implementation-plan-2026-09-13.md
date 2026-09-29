@@ -4,6 +4,8 @@
 상태: 운영 구현, 설치 앱 배포 및 실화면 검증 완료
 대상: Mac PhotosMcp, Android PhotosMcp, 소유자 브라우저, 30일 가족 공유 Story
 
+> **2026-09-25 규모 정정:** 논리 분석/Story source의 최대 입력은 10,000장이다. 본문 1,000장 표현은 당시 Story viewer 성능 fixture 및 설계 기준이며, 대량 Story viewer는 전체 사진 수만큼 동시 decode·DOM 생성하지 않고 chapter/window 단위의 지연 로딩을 유지해야 한다. 입력 상한과 Google 2,000장 세션 분할은 [23번 계획](23-pc-mobile-feature-parity-and-result-to-story-plan-2026-09-24.md)을 따른다.
+
 ## 1. 결론
 
 현재 Story의 기능 계약은 유지하되 시각 언어는 `코발트 포스터`, `암실 시네마`, `팝업 플레이북`, `트랜짓 아틀라스`, `실버 인덱스`의 5종으로 확장한다. 다섯 테마는 색상만 바꾸는 skin이 아니라 사진 밀도, 텍스트 위치, 페이지 리듬, 지도와 Swiper의 역할이 서로 다른 presentation renderer다.

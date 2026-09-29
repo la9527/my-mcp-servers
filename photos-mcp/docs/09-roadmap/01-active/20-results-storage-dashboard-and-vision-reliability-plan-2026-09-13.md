@@ -8,6 +8,8 @@
 
 관련 문서: [추천 사진 통합 보관과 그룹 앨범 이중 저장 계획](08-recommended-photo-storage-and-album-plan-2026-09-04.md), [Tailscale 추천 사진 생성형 Story Album·Swiper·외부 공유 계획](09-tailscale-swiper-recommendation-gallery-plan-2026-09-06.md), [삭제·재분석·추천 앨범 수명주기 재설계](14-deletion-reanalysis-and-recommendation-lifecycle-plan-2026-09-10.md), [예외 중심 인물 자동 인식·Mac/Android 통합 계획](19-exception-only-people-recognition-mac-android-plan-2026-09-12.md)
 
+> **2026-09-25 용량·결과 규모 정정:** 본문의 1,000개 결과 화면은 당시 성능 기준이다. 현재 direct/manual 결과 상한은 10,000장이며, AppKit collection view는 visible item만 생성하는 구조를 10,000개 fixture로 회귀 검증한다. 파일 크기 확인은 계속 main thread 밖에서 수행한다.
+
 ## 1. 결론
 
 사진 분석 완료 화면은 아래 세 작업을 한 페이지 하단에 섞지 않고 독립된 작업 공간으로 분리한다.

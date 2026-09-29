@@ -50,6 +50,7 @@ import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -76,6 +77,7 @@ public final class MainActivity extends Activity {
     private static final String SELECTION_MODE_BALANCED = "balanced";
     private static final String SELECTION_MODE_PEOPLE_PRESENT = "people_present";
     private static final String SELECTION_MODE_LANDSCAPE = "landscape";
+    private static final int MAX_ANALYSIS_PHOTOS = 10_000;
 
     private int paper;
     private int surface;
@@ -573,8 +575,8 @@ public final class MainActivity extends Activity {
         EditText limitInput = new EditText(this);
         limitInput.setInputType(InputType.TYPE_CLASS_NUMBER);
         limitInput.setText("500");
-        limitInput.setHint("1~1000");
-        limitInput.setContentDescription("한 작업에서 분석할 최대 사진 수, 1장부터 1000장");
+        limitInput.setHint("1~10000");
+        limitInput.setContentDescription("한 작업에서 분석할 최대 사진 수, 1장부터 10000장");
         form.addView(limitLabel);
         form.addView(limitInput, matchWrap());
 
@@ -763,8 +765,8 @@ public final class MainActivity extends Activity {
         } catch (NumberFormatException error) {
             limit = 0;
         }
-        if (limit < 1 || limit > 1000) {
-            status.setText("최대 사진 수는 1장부터 1000장까지 입력해 주세요.");
+        if (limit < 1 || limit > MAX_ANALYSIS_PHOTOS) {
+            status.setText("최대 사진 수는 1장부터 10000장까지 입력해 주세요.");
             return null;
         }
         if (apple.isChecked() && google.isChecked() && limit < 2) {
@@ -1034,20 +1036,28 @@ public final class MainActivity extends Activity {
             return;
         }
         setLoading(true);
+        loadResultsPage(content, "", generation);
+    }
+
+    private void loadResultsPage(LinearLayout content, String cursor, int generation) {
+        setLoading(true);
         executor.execute(() -> {
             try {
-                JSONObject response = new OwnerApiClient(this).getResults(resultsStoryId);
+                JSONObject response = new OwnerApiClient(this).getResults(resultsStoryId, cursor, 100);
                 JSONArray items = response.getJSONArray("data");
-                runOnUiThread(() -> renderRecommendationGrid(content, items, generation));
+                String nextCursor = response.optString("next_cursor", "");
+                runOnUiThread(() -> renderRecommendationGrid(
+                        content, items, cursor, nextCursor, generation));
             } catch (Exception error) {
                 runOnUiThread(() -> {
                     if (generation != resultsGeneration || !"results".equals(currentSection)) return;
                     if (error instanceof OwnerApiClient.OwnerApiException
                             && ((OwnerApiClient.OwnerApiException) error).status == 404) {
-                        renderRecommendationGrid(content, new JSONArray(), generation);
+                        renderRecommendationGrid(content, new JSONArray(), cursor, "", generation);
                         return;
                     }
-                    loading.setText(connectionHelp(error));
+                    content.removeAllViews();
+                    content.addView(card(bodyText(connectionHelp(error))));
                     setLoading(false);
                 });
             }
@@ -1055,7 +1065,7 @@ public final class MainActivity extends Activity {
     }
 
     private void renderRecommendationGrid(
-            LinearLayout content, JSONArray items, int generation) {
+            LinearLayout content, JSONArray items, String cursor, String nextCursor, int generation) {
         if (generation != resultsGeneration || !"results".equals(currentSection)) return;
         content.removeAllViews();
         if (items.length() == 0) {
@@ -1063,8 +1073,12 @@ public final class MainActivity extends Activity {
             setLoading(false);
             return;
         }
+        int offset = 0;
+        try { offset = Math.max(0, Integer.parseInt(cursor == null ? "0" : cursor)); }
+        catch (NumberFormatException ignored) { }
         TextView summary = text(
-                getString(R.string.recommendation_count_summary, items.length()), 14, muted);
+                getString(R.string.recommendation_page_summary, offset + 1,
+                        offset + items.length(), items.length()), 14, muted);
         summary.setPadding(dp(2), 0, 0, dp(12));
         summary.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         content.addView(summary, matchWrap());
@@ -1090,6 +1104,27 @@ public final class MainActivity extends Activity {
             grid.addView(tile, params);
         }
         content.addView(grid, matchWrap());
+        LinearLayout pager = new LinearLayout(this);
+        pager.setOrientation(LinearLayout.HORIZONTAL);
+        pager.setGravity(Gravity.CENTER_VERTICAL);
+        if (offset > 0) {
+            Button previous = quietButton("이전 100장");
+            int previousOffset = Math.max(0, offset - 100);
+            previous.setOnClickListener(v -> loadResultsPage(
+                    content, String.valueOf(previousOffset), generation));
+            pager.addView(previous, new LinearLayout.LayoutParams(-2, -2));
+        }
+        if (nextCursor != null && !nextCursor.isEmpty()) {
+            Button next = primaryButton("다음 100장");
+            String safeNext = nextCursor;
+            next.setOnClickListener(v -> loadResultsPage(content, safeNext, generation));
+            if (pager.getChildCount() > 0) pager.addView(space(dp(8)));
+            pager.addView(next, new LinearLayout.LayoutParams(-2, -2));
+        }
+        if (pager.getChildCount() > 0) {
+            pager.setPadding(0, dp(14), 0, 0);
+            content.addView(pager, matchWrap());
+        }
         setLoading(false);
     }
 
@@ -1624,6 +1659,14 @@ public final class MainActivity extends Activity {
                         LinearLayout eventView = new LinearLayout(this);
                         eventView.setOrientation(LinearLayout.VERTICAL);
                         eventView.addView(bodyText(eventSummary(event)));
+                        if ("mobile_location_handoff".equals(event.optString("category"))) {
+                            Button continueGps = primaryButton("GPS 동기화 후 계속");
+                            continueGps.setContentDescription(
+                                    "선택한 날짜의 원본 GPS를 동기화한 뒤 Mac mini 작업을 계속합니다");
+                            continueGps.setOnClickListener(v -> resumeMobileLocationHandoff(
+                                    event, continueGps));
+                            eventView.addView(continueGps);
+                        }
                         if (!event.optBoolean("acknowledged")) {
                             Button acknowledge = quietButton("확인함");
                             String eventId = event.optString("event_id");
@@ -1648,6 +1691,53 @@ public final class MainActivity extends Activity {
                 runOnUiThread(() -> { button.setText("확인됨"); button.setVisibility(View.GONE); });
             } catch (Exception error) {
                 runOnUiThread(() -> { button.setText("다시 시도"); button.setEnabled(true); });
+            }
+        });
+    }
+
+    private void resumeMobileLocationHandoff(JSONObject event, Button action) {
+        if (!hasMediaPermissions()) {
+            requestMediaPermissions();
+            action.setText("사진·원본 위치 권한을 허용해 주세요");
+            return;
+        }
+        String operationId = event.optString("operation_id", "");
+        if (!operationId.matches("[A-Za-z0-9._:-]{8,160}")) {
+            action.setText("유효하지 않은 작업입니다");
+            action.setEnabled(false);
+            return;
+        }
+        action.setEnabled(false);
+        action.setText("GPS 동기화 중…");
+        setLoading(true);
+        executor.execute(() -> {
+            try {
+                LocalDate from = LocalDate.parse(event.getString("date_from"));
+                LocalDate to = LocalDate.parse(event.getString("date_to"));
+                BridgeSync.Result locationSync = BridgeSync.runRange(this, from, to);
+                if (locationSync.remaining != 0) {
+                    throw new IllegalStateException(
+                            "GPS 전송 대기 배치 " + locationSync.remaining + "개가 남아 있습니다");
+                }
+                JSONObject operation = new OwnerApiClient(this)
+                        .resumeManualLocationHandoff(
+                                operationId, locationPrefetch(from, to, locationSync))
+                        .getJSONObject("data");
+                String resumedOperationId = operation.getString("operation_id");
+                runOnUiThread(() -> showManualOperation(resumedOperationId));
+            } catch (SecurityException denied) {
+                runOnUiThread(() -> {
+                    action.setText("사진·원본 위치 권한을 허용해 주세요");
+                    action.setEnabled(true);
+                    setLoading(false);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    action.setText("다시 시도");
+                    action.setEnabled(true);
+                    Toast.makeText(this, connectionHelp(error), Toast.LENGTH_LONG).show();
+                    setLoading(false);
+                });
             }
         });
     }
@@ -2771,9 +2861,19 @@ public final class MainActivity extends Activity {
 
     private String eventSummary(JSONObject item) {
         String category = item.optString("category");
-        String title = "action_required".equals(category) ? "사용자 확인 필요" : "사진 정리 결과";
+        String title = item.optString("title");
+        if (title.isEmpty()) {
+            title = "mobile_location_handoff".equals(category)
+                    ? "휴대폰 GPS 동기화가 필요합니다"
+                    : "action_required".equals(category) ? "사용자 확인 필요" : "사진 정리 결과";
+        }
         String stamp = formatKstTimestamp(item.optString("created_at"));
+        String message = item.optString("message");
+        String dates = item.optString("date_from");
+        if (!dates.isEmpty()) dates += " ~ " + item.optString("date_to");
         return title + "  ·  " + statusLabel(item.optString("status"))
+                + (dates.isEmpty() ? "" : "\n" + dates)
+                + (message.isEmpty() ? "" : "\n" + message)
                 + (stamp.isEmpty() ? "" : "\n" + stamp);
     }
 
@@ -2801,6 +2901,7 @@ public final class MainActivity extends Activity {
         if ("dispatching".equals(status)) return "시작 준비 중";
         if ("cancelled".equals(status)) return "취소됨";
         if ("awaiting_user_action".equals(status)) return "사용자 확인 필요";
+        if ("waiting_mobile_location".equals(status)) return "휴대폰 GPS 대기";
         if ("running".equals(status)) return "진행 중";
         return status.isEmpty() ? "확인 불가" : status;
     }

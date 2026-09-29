@@ -197,7 +197,7 @@ def combine_face_identity_grouping_reviews(
         "pair_count": len(items),
         "review_title": "독립 복수 지지 병합 검토",
         "review_question": "이 독립 병합 근거의 두 얼굴이 같은 사람인가요?",
-        "review_guidance": "기존 1,000장 검토와 겹치지 않는 작업입니다. 얼굴만 보고 동일인 여부를 판단하세요.",
+        "review_guidance": "기존 대용량 사진 검토와 겹치지 않는 작업입니다. 얼굴만 보고 동일인 여부를 판단하세요.",
         "items": sorted(items, key=lambda item: str(item.get("pair_id") or "")),
     }
     validate_face_identity_review_queue(combined, allow_empty=True)

@@ -769,6 +769,7 @@ def ensure_scoped_story(
     date_from: str = "",
     date_to: str = "",
     origin_run_id: str = "",
+    source_snapshot_id: str = "",
     reanalysis_spec: dict[str, Any] | None = None,
     now: datetime | None = None,
     identity_repository: StoryIdentityRepository | None = None,
@@ -793,6 +794,7 @@ def ensure_scoped_story(
         "date_to": date_to,
         "timezone": "Asia/Seoul",
         "origin_run_id": origin_run_id,
+        "source_snapshot_id": source_snapshot_id,
         "collection_ids": sorted(collection_ids or set()),
     }
     if reanalysis_spec:
@@ -918,6 +920,7 @@ def rebuild_all_stories_after_asset_change(
             date_from=str(scope.get("date_from") or ""),
             date_to=str(scope.get("date_to") or ""),
             origin_run_id=str(scope.get("origin_run_id") or ""),
+            source_snapshot_id=str(scope.get("source_snapshot_id") or ""),
             reanalysis_spec=(
                 dict(scope.get("reanalysis_spec") or {})
                 if isinstance(scope.get("reanalysis_spec"), dict)
@@ -936,6 +939,7 @@ async def refresh_scoped_story(
     date_from: str,
     date_to: str,
     origin_run_id: str,
+    source_snapshot_id: str = "",
     collection_ids: set[str] | None = None,
     reanalysis_spec: dict[str, Any] | None = None,
     director: StoryDirector | None = None,
@@ -951,6 +955,7 @@ async def refresh_scoped_story(
         date_from=date_from,
         date_to=date_to,
         origin_run_id=origin_run_id,
+        source_snapshot_id=source_snapshot_id,
         reanalysis_spec=reanalysis_spec,
         now=observed,
         identity_repository=identity_repository,

@@ -13,6 +13,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
 from starlette.applications import Starlette
 
+from photos_mcp.application.analysis_limits import MAX_ANALYSIS_PHOTOS
 from photos_mcp.app.config import load_config
 from photos_mcp.interfaces.mcp.facade.public_tools import photos_query as facade_photos_query
 from photos_mcp.interfaces.mcp.facade.public_tools import photos_select as facade_photos_select
@@ -29,6 +30,8 @@ from photos_mcp.application.manual_curation import (
     enqueue_manual_curation,
     manual_operation_projection,
     resolve_selection_contract,
+    soft_delete_story,
+    story_reanalysis_request,
 )
 from photos_mcp.domain.models.automation import validate_private_action_base_url
 from photos_mcp.application.mutation_approval import (
@@ -500,7 +503,7 @@ def build_server(
                 recent_operations=[
                     projected
                     for operation in state_store.run_repository.list_curation_operations(
-                        statuses={"queued", "dispatching", "running"},
+                        statuses={"queued", "dispatching", "running", "waiting_mobile_location"},
                         limit=20,
                     )
                     if (
@@ -511,9 +514,14 @@ def build_server(
                     )
                     is not None
                 ],
+                action_events=state_store.run_repository.list_user_action_requests(
+                    statuses={"pending", "notified"}, limit=20
+                ),
                 notice_message=(
                     "작업 화면에 등록했습니다. 진행 상태는 이 페이지를 새로고침하면 확인할 수 있습니다."
                     if request.query_params.get("manual") == "queued"
+                    else "휴대폰 GPS 동기화를 기다리고 있습니다. PhotosMcp Android 앱의 알림에서 같은 날짜를 동기화하면 이 작업이 자동으로 시작됩니다."
+                    if request.query_params.get("manual") == "waiting_mobile_location"
                     else ""
                 ),
             ),
@@ -543,6 +551,9 @@ def build_server(
                 ),
                 public_base=default_public_base_url(),
                 stories=state_store.run_repository.list_story_manifests(limit=50),
+                action_events=state_store.run_repository.list_user_action_requests(
+                    statuses={"pending", "notified"}, limit=20
+                ),
             ),
             headers=PUBLIC_HEADERS,
         )
@@ -627,8 +638,9 @@ def build_server(
                 "exclude_screenshots": True,
                 "timeout_seconds": 21600,
                 "reanalyze": False,
+                "require_mobile_location": bool(values.get("require_mobile_location")),
             }
-            enqueue_manual_curation(
+            operation, _created = enqueue_manual_curation(
                 repository=state_store.run_repository,
                 request=payload,
                 idempotency_key=f"mac-story-{uuid.uuid4()}",
@@ -652,9 +664,63 @@ def build_server(
                 status_code=400,
                 headers=PUBLIC_HEADERS,
             )
-        return RedirectResponse(
-            "/photos?manual=queued", status_code=303, headers=PUBLIC_HEADERS
+        outcome = (
+            "waiting_mobile_location"
+            if str(operation.get("status") or "") == "waiting_mobile_location"
+            else "queued"
         )
+        return RedirectResponse(
+            f"/photos?manual={outcome}", status_code=303, headers=PUBLIC_HEADERS
+        )
+
+    @mcp.custom_route(
+        "/photos/stories/{story_id}/reanalyze", methods=["POST"], include_in_schema=False
+    )
+    async def http_owner_story_reanalyze(request):
+        from starlette.responses import HTMLResponse, RedirectResponse
+
+        if not owner_mutation_allowed(request):
+            return HTMLResponse("Forbidden", status_code=403, headers=PUBLIC_HEADERS)
+        if state_store is None:
+            return HTMLResponse("Unavailable", status_code=503, headers=PUBLIC_HEADERS)
+        story_id = str(request.path_params.get("story_id") or "")
+        try:
+            normalized = story_reanalysis_request(
+                state_store.run_repository, story_id=story_id
+            )
+            enqueue_manual_curation(
+                repository=state_store.run_repository,
+                request=normalized,
+                idempotency_key=f"mac-story-reanalyze-{uuid.uuid4()}",
+                device_id="photos-mcp-mac-app",
+                origin="mac_app",
+            )
+        except ValueError as exc:
+            return HTMLResponse(
+                f"Story 재분석을 시작하지 못했습니다: {str(exc)[:80]}",
+                status_code=409,
+                headers=PUBLIC_HEADERS,
+            )
+        return RedirectResponse("/photos?manual=queued", status_code=303, headers=PUBLIC_HEADERS)
+
+    @mcp.custom_route(
+        "/photos/stories/{story_id}/delete", methods=["POST"], include_in_schema=False
+    )
+    async def http_owner_story_delete(request):
+        from starlette.responses import HTMLResponse, RedirectResponse
+
+        if not owner_mutation_allowed(request):
+            return HTMLResponse("Forbidden", status_code=403, headers=PUBLIC_HEADERS)
+        if state_store is None:
+            return HTMLResponse("Unavailable", status_code=503, headers=PUBLIC_HEADERS)
+        try:
+            soft_delete_story(
+                state_store.run_repository,
+                story_id=str(request.path_params.get("story_id") or ""),
+            )
+        except ValueError:
+            return HTMLResponse("Story not found", status_code=404, headers=PUBLIC_HEADERS)
+        return RedirectResponse("/photos", status_code=303, headers=PUBLIC_HEADERS)
 
     @mcp.custom_route("/photos/privacy", methods=["GET"], include_in_schema=False)
     async def http_owner_privacy(request):
@@ -889,7 +955,7 @@ def build_server(
                 lookback_days = int(math.ceil(lookback_hours / 24.0))
             timeout_seconds = float(body.get("timeout_seconds") or 21600.0)
             overlap_hours = float(body.get("overlap_hours") or 6.0)
-            if not 1 <= limit <= 1000:
+            if not 1 <= limit <= MAX_ANALYSIS_PHOTOS:
                 raise ValueError("limit out of range")
             if not 1 <= lookback_days <= 31:
                 raise ValueError("lookback_days out of range")
@@ -966,10 +1032,10 @@ def build_server(
                 status_code=400,
             )
         try:
-            limit = int(body.get("limit") or 1000)
+            limit = int(body.get("limit") or MAX_ANALYSIS_PHOTOS)
             lookback_days = int(body.get("lookback_days") or 10)
             timeout_seconds = float(body.get("timeout_seconds") or 21600.0)
-            if not 1 <= limit <= 1000:
+            if not 1 <= limit <= MAX_ANALYSIS_PHOTOS:
                 raise ValueError("limit out of range")
             if not 1 <= lookback_days <= 31:
                 raise ValueError("lookback_days out of range")
@@ -984,7 +1050,7 @@ def build_server(
                     raise ValueError("both provider limits are required together")
                 apple_limit = int(apple_raw) if apple_raw is not None else limit // 2
                 google_limit = int(google_raw) if google_raw is not None else limit - apple_limit
-                if not 1 <= apple_limit <= 1000 or not 1 <= google_limit <= 1000:
+                if not 1 <= apple_limit <= MAX_ANALYSIS_PHOTOS or not 1 <= google_limit <= MAX_ANALYSIS_PHOTOS:
                     raise ValueError("provider limit out of range")
                 if apple_limit + google_limit > limit:
                     raise ValueError("provider limits exceed combined limit")
@@ -1160,6 +1226,7 @@ def build_server(
                         date_from=str(scope.get("date_from") or ""),
                         date_to=str(scope.get("date_to") or ""),
                         origin_run_id=str(scope.get("origin_run_id") or ""),
+                        source_snapshot_id=str(scope.get("source_snapshot_id") or ""),
                         reanalysis_spec=(
                             dict(scope.get("reanalysis_spec") or {})
                             if isinstance(scope.get("reanalysis_spec"), dict)

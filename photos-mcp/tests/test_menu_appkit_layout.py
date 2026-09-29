@@ -1120,7 +1120,7 @@ def test_main_window_job_filters_and_selection_update_detail_panel() -> None:
     assert {"최근 작업", "작업 상세", "사진 분류 및 정리 완료"}.issubset(labels)
 
 
-def test_results_gallery_scrolls_all_items_without_pagination() -> None:
+def test_results_gallery_scrolls_all_ten_thousand_items_without_pagination() -> None:
     NSApplication.sharedApplication()
     snapshot = _snapshot()
     controller = PhotosMcpResultsController.alloc().initWithMenuController_(
@@ -1135,7 +1135,7 @@ def test_results_gallery_scrolls_all_items_without_pagination() -> None:
                 "total_score": 100 - index,
                 "scene_description": f"사진 {index}",
             }
-            for index in range(1000)
+            for index in range(10_000)
         ],
     }
 
@@ -1150,8 +1150,8 @@ def test_results_gallery_scrolls_all_items_without_pagination() -> None:
     ]
     collection = next(view for view in _walk(root) if isinstance(view, NSCollectionView))
 
-    assert controller.collectionView_numberOfItemsInSection_(collection, 0) == 1000
-    assert 0 < len(collection.visibleItems()) < 1000
+    assert controller.collectionView_numberOfItemsInSection_(collection, 0) == 10_000
+    assert 0 < len(collection.visibleItems()) < 10_000
     assert float(controller._flow_layout.collectionViewContentSize().height) > float(
         controller._scroll_view.contentView().bounds().size.height
     )
@@ -2601,7 +2601,7 @@ def test_direct_classification_album_and_period_controls_build_command() -> None
     assert command.mode == "select_best"
     assert command.selection_profile == "landscape"
     assert command.limit == 25
-    assert controller._limit_popup.itemTitles()[-1] == "1000장"
+    assert controller._limit_popup.itemTitles()[-1] == "10000장"
     controller.shutdown()
 
 

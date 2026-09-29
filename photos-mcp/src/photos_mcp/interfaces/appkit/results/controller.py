@@ -68,6 +68,7 @@ from photos_mcp.application.result_presenter import (
     sanitized_result_export_payload,
     sorted_result_items,
 )
+from photos_mcp.application.analysis_limits import MAX_RESULT_GALLERY_ITEMS
 from photos_mcp.interfaces.appkit.results.collection_item import (
     PhotosMcpResultCollectionItem,
     cached_image as _cached_image,
@@ -98,6 +99,9 @@ from photos_mcp.application.google_photos_upload_service import (
     GooglePhotosResultUploadService,
 )
 from photos_mcp.application.storage_insights import format_bytes, result_storage_summary
+from photos_mcp.application.result_story_service import (
+    create_story_from_completed_result,
+)
 from photos_mcp.infrastructure.sources.google_photos.library_destination import APPEND_ONLY_SCOPE
 
 
@@ -121,7 +125,7 @@ def initial_density_index(stored_value: Any) -> int:
 
 
 class PhotosMcpResultsController(NSWindowController):
-    """Browse up to 1,000 persisted results without paging or eager image loading."""
+    """Browse up to 10,000 persisted results without paging or eager image loading."""
 
     def initWithMenuController_(self, menu_controller: Any):
         style = (
@@ -170,6 +174,7 @@ class PhotosMcpResultsController(NSWindowController):
         self._export_generation = 0
         self._export_in_progress = False
         self._google_upload_worker: Thread | None = None
+        self._story_worker: Thread | None = None
         self._pending_google_upload: dict[str, Any] = {}
         self._selection_persist_error = ""
         self._selection_preset = ""
@@ -205,7 +210,7 @@ class PhotosMcpResultsController(NSWindowController):
         self._selection_persist_error = ""
         self._selection_preset = ""
         self._payload = dict(payload or {})
-        self._items = sorted_result_items(self._payload)[:1000]
+        self._items = sorted_result_items(self._payload)[:MAX_RESULT_GALLERY_ITEMS]
         self._photo_id_by_export_token = {}
         for index, item in enumerate(self._items, start=1):
             token = f"result-{index}"
@@ -374,6 +379,95 @@ class PhotosMcpResultsController(NSWindowController):
             alert.setAlertStyle_(NSAlertStyleWarning)
             alert.addButtonWithTitle_("확인")
             alert.runModal()
+
+    def createStoryFromResult_(self, _sender) -> None:
+        """Choose an immutable result scope, then open its shared Story."""
+        if self._story_worker is not None and self._story_worker.is_alive():
+            return
+        job_id = str(self._payload.get("job_id") or self._payload.get("run_id") or "")
+        if not job_id:
+            self._show_alert("Story를 만들 수 없습니다", "완료된 분석 작업 ID가 없습니다.")
+            return
+        repository = getattr(getattr(self._menu_controller, "_state_store", None), "run_repository", None)
+        if repository is None:
+            self._show_alert("Story 저장소를 찾을 수 없습니다", "PhotosMCP를 다시 실행한 뒤 시도해 주세요.")
+            return
+        explicit_photo_ids = tuple(
+            str(item.get("photo_id") or "")
+            for item in self._items
+            if bool(item.get("selected")) and str(item.get("photo_id") or "")
+        )
+        use_explicit_selection = False
+        if explicit_photo_ids:
+            chooser = NSAlert.alloc().init()
+            chooser.setMessageText_("어떤 사진으로 Story를 만들까요?")
+            chooser.setInformativeText_(
+                f"현재 선택한 {len(explicit_photo_ids)}장만 사용하거나, 분석 결과의 장면별 추천 사진을 사용할 수 있습니다. "
+                "두 방식 모두 분석을 다시 실행하거나 외부 앨범을 바꾸지 않습니다."
+            )
+            chooser.addButtonWithTitle_(f"선택한 {len(explicit_photo_ids)}장")
+            chooser.addButtonWithTitle_("추천 장면 사진")
+            chooser.addButtonWithTitle_("취소")
+            response = chooser.runModal()
+            if response == NSAlertThirdButtonReturn:
+                return
+            use_explicit_selection = response == NSAlertFirstButtonReturn
+        selection_barrier = self._selection_executor.submit(
+            lambda: self._selection_persist_error
+        )
+        self._story_button.setEnabled_(False)
+        self._story_button.setTitle_("Story 준비 중…")
+        generation = self._result_generation
+
+        def worker() -> None:
+            try:
+                persist_error = str(selection_barrier.result() or "")
+                if persist_error:
+                    raise RuntimeError("selection_persistence_failed")
+                created = asyncio.run(
+                    create_story_from_completed_result(
+                        repository=repository,
+                        job_id=job_id,
+                        source_id=str(self._payload.get("source_id") or ""),
+                        automation_run_id=str(self._payload.get("automation_run_id") or ""),
+                        explicit_photo_ids=explicit_photo_ids if use_explicit_selection else (),
+                    )
+                )
+                result = {"created": created, "generation": generation}
+            except Exception as exc:
+                result = {"error": str(exc), "generation": generation}
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "completedResultStoryReady:", result, False
+            )
+
+        self._story_worker = Thread(
+            target=worker,
+            name="photos-mcp-completed-result-story",
+            daemon=True,
+        )
+        self._story_worker.start()
+
+    def completedResultStoryReady_(self, payload) -> None:
+        self._story_worker = None
+        result = dict(payload or {})
+        if int(result.get("generation") or -1) != self._result_generation:
+            return
+        self._story_button.setEnabled_(bool(self._items))
+        self._story_button.setTitle_("이 결과로 Story 만들기")
+        if result.get("error"):
+            self._show_alert("Story를 만들지 못했습니다", str(result.get("error") or "알 수 없는 오류"))
+            return
+        created = dict(result.get("created") or {})
+        story_id = str(created.get("story_id") or "")
+        main = getattr(self._menu_controller, "_main_window_controller", None)
+        if main is not None:
+            main.showWindow_(None)
+            main.showTab_("story")
+        self._show_alert(
+            "Story를 만들었습니다",
+            "완료된 분석을 다시 실행하지 않고 추천 사진으로 Story를 만들었습니다. "
+            + (f"Story ID: {story_id}" if story_id else ""),
+        )
 
     def openRecommendationReview_(self, _sender) -> None:
         self._open_recommendation_review(person_composition_review=False)
@@ -739,6 +833,13 @@ class PhotosMcpResultsController(NSWindowController):
             "openFaceIdentityGroupingReview:",
         )
         self._json_export_button = self._button(root, "결과 JSON", "exportResults:")
+        self._story_button = self._button(
+            root,
+            "이 결과로 Story 만들기",
+            "createStoryFromResult:",
+            primary=True,
+            accessibility_label="완료된 분석 결과의 추천 사진으로 Story 만들기",
+        )
         self._google_upload_button = self._button(
             root,
             "Google Photos 새 앨범",
@@ -832,6 +933,7 @@ class PhotosMcpResultsController(NSWindowController):
             self._face_identity_grouping_review_button.setFrame_(
                 NSMakeRect(margin + 474.0, review_y, 150.0, 34.0)
             )
+            self._story_button.setFrame_(NSMakeRect(width - margin - 808.0, action_y, 160.0, 34.0))
             self._json_export_button.setFrame_(NSMakeRect(width - margin - 414.0, action_y, 96.0, 34.0))
             self._google_upload_button.setFrame_(
                 NSMakeRect(width - margin - 638.0, action_y, 214.0, 34.0)
@@ -1014,6 +1116,8 @@ class PhotosMcpResultsController(NSWindowController):
         ):
             control.setHidden_(not selection_mode)
         self._google_upload_button.setHidden_(True)
+        self._story_button.setHidden_(selection_mode or developer_tools)
+        self._story_button.setEnabled_(bool(self._items) and not (self._story_worker and self._story_worker.is_alive()))
         self._finder_button.setHidden_(False)
         self._advanced_button.setHidden_(not self._developer_mode)
         self._recommendation_review_button.setHidden_(not developer_tools)

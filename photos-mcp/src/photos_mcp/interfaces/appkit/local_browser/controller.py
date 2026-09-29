@@ -702,7 +702,7 @@ class PhotosMcpLocalPhotoSelectionController(NSWindowController):
         self._settings_card.addSubview_(self._profile)
         self._limit_label = self._label(self._settings_card, "최대 처리 사진 수", 10.0, bold=True)
         self._limit = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(0.0, 0.0, 1.0, 1.0), False)
-        self._limit.addItemsWithTitles_(["10장", "25장", "50장", "100장", "250장", "500장", "1000장"])
+        self._limit.addItemsWithTitles_(["10장", "25장", "50장", "100장", "250장", "500장", "1000장", "2500장", "5000장", "10000장"])
         self._limit.selectItemWithTitle_("50장")
         self._limit.setTarget_(self)
         self._limit.setAction_("limitChanged:")

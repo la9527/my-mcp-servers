@@ -1,10 +1,14 @@
 # 활성 후보
 
+구현 전 확인 대기: [PC·Android 기능 정합화와 완료 결과→Story 연결 계획](23-pc-mobile-feature-parity-and-result-to-story-plan-2026-09-24.md). 서로 다른 결과 projection을 공통 `StorySourceSnapshot`과 명령 서비스로 연결하고, macOS 완료 결과에서 재분석 없이 Story를 만들어 Android에서도 같은 결과를 보는 수직 기능을 우선한다.
+
 구현·검증 중: [Story 5종 확장 및 비율 모자이크 개선안](22-five-approved-story-themes-and-ratio-gallery-plan-2026-09-15.md). 스크롤 시네마 기본을 유지하며 5종 독립 테마, 물리적 책장·공간 무대, 비율 목록을 적용한다. 3개 에이전트의 반복 시각 검토와 통합 회귀 이후 운영에 반영한다.
 
 구현, 외부 계정 검증 또는 장기 표본 수집이 아직 남은 다음 제품 단계만 기록한다. 구현과 회귀 검증이 끝난 계획은 완료 보관소로 이동한다.
 
 Story 디자인은 [2026-09-15 승인안 구현 기록](../../08-reports/01-validation/56-approved-story-ux-implementation-2026-09-15.md)을 최신 기준으로 한다. 새 선택 화면은 스크롤 시네마·공간형 2종이며, 이전 5종 테마 계획은 과거 공유 호환 기록으로 참조한다. 기억의 책과 순간의 묶음은 아직 후속 시안이다.
+
+> **2026-09-25 공통 대용량 정책:** 이후의 모든 새 분석·수동 Story 작업은 논리적 요청당 최대 **10,000장**을 사용한다. Google Photos Picker만 제공자 세션당 2,000장 제한 때문에 최대 다섯 개의 순차 세션으로 나뉘며, 다운로드 checkpoint는 100장, 전체 작업 deadline은 6시간을 유지한다. 이 문서 아래와 개별 과거 계획에 남아 있는 `1,000장`은 당시 구현/검증 규모 또는 후속 성능 기준일 수 있으며, 현재 입력 상한을 뜻하지 않는다. 구현·검증 근거는 [PC·Android 기능 정합화와 완료 결과→Story 연결 계획](23-pc-mobile-feature-parity-and-result-to-story-plan-2026-09-24.md)에서 관리한다.
 
 ## 추천 품질 검토
 
@@ -29,6 +33,7 @@ Story 디자인은 [2026-09-15 승인안 구현 기록](../../08-reports/01-vali
 - [예외 중심 인물 자동 인식·Mac/Android 통합 계획](19-exception-only-people-recognition-mac-android-plan-2026-09-12.md): 모든 얼굴을 수동 분류하지 않고 품질 미달과 1~2회 등장 얼굴을 숨긴다. 독립적으로 3회 이상 등장한 새 인물과 애매한 기존 인물만 검토하며, 사용자 확정 anchor가 충분한 인물의 초고신뢰 얼굴은 별도 자동 상태로 연결한다. 자동 결과는 Story에 사용할 수 있지만 다음 인식 anchor에는 사용하지 않고 Mac·Android에서 같은 예외 큐·최근 자동 정리·교정·undo를 제공한다.
 - [사진 분석 결과·저장 공간 대시보드·Vision 복구 개선 계획](20-results-storage-dashboard-and-vision-reliability-plan-2026-09-13.md): 사진 보기·선택 및 저장·저장 공간을 분리하고 사진별 크기와 Story 참조 용량, 파생 캐시, 외장 보관소 상태를 정확히 표시한다. 모델 평가 도구는 고급 영역으로 이동하며, 2026-09-13 새벽 Linux SSH 준비 실패에는 600초 timeout과 제한적 WOL·backoff·deferred 복구를 적용한다.
 - [5종 Story 테마 설계 및 구현 계획](21-five-story-theme-design-and-implementation-plan-2026-09-13.md): `코발트 포스터`, `암실 시네마`, `팝업 플레이북`, `트랜짓 아틀라스`, `실버 인덱스`를 운영 렌더러에 반영했다. 분석 데이터와 revision 기반 presentation을 분리해 재분석 없이 테마를 바꾸며, Mac·Android WebView·30일 공유가 같은 렌더러와 자체 호스팅 Swiper를 사용한다.
+- [PC·Android 기능 정합화와 완료 결과→Story 연결 계획](23-pc-mobile-feature-parity-and-result-to-story-plan-2026-09-24.md): 분석 상한을 10,000장으로 통일하고 Google Picker는 2,000장씩 최대 다섯 세션으로 내구 처리한다. Mac 완료 결과→불변 Story snapshot, Android 100장 결과 페이지, Story 재분석·삭제 정합화와 PC 시작 Google 작업의 Android GPS handoff를 구현·회귀 검증했다. 실제 등록 기기에서 GPS handoff를 한 번 수행하는 최종 수동 E2E만 남아 있다.
 
 ## 선호 학습
 

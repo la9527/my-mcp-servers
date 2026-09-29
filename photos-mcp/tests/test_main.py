@@ -335,7 +335,7 @@ def test_build_http_app_daily_curate_trigger_is_read_only_and_bounded(monkeypatc
         )
         too_many = client.post(
             "/automation/daily-curate",
-            json={"source": "apple", "limit": 1001},
+            json={"source": "apple", "limit": 10_001},
         )
         too_long = client.post(
             "/automation/daily-curate",

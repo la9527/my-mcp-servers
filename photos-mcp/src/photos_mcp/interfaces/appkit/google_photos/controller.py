@@ -442,7 +442,7 @@ class PhotosMcpGooglePhotosController(NSWindowController):
                     session_id,
                     selection_profile="general",
                     mode="classify",
-                    limit=1000,
+                    limit=2000,
                 )
             )
             self._pending = {"operation": "classify", "result": result}
@@ -465,7 +465,7 @@ class PhotosMcpGooglePhotosController(NSWindowController):
                 self._runtime.importer.prepare_ready_selection(
                     self._runtime.source,
                     session_id,
-                    limit=1000,
+                    limit=2000,
                     progress_callback=report_progress,
                 )
             )

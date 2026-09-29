@@ -63,6 +63,8 @@ from AppKit import (
 )
 from Foundation import NSMakePoint, NSMakeSize, NSObject, NSTimer
 
+from photos_mcp.application.analysis_limits import MAX_RESULT_GALLERY_ITEMS
+
 from photos_mcp.app.config import PhotosMcpConfig
 from photos_mcp.application.result_presenter import (
     result_item_failure,
@@ -1127,9 +1129,9 @@ class PhotosMcpMenuController(NSObject):
         job_id = self._sender_identifier(sender)
         if not job_id:
             return
-        # The product supports up to 1,000 photos per direct classification.
-        # Do not silently turn a completed 500-photo job into a 100-item view.
-        payload = self._daemon_controller.get_job_review_result(job_id, top_n=1000)
+        # The virtualized gallery supports up to 10,000 results.  Do not turn
+        # a completed large job into an arbitrary partial review.
+        payload = self._daemon_controller.get_job_review_result(job_id, top_n=MAX_RESULT_GALLERY_ITEMS)
         logger.info(
             "opening result gallery job_id=%s total=%s loaded=%s",
             job_id,

@@ -22,6 +22,10 @@ import uuid
 from photos_mcp.application.google_picker_assisted_workflow import (
     run_google_picker_assisted_workflow,
 )
+from photos_mcp.application.analysis_limits import (
+    MAX_ANALYSIS_PHOTOS,
+    MAX_PICKER_SESSION_PHOTOS,
+)
 from photos_mcp.application.combined_curation import reconcile_combined_curation
 from photos_mcp.infrastructure.browser_assist.chrome_devtools_mcp import (
     ChromeDevToolsMcpAssistant,
@@ -405,7 +409,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
             if getattr(args, "date_to", None)
             else ""
         ),
-        "selection_limit": max(1, min(int(args.preselect_count), 1000)),
+        "selection_limit": max(1, min(int(args.preselect_count), MAX_PICKER_SESSION_PHOTOS)),
         "workflow_timeout_seconds": max(600, min(int(args.timeout_seconds), 21_600)),
         "model_mission_timeout_seconds": max(
             30,
@@ -450,7 +454,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
                 date_from=getattr(args, "date_from", None),
                 date_to=getattr(args, "date_to", None),
                 recent_days=max(1, min(int(args.recent_days), 31)),
-                selection_limit=max(1, min(int(args.preselect_count), 1000)),
+                selection_limit=max(1, min(int(args.preselect_count), MAX_PICKER_SESSION_PHOTOS)),
                 reanalyze=bool(getattr(args, "reanalyze", False)),
             )
             if importer is not None
@@ -573,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
         "--preselect-count",
         type=int,
         default=100,
-        help="Maximum recent-window photos to select (Picker safety cap: 1000)",
+        help="Maximum photos per Google Picker session (provider cap: 2000)",
     )
     parser.add_argument(
         "--recent-days",
@@ -636,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         "--max-model-steps",
         type=int,
         default=64,
-        help="Bounded Qwen tool turns; 64 permits paged selection up to 1000 photos",
+        help="Bounded Qwen tool turns for one Picker session; larger jobs are split into 2,000-photo sessions",
     )
     parser.add_argument("--browser-url", default="http://127.0.0.1:9333")
     parser.add_argument(
@@ -656,10 +660,12 @@ def main(argv: list[str] | None = None) -> int:
         default=runtime_root / "browser-assist" / "google-picker-worker.lock",
     )
     args = parser.parse_args(raw_argv)
-    if not 1 <= args.limit <= 1000:
-        parser.error("--limit must be between 1 and 1000")
-    if not 1 <= args.preselect_count <= 1000:
-        parser.error("--preselect-count must be between 1 and 1000")
+    if not 1 <= args.limit <= MAX_ANALYSIS_PHOTOS:
+        parser.error(f"--limit must be between 1 and {MAX_ANALYSIS_PHOTOS}")
+    if not 1 <= args.preselect_count <= MAX_PICKER_SESSION_PHOTOS:
+        parser.error(
+            f"--preselect-count must be between 1 and {MAX_PICKER_SESSION_PHOTOS}"
+        )
     if not 1 <= args.recent_days <= 31:
         parser.error("--recent-days must be between 1 and 31")
     if (args.date_from is None) != (args.date_to is None):

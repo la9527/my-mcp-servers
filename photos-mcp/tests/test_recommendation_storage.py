@@ -388,6 +388,71 @@ async def test_completed_vendor_run_materializes_recommendations(tmp_path) -> No
 
 
 @pytest.mark.asyncio
+async def test_completed_vendor_run_materializes_only_persisted_explicit_selection(tmp_path) -> None:
+    repo = RunRepository(tmp_path / "jobs.db")
+    first = tmp_path / "first.jpg"
+    second = tmp_path / "second.jpg"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    calls: list[tuple[str, dict]] = []
+
+    async def vendor(_server, function, *_args, **kwargs):
+        calls.append((function, kwargs))
+        if function == "get_job_summary":
+            return {
+                "status": "completed",
+                "source": "local",
+                "request_options": {"origin_provider": "local"},
+            }
+        if function == "get_review_items":
+            return [
+                _item(first, photo_id="first"),
+                _item(second, photo_id="second"),
+            ]
+        raise AssertionError(function)
+
+    result = await materialize_recommendations_for_run(
+        repository=repo,
+        analysis_run_id="explicit-job",
+        root=tmp_path / "store",
+        call_vendor_fn=vendor,
+        explicit_photo_ids=("second",),
+    )
+
+    assert result["status"] == "completed"
+    assert result["selection_policy"] == "explicit_user_selection"
+    assert result["recommended_count"] == 1
+    assert [member["photo_id"] for member in repo.list_recommendation_members(result["collection_id"])] == ["second"]
+    assert calls == [
+        ("get_job_summary", {}),
+        ("get_review_items", {"top_n": 10000, "selected_only": True}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_story_materialization_rejects_unpersisted_selection(tmp_path) -> None:
+    repo = RunRepository(tmp_path / "jobs.db")
+
+    async def vendor(_server, function, *_args, **_kwargs):
+        if function == "get_job_summary":
+            return {"status": "completed", "source": "local", "request_options": {}}
+        if function == "get_review_items":
+            return []
+        raise AssertionError(function)
+
+    result = await materialize_recommendations_for_run(
+        repository=repo,
+        analysis_run_id="explicit-missing",
+        root=tmp_path / "store",
+        call_vendor_fn=vendor,
+        explicit_photo_ids=("no-longer-selected",),
+    )
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "explicit_selection_not_persisted"
+
+
+@pytest.mark.asyncio
 async def test_manual_run_policy_does_not_enroll_materialized_assets_for_album_publish(
     tmp_path,
 ) -> None:
