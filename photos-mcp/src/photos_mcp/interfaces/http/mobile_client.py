@@ -41,6 +41,7 @@ from photos_mcp.application.mobile_client import (
     current_mobile_story,
     list_mobile_runs,
     mobile_dashboard,
+    reconcile_stale_user_action_requests,
     mobile_envelope,
     mobile_events,
     mobile_people,
@@ -101,6 +102,9 @@ from photos_mcp.interfaces.http.story_web import (
 API_PREFIX = "/mobile-client/v1"
 STORY_PREFIX = "/mobile-client/story"
 DOWNLOAD_PREFIX = "/mobile-client/download"
+# Keep the advertised version aligned with the owner-download APK.  The native
+# 0.8.5 source is built and ready, but this server must not demand it until the
+# matching privately signed APK is published.
 ANDROID_APP_VERSION = "0.8.4"
 MOBILE_SESSION_COOKIE = "photos_mobile_story_session"
 MAX_BODY_BYTES = 32 * 1024
@@ -583,6 +587,11 @@ class MobileClientHttp:
         repository = self._repository()
         if repository is not None:
             repository.requeue_stale_curation_operations()
+            # A GPS handoff is only actionable while its manual operation is
+            # actually waiting.  Close retained cards for terminal parents on
+            # startup so an app upgrade/restart repairs historical inbox
+            # noise without deleting the associated audit records.
+            reconcile_stale_user_action_requests(repository)
         self._ensure_dispatcher()
 
     async def stop_background(self) -> None:

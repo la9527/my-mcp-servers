@@ -436,7 +436,6 @@ def mobile_dashboard(
         repository,
         identity_repository=identity_repository,
     )
-    pending_actions = repository.list_user_action_requests(statuses={"pending", "notified"})
     return {
         "daemon_status": _text(daemon_status, 32),
         "latest_run": runs[0] if runs else None,
@@ -452,8 +451,115 @@ def mobile_dashboard(
             if story
             else None
         ),
-        "action_required_count": len(pending_actions),
+        # Notifications are durable audit history, not all of them are work
+        # the owner can still perform.  In particular, a completed Google
+        # Picker parent can leave an old action record behind.  Count only
+        # live handoffs (and a genuinely waiting combined run) so the Android
+        # home screen never says that dozens of historical notices need work.
+        "action_required_count": mobile_action_required_count(repository),
     }
+
+
+_TERMINAL_CURATION_OPERATION_STATUSES = frozenset(
+    {"completed", "completed_empty", "partial", "partial_timeout", "failed", "cancelled"}
+)
+
+
+def _is_terminal_automation_run(run: dict[str, Any] | None) -> bool:
+    return bool(
+        run
+        and (
+            bool(run.get("terminal"))
+            or str(run.get("status") or "") in TERMINAL_EVENT_STATUSES
+        )
+    )
+
+
+def _action_has_expired(action: dict[str, Any], *, now: datetime) -> bool:
+    value = _text(action.get("expires_at"), 48)
+    if not value:
+        return False
+    try:
+        observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    return observed.astimezone(UTC) <= now
+
+
+def reconcile_stale_user_action_requests(
+    repository: RunRepository,
+    *,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Close only user-action affordances that can no longer be completed.
+
+    User-action rows are retained as audit history.  This changes their status
+    to ``cancelled`` only when a continuation has become impossible: a GPS
+    handoff whose manual operation is terminal, or a Google Picker action
+    whose parent/child run is terminal or whose explicit Picker deadline has
+    passed.  It never changes a run, Story, or active handoff.
+    """
+
+    observed = now or datetime.now(UTC)
+    cancelled_handoffs = 0
+    cancelled_picker_actions = 0
+    for action in repository.list_user_action_requests(
+        statuses={"pending", "notified"}, limit=200, newest_first=True
+    ):
+        request_id = _text(action.get("request_id"), 120)
+        request_type = str(action.get("request_type") or "")
+        if not request_id:
+            continue
+        if request_type == "mobile_location_prefetch":
+            operation_id = _text(action.get("operation_id"), 80)
+            operation = repository.get_curation_operation(operation_id) if operation_id else None
+            if operation and (
+                str(operation.get("status") or "")
+                in _TERMINAL_CURATION_OPERATION_STATUSES
+            ):
+                repository.update_user_action_status(request_id, "cancelled")
+                cancelled_handoffs += 1
+            continue
+        if request_type != "google_picker_selection":
+            continue
+        linked_runs = (
+            repository.get_automation_run(_text(action.get("automation_run_id"), 80)),
+            repository.get_automation_run(_text(action.get("parent_run_id"), 80)),
+            repository.get_automation_run(_text(action.get("child_run_id"), 80)),
+        )
+        if any(_is_terminal_automation_run(run) for run in linked_runs) or _action_has_expired(
+            action, now=observed
+        ):
+            repository.update_user_action_status(request_id, "cancelled")
+            cancelled_picker_actions += 1
+    return {
+        "cancelled_mobile_location_handoff_count": cancelled_handoffs,
+        "cancelled_google_picker_action_count": cancelled_picker_actions,
+    }
+
+
+def mobile_action_required_count(repository: RunRepository) -> int:
+    """Return a count of live owner actions, excluding notification history."""
+
+    active_handoffs = 0
+    for action in repository.list_user_action_requests(
+        statuses={"pending", "notified"}, limit=200, newest_first=True
+    ):
+        if str(action.get("request_type") or "") != "mobile_location_prefetch":
+            continue
+        operation_id = _text(action.get("operation_id"), 80)
+        operation = repository.get_curation_operation(operation_id) if operation_id else None
+        if operation and str(operation.get("status") or "") == "waiting_mobile_location":
+            active_handoffs += 1
+    awaiting_runs = sum(
+        1
+        for item in repository.list_automation_runs()
+        if str(item.get("provider") or "") == "combined"
+        and str(item.get("status") or "") == "awaiting_user_action"
+    )
+    return active_handoffs + awaiting_runs
 
 
 IdentityActionHandleFactory = Callable[[str, int], str]

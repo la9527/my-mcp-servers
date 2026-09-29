@@ -915,7 +915,7 @@ public final class MainActivity extends Activity {
         receipt.put("extractor_version", "android-bridge-2");
         String clientVersion = getPackageManager()
                 .getPackageInfo(getPackageName(), 0).versionName;
-        receipt.put("client_version", clientVersion == null ? "0.8.4" : clientVersion);
+        receipt.put("client_version", clientVersion == null ? "0.8.5" : clientVersion);
         receipt.put("completed_at", Instant.now().toString());
         return receipt;
     }
@@ -1633,7 +1633,7 @@ public final class MainActivity extends Activity {
 
     private void showInbox() {
         selectSection("inbox");
-        LinearLayout page = page("알림", "완료, 일부 완료, 오류와 확인할 작업을 한곳에 모읍니다.");
+        LinearLayout page = page("알림", "지금 처리할 작업과 새 완료 결과를 구분해 봅니다.");
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         TextView loading = bodyText("불러오는 중…");
@@ -1650,12 +1650,29 @@ public final class MainActivity extends Activity {
                 JSONArray events = new OwnerApiClient(this).getEvents().getJSONArray("data");
                 runOnUiThread(() -> {
                     list.removeAllViews();
-                    if (events.length() == 0) {
-                        list.addView(card(bodyText("새 작업 알림이 없습니다.")));
-                    }
+                    List<JSONObject> actions = new ArrayList<>();
+                    List<JSONObject> results = new ArrayList<>();
                     for (int i = 0; i < events.length(); i++) {
                         JSONObject event = events.optJSONObject(i);
                         if (event == null) continue;
+                        String category = event.optString("category");
+                        if ("mobile_location_handoff".equals(category)
+                                || "action_required".equals(category)) {
+                            actions.add(event);
+                        } else if (!event.optBoolean("acknowledged")) {
+                            // Completed history stays in the Mac audit trail;
+                            // the phone only needs to surface new outcomes.
+                            results.add(event);
+                        }
+                    }
+                    TextView actionHeading = bodyText(
+                            actions.isEmpty() ? "지금 처리할 작업" : "지금 처리할 작업  " + actions.size() + "건");
+                    actionHeading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    list.addView(actionHeading);
+                    if (actions.isEmpty()) {
+                        list.addView(card(bodyText("지금 처리할 작업이 없습니다.")));
+                    }
+                    for (JSONObject event : actions) {
                         LinearLayout eventView = new LinearLayout(this);
                         eventView.setOrientation(LinearLayout.VERTICAL);
                         eventView.addView(bodyText(eventSummary(event)));
@@ -1675,6 +1692,27 @@ public final class MainActivity extends Activity {
                         }
                         list.addView(card(eventView));
                     }
+                    TextView resultHeading = bodyText(
+                            results.isEmpty() ? "새 완료 결과" : "새 완료 결과  " + results.size() + "건");
+                    resultHeading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    resultHeading.setPadding(0, dp(16), 0, dp(4));
+                    list.addView(resultHeading);
+                    if (results.isEmpty()) {
+                        list.addView(card(bodyText("새로 확인할 완료 결과가 없습니다.")));
+                    }
+                    // The service returns newest-first. Keep the phone inbox
+                    // compact; all historical jobs remain available in 작업.
+                    for (int i = 0; i < results.size() && i < 10; i++) {
+                        JSONObject event = results.get(i);
+                        LinearLayout eventView = new LinearLayout(this);
+                        eventView.setOrientation(LinearLayout.VERTICAL);
+                        eventView.addView(bodyText(eventSummary(event)));
+                        Button acknowledge = quietButton("확인함");
+                        String eventId = event.optString("event_id");
+                        acknowledge.setOnClickListener(v -> acknowledgeEvent(eventId, acknowledge));
+                        eventView.addView(acknowledge);
+                        list.addView(card(eventView));
+                    }
                     setLoading(false);
                 });
             } catch (Exception error) {
@@ -1688,7 +1726,7 @@ public final class MainActivity extends Activity {
         executor.execute(() -> {
             try {
                 new OwnerApiClient(this).acknowledgeEvent(eventId);
-                runOnUiThread(() -> { button.setText("확인됨"); button.setVisibility(View.GONE); });
+                runOnUiThread(this::showInbox);
             } catch (Exception error) {
                 runOnUiThread(() -> { button.setText("다시 시도"); button.setEnabled(true); });
             }

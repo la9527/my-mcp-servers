@@ -381,7 +381,7 @@ class PhotosMcpResultsController(NSWindowController):
             alert.runModal()
 
     def createStoryFromResult_(self, _sender) -> None:
-        """Choose an immutable result scope, then open its shared Story."""
+        """Confirm an immutable result scope, then open its shared Story."""
         if self._story_worker is not None and self._story_worker.is_alive():
             return
         job_id = str(self._payload.get("job_id") or self._payload.get("run_id") or "")
@@ -397,21 +397,36 @@ class PhotosMcpResultsController(NSWindowController):
             for item in self._items
             if bool(item.get("selected")) and str(item.get("photo_id") or "")
         )
-        use_explicit_selection = False
-        if explicit_photo_ids:
-            chooser = NSAlert.alloc().init()
-            chooser.setMessageText_("어떤 사진으로 Story를 만들까요?")
-            chooser.setInformativeText_(
-                f"현재 선택한 {len(explicit_photo_ids)}장만 사용하거나, 분석 결과의 장면별 추천 사진을 사용할 수 있습니다. "
-                "두 방식 모두 분석을 다시 실행하거나 외부 앨범을 바꾸지 않습니다."
+        recommended_count = len(recommended_scene_best_items(self._items))
+        selected_count = len(explicit_photo_ids)
+        if selected_count <= 0 and recommended_count <= 0:
+            self._show_alert(
+                "Story로 만들 추천 사진이 없습니다",
+                "사진을 선택하거나, 추천 사진이 포함된 분석 결과에서 다시 시도해 주세요.",
             )
+            return
+        use_explicit_selection = False
+        chooser = NSAlert.alloc().init()
+        chooser.setMessageText_("이 분석 결과로 Story를 만들까요?")
+        chooser.setInformativeText_(
+            f"장면별 추천 사진은 {recommended_count}장"
+            + (f", 현재 선택한 사진은 {selected_count}장입니다. " if selected_count else "입니다. ")
+            + "분석을 다시 실행하지 않으며, 원본이나 Google·Apple Photos 앨범을 변경하지 않습니다. "
+            + "만든 뒤 Story 탭에서 보기 스타일을 바꿀 수 있습니다."
+        )
+        if explicit_photo_ids:
             chooser.addButtonWithTitle_(f"선택한 {len(explicit_photo_ids)}장")
-            chooser.addButtonWithTitle_("추천 장면 사진")
+            chooser.addButtonWithTitle_(f"추천 장면 베스트 {recommended_count}장")
             chooser.addButtonWithTitle_("취소")
             response = chooser.runModal()
             if response == NSAlertThirdButtonReturn:
                 return
             use_explicit_selection = response == NSAlertFirstButtonReturn
+        else:
+            chooser.addButtonWithTitle_(f"추천 장면 베스트 {recommended_count}장으로 만들기")
+            chooser.addButtonWithTitle_("취소")
+            if chooser.runModal() == NSAlertSecondButtonReturn:
+                return
         selection_barrier = self._selection_executor.submit(
             lambda: self._selection_persist_error
         )
@@ -465,7 +480,8 @@ class PhotosMcpResultsController(NSWindowController):
             main.showTab_("story")
         self._show_alert(
             "Story를 만들었습니다",
-            "완료된 분석을 다시 실행하지 않고 추천 사진으로 Story를 만들었습니다. "
+            "완료된 분석을 다시 실행하지 않고 선택한 사진 범위로 Story를 만들었습니다. "
+            "Story 탭에서 바로 확인하고 보기 스타일을 바꿀 수 있습니다. "
             + (f"Story ID: {story_id}" if story_id else ""),
         )
 

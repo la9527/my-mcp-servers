@@ -33,7 +33,7 @@ Story 디자인은 [2026-09-15 승인안 구현 기록](../../08-reports/01-vali
 - [예외 중심 인물 자동 인식·Mac/Android 통합 계획](19-exception-only-people-recognition-mac-android-plan-2026-09-12.md): 모든 얼굴을 수동 분류하지 않고 품질 미달과 1~2회 등장 얼굴을 숨긴다. 독립적으로 3회 이상 등장한 새 인물과 애매한 기존 인물만 검토하며, 사용자 확정 anchor가 충분한 인물의 초고신뢰 얼굴은 별도 자동 상태로 연결한다. 자동 결과는 Story에 사용할 수 있지만 다음 인식 anchor에는 사용하지 않고 Mac·Android에서 같은 예외 큐·최근 자동 정리·교정·undo를 제공한다.
 - [사진 분석 결과·저장 공간 대시보드·Vision 복구 개선 계획](20-results-storage-dashboard-and-vision-reliability-plan-2026-09-13.md): 사진 보기·선택 및 저장·저장 공간을 분리하고 사진별 크기와 Story 참조 용량, 파생 캐시, 외장 보관소 상태를 정확히 표시한다. 모델 평가 도구는 고급 영역으로 이동하며, 2026-09-13 새벽 Linux SSH 준비 실패에는 600초 timeout과 제한적 WOL·backoff·deferred 복구를 적용한다.
 - [5종 Story 테마 설계 및 구현 계획](21-five-story-theme-design-and-implementation-plan-2026-09-13.md): `코발트 포스터`, `암실 시네마`, `팝업 플레이북`, `트랜짓 아틀라스`, `실버 인덱스`를 운영 렌더러에 반영했다. 분석 데이터와 revision 기반 presentation을 분리해 재분석 없이 테마를 바꾸며, Mac·Android WebView·30일 공유가 같은 렌더러와 자체 호스팅 Swiper를 사용한다.
-- [PC·Android 기능 정합화와 완료 결과→Story 연결 계획](23-pc-mobile-feature-parity-and-result-to-story-plan-2026-09-24.md): 분석 상한을 10,000장으로 통일하고 Google Picker는 2,000장씩 최대 다섯 세션으로 내구 처리한다. Mac 완료 결과→불변 Story snapshot, Android 100장 결과 페이지, Story 재분석·삭제 정합화와 PC 시작 Google 작업의 Android GPS handoff를 구현·회귀 검증했다. 실제 등록 기기에서 GPS handoff를 한 번 수행하는 최종 수동 E2E만 남아 있다.
+- [PC·Android 기능 정합화와 완료 결과→Story 연결 계획](23-pc-mobile-feature-parity-and-result-to-story-plan-2026-09-24.md): 분석 상한을 10,000장으로 통일하고 Google Picker는 2,000장씩 최대 다섯 세션으로 내구 처리한다. Mac 완료 결과→불변 Story snapshot, Android 100장 결과 페이지, Story 재분석·삭제 정합화와 PC 시작 Google 작업의 Android GPS handoff를 구현·회귀·등록 기기 E2E까지 마쳤다. 후속으로 모바일 알림을 실제 조치/새 결과로 분리하고, 완료 결과→Story scope 확인 UX를 정리한다.
 
 ## 선호 학습
 

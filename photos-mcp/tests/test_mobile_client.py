@@ -675,6 +675,83 @@ def test_dashboard_reads_only_explicit_story_manifest_and_never_resurrects_delet
     assert deleted["latest_story"] is None
 
 
+def test_mobile_inbox_reconciliation_closes_terminal_gps_handoffs_and_counts_only_live_work(
+    tmp_path,
+) -> None:
+    repository = RunRepository(tmp_path / "mobile-inbox.db")
+    terminal, _created = repository.enqueue_curation_operation(
+        {
+            "operation_id": "operation-terminal-handoff-001",
+            "idempotency_key": "terminal-handoff-key-001",
+            "request_hash": "terminal-handoff-hash-001",
+            "origin": "mac_app",
+            "status": "waiting_mobile_location",
+            "request": {},
+        }
+    )
+    live, _created = repository.enqueue_curation_operation(
+        {
+            "operation_id": "operation-live-handoff-000001",
+            "idempotency_key": "live-handoff-key-000001",
+            "request_hash": "live-handoff-hash-000001",
+            "origin": "mac_app",
+            "status": "waiting_mobile_location",
+            "request": {},
+        }
+    )
+    repository.update_curation_operation(
+        terminal["operation_id"], status="completed_empty", result={}
+    )
+    for operation, suffix in ((terminal, "terminal"), (live, "live")):
+        repository.save_user_action_request(
+            {
+                "request_id": f"gps-handoff-{suffix}-000001",
+                "dedupe_key": f"gps-handoff-key-{suffix}-000001",
+                "request_type": "mobile_location_prefetch",
+                "provider": "mobile_location",
+                "status": "notified",
+                "operation_id": operation["operation_id"],
+                "created_at": "2026-09-29T00:00:00+00:00",
+            }
+        )
+
+    before = mobile_client_application.mobile_dashboard(repository, daemon_status="ready")
+    assert before["action_required_count"] == 1
+    repository.upsert_automation_run(
+        {
+            "automation_run_id": "combined-terminal-picker-001",
+            "provider": "combined",
+            "status": "failed",
+            "terminal": True,
+        }
+    )
+    repository.save_user_action_request(
+        {
+            "request_id": "google-picker-terminal-000001",
+            "dedupe_key": "google-picker-terminal-key-001",
+            "request_type": "google_picker_selection",
+            "provider": "google_photos",
+            "status": "pending",
+            "parent_run_id": "combined-terminal-picker-001",
+            "created_at": "2026-09-28T00:00:00+00:00",
+        }
+    )
+    reconciled = mobile_client_application.reconcile_stale_user_action_requests(repository)
+
+    assert reconciled == {
+        "cancelled_mobile_location_handoff_count": 1,
+        "cancelled_google_picker_action_count": 1,
+    }
+    assert repository.get_user_action_request("gps-handoff-terminal-000001")["status"] == "cancelled"
+    assert repository.get_user_action_request("gps-handoff-live-000001")["status"] == "notified"
+    assert repository.get_user_action_request("google-picker-terminal-000001")["status"] == "cancelled"
+    events = mobile_client_application.mobile_events(repository, acknowledged=set())
+    handoff_events = [
+        event for event in events if event["category"] == "mobile_location_handoff"
+    ]
+    assert [event["operation_id"] for event in handoff_events] == [live["operation_id"]]
+
+
 def test_people_endpoints_require_owner_session_and_hide_unconfirmed_names(
     tmp_path,
 ) -> None:

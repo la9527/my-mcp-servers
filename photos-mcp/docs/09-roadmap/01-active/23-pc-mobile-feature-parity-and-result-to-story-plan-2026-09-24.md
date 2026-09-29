@@ -3,7 +3,7 @@
 ## 문서 상태
 
 - 작성일: 2026-09-24
-- 상태: 구현·macOS 설치본 배포 완료 · Python 회귀/Android debug·release 조립 통과 · 실제 등록 기기 E2E 대기
+- 상태: 구현·macOS 설치본/Android 등록 기기 E2E 완료 · 후속 알림 정리·Story 생성 발견성 개선 진행
 - 대상: macOS `PhotosMcp.app`, Android `PhotosMcp 앨범`, 공통 PhotosMcp daemon/BFF
 - 우선 해결 과제: macOS의 `사진 분석 완료` 결과를 그대로 사용해 Story를 만들 수 없는 흐름 단절
 - 이번 문서의 범위: 현행 기능·데이터 흐름 감사, 개선 원칙, 단계별 구현·검증 계획
@@ -16,7 +16,7 @@
 1. macOS `사진 분석 완료`: 특정 photo-ranker `job_id`에 저장된 최대 10,000장의 분석 결과
 2. Android `결과`: 현재 Story 또는 특정 Story manifest에 속한 추천 자산 projection
 
-macOS의 완료 결과 창에는 선택·내보내기·앨범 저장은 있지만 Story 생성 동작이 없다. 별도 `Story` 탭에는 날짜 기반 새 분석 요청이 있지만, 현재 보고 있는 완료 결과와 연결되지 않는다. 따라서 사용자는 이미 분석된 사진을 보고도 날짜·출처·장수를 다시 입력하고 별도 분석 파이프라인을 시작해야 한다.
+초기 macOS 완료 결과 창에는 선택·내보내기·앨범 저장은 있지만 Story 생성 동작이 없어 별도 `Story` 탭의 날짜 기반 새 분석 요청을 다시 시작해야 했다. 현재는 결과 창의 **`이 결과로 Story 만들기`**가 그 단절을 해소한다. 이 문서는 최초 문제와 이후의 공통 명령 계약을 함께 기록한다.
 
 권장안은 UI 버튼만 복제하는 것이 아니라 다음 세 계층을 먼저 통일하는 것이다.
 
@@ -432,6 +432,19 @@ photo-ranker 결과에는 원본 경로·preview만 있고 Story가 요구하는
 - capability 기반으로 불가능한 버튼은 숨기고 대체 경로를 안내
 - 오래된 중복 owner HTML action을 정리하되 renderer는 공용으로 유지
 
+### 2026-09-29 후속 · 모바일 알림 정리와 결과→Story 확인 UX
+
+**상태: 구현·회귀 검증 완료.** 모바일 홈의 `확인이 필요한 작업`은 과거 성공·실패 알림까지 세던 값이 아니라, 실제 `waiting_mobile_location` handoff 및 `awaiting_user_action` 작업만 세도록 바꾼다. 앱 시작 시 terminal curation operation에 딸린 `mobile_location_prefetch` 요청과, terminal 부모/자식 또는 만료 시각을 가진 `google_picker_selection` 요청은 `cancelled`로 전환해 이미 끝난 Picker가 다시 실행 가능한 일처럼 남지 않게 한다. run/사진/Story 기록은 삭제하지 않는다.
+
+Android 알림함은 다음의 두 구역으로 나눈다.
+
+1. **지금 처리할 작업**: GPS 동기화·사용자 확인처럼 실제 계속 진행할 수 있는 카드만 노출한다.
+2. **새 완료 결과**: 아직 읽지 않은 완료·부분 완료·오류만 최신 10건까지 노출한다. 읽음 처리하면 이 목록에서는 사라지고 `작업`의 감사 이력은 유지한다.
+
+macOS `이 결과로 Story 만들기`는 실행 전 선택한 사진 수와 장면별 추천 베스트 수를 보여 준다. 사용자는 명시 선택 또는 장면별 추천 범위를 고르고, 이 동작이 재분석·원본 삭제·Apple/Google 앨범 변경을 하지 않는다는 점을 확인한다. 성공하면 즉시 Story 탭을 열며 테마 변경은 그곳에서 계속한다.
+
+Android native source와 debug·release build의 다음 버전은 `0.8.5`이다. 다만 기존 설치 앱을 같은 서명자로 안전하게 갱신할 private release 서명은 별도 배포 gate이므로, 그 APK가 게시되기 전까지 BFF의 owner 다운로드 안내는 현행 `0.8.4`를 유지한다. 따라서 서버가 존재하지 않는 APK 업데이트를 요구하지 않으며, 서명된 `0.8.5` 게시 시 안내 버전만 함께 올린다.
+
 ## 9. 검증 계획
 
 ### 9.1 자동 검증
@@ -441,15 +454,15 @@ photo-ranker 결과에는 원본 경로·preview만 있고 Story가 요구하는
 - security: mobile DTO에 절대 경로·정확 원본 metadata·secret 미노출
 - Story: 선택 자산만 포함, 순서 보존, 기존 Story 비파괴
 - cross-client API: Mac 생성 Story가 `/mobile-client/v1/stories`와 detail에 동일하게 보임
-- AppKit: CTA enable 조건, 추천/명시 선택 scope, 실패 sheet
-- Android: 새 Story 표시, 재분석/삭제/공유 상태 projection
+- AppKit: CTA enable 조건, 추천/명시 선택 scope·사진 수 확인 sheet, 실패 sheet
+- Android: 새 Story 표시, 재분석/삭제/공유 상태 projection, live action과 새 완료 알림의 분리
 - 전체 Python 회귀, Android lint/debug/release, macOS bundle smoke test
 
 2026-09-25 현재 자동 검증 증거:
 
 - Python: `.venv/bin/pytest -q` → **1,127 passed**
 - Android: Homebrew Java 17.0.20.1과 Android SDK 36으로 `:app:testDebugUnitTest :app:assembleDebug :app:assembleRelease` → **BUILD SUCCESSFUL**. Java 26은 시스템에 유지하되 이 Android 모듈은 Java 17로 실행해 target/source compatibility를 고정했다.
-- Handoff: PC Google 작업의 대기·Android signed receipt·동일 operation ID queue 복귀를 `tests/test_manual_curation.py`, `tests/test_mobile_client.py`에 추가해 검증했다.
+- Handoff: PC Google 작업의 대기·Android signed receipt·동일 operation ID queue 복귀를 실제 등록 기기에서 한 번 수행했고, `tests/test_manual_curation.py`, `tests/test_mobile_client.py`로도 회귀 검증했다. terminal 부모에 남은 GPS action 자동 정리와 live action count도 `tests/test_mobile_client.py`에서 검증한다.
 - 대용량·Story 핵심 회귀: Google 다섯 세션, 결과→Story snapshot/materialize, 수동 범위·GPS handoff를 포함한 관련 64개 테스트 → **64 passed**.
 - AppKit 대용량 결과: `test_results_gallery_scrolls_all_ten_thousand_items_without_pagination`은 10,000개 결과를 넣고 visible item만 생성되는 collection view와 스크롤 가능한 전체 content size를 검증했다 → **passed**.
 - macOS 설치본: `PhotosMcp.app`을 새 staging bundle에서 `/Users/byoungyoungla/Applications/PhotosMcp.app`으로 교체하고 정상 종료·재실행했다. 설치된 bundle에서 `--health`, `--runtime-import-smoke`, `--vendor-runtime-smoke`가 모두 통과했고, `analysis_limits.py`와 `result_story_service.py` 포함을 직접 확인했다.
@@ -465,7 +478,7 @@ photo-ranker 결과에는 원본 경로·preview만 있고 Story가 요구하는
 6. Android 앱 Story 목록과 추천 사진에서 같은 사진 수·순서를 확인한다.
 7. Android에서 Story를 삭제하고 macOS에 즉시 반영되는지 확인한다.
 8. 별도 Story로 PC 재분석을 요청해 `waiting_mobile_location`을 확인한다.
-9. Android에서 GPS를 동기화하고 같은 operation이 재개되는지 확인한다. *(실제 등록 기기에서의 최종 수동 E2E만 남음)*
+9. Android에서 GPS를 동기화하고 같은 operation이 재개되는지 확인한다. *(등록 기기에서 실제 수행 완료; 후속 회귀는 자동화로 유지)*
 10. 실패·재시도·앱 재시작 뒤에도 중복 Story가 생기지 않는지 확인한다.
 
 ### 9.3 비파괴 확인
