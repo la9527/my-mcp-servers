@@ -102,10 +102,8 @@ from photos_mcp.interfaces.http.story_web import (
 API_PREFIX = "/mobile-client/v1"
 STORY_PREFIX = "/mobile-client/story"
 DOWNLOAD_PREFIX = "/mobile-client/download"
-# Keep the advertised version aligned with the owner-download APK.  The native
-# 0.8.5 source is built and ready, but this server must not demand it until the
-# matching privately signed APK is published.
-ANDROID_APP_VERSION = "0.8.4"
+# Keep the advertised version aligned with the owner-download APK.
+ANDROID_APP_VERSION = "0.8.5"
 MOBILE_SESSION_COOKIE = "photos_mobile_story_session"
 MAX_BODY_BYTES = 32 * 1024
 SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{8,160}$")

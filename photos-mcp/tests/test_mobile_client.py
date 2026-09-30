@@ -403,8 +403,8 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         )
 
         assert capabilities.status_code == 200
-        assert capabilities.json()["data"]["latest_android_app_version"] == "0.8.4"
-        assert capabilities.json()["data"]["minimum_android_app_version"] == "0.8.4"
+        assert capabilities.json()["data"]["latest_android_app_version"] == "0.8.5"
+        assert capabilities.json()["data"]["minimum_android_app_version"] == "0.8.5"
         assert capabilities.json()["data"]["features"]["people_automatic_recognition"] is False
         assert dashboard.status_code == 200
         assert dashboard.json()["data"]["daemon_status"] == "ready"
@@ -427,8 +427,8 @@ def test_mobile_projection_and_story_webview_are_private_and_redacted(tmp_path) 
         assert events.status_code == 200
         assert len(events.json()["data"]) == 1
         assert download_page.status_code == 200
-        assert "PhotosMcp 앨범 0.8.4" in download_page.text
-        assert 'download="PhotosMcp-Album-0.8.4.apk"' in download_page.text
+        assert "PhotosMcp 앨범 0.8.5" in download_page.text
+        assert 'download="PhotosMcp-Album-0.8.5.apk"' in download_page.text
         assert "Chrome으로 열기" in download_page.text
         assert download_apk.status_code == 200
         assert download_apk.content == b"signed-test-apk"

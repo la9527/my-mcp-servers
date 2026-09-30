@@ -443,7 +443,7 @@ Android 알림함은 다음의 두 구역으로 나눈다.
 
 macOS `이 결과로 Story 만들기`는 실행 전 선택한 사진 수와 장면별 추천 베스트 수를 보여 준다. 사용자는 명시 선택 또는 장면별 추천 범위를 고르고, 이 동작이 재분석·원본 삭제·Apple/Google 앨범 변경을 하지 않는다는 점을 확인한다. 성공하면 즉시 Story 탭을 열며 테마 변경은 그곳에서 계속한다.
 
-Android native source와 debug·release build의 다음 버전은 `0.8.5`이다. 다만 기존 설치 앱을 같은 서명자로 안전하게 갱신할 private release 서명은 별도 배포 gate이므로, 그 APK가 게시되기 전까지 BFF의 owner 다운로드 안내는 현행 `0.8.4`를 유지한다. 따라서 서버가 존재하지 않는 APK 업데이트를 요구하지 않으며, 서명된 `0.8.5` 게시 시 안내 버전만 함께 올린다.
+Android native source와 owner 전용 release APK는 `0.8.5`이다. 기존 설치 앱과 동일한 Android signing key로 서명한 release를 `~/.photos-mcp/runtime/mobile-client/downloads/PhotosMcp-Album.apk`에 게시했고, BFF의 owner 다운로드 안내도 같은 버전으로 올린다. USB ADB update로 기존 데이터(등록·GPS 영수증)를 보존한 채 versionCode `24` 설치를 확인한다.
 
 ## 9. 검증 계획
 
