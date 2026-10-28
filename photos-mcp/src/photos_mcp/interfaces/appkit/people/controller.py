@@ -1802,8 +1802,13 @@ class PhotosMcpPeopleManagerController(NSObject):
                 )
         except (ShareImageError, RuntimeError):
             pass
-        image_height = max(150.0, height - 410.0)
-        image_view = NSImageView.alloc().initWithFrame_(NSMakeRect(20.0, 272.0, width - 40.0, image_height))
+        # Keep the numbered source photo available as orientation evidence, but
+        # reserve enough vertical room for real, readable face cards below it.
+        # The former NSButton+NSImageAbove presentation did not scale the
+        # original crop before drawing it.  A 512px review crop therefore
+        # appeared as a narrow, arbitrary strip inside the 74px button.
+        image_height = max(120.0, height - 480.0)
+        image_view = NSImageView.alloc().initWithFrame_(NSMakeRect(20.0, 332.0, width - 40.0, image_height))
         image_view.setImageScaling_(NSImageScaleProportionallyUpOrDown)
         if image_path is not None:
             image_view.setImage_(cached_image(str(image_path)))
@@ -1818,7 +1823,7 @@ class PhotosMcpPeopleManagerController(NSObject):
         self._label(
             card,
             20.0,
-            246.0,
+            306.0,
             width - 40.0,
             18.0,
             face_summary,
@@ -1827,41 +1832,107 @@ class PhotosMcpPeopleManagerController(NSObject):
             secondary=not bool(display_faces),
         )
         face_scroll = NSScrollView.alloc().initWithFrame_(
-            NSMakeRect(20.0, 150.0, width - 40.0, 92.0)
+            NSMakeRect(20.0, 140.0, width - 40.0, 156.0)
         )
         face_scroll.setHasHorizontalScroller_(True)
         face_scroll.setDrawsBackground_(False)
-        face_document_width = max(width - 40.0, len(display_faces) * 110.0)
+        face_tile_width = 132.0
+        face_tile_gap = 10.0
+        face_document_width = max(
+            width - 40.0,
+            len(display_faces) * face_tile_width
+            + max(0, len(display_faces) - 1) * face_tile_gap,
+        )
         face_document = NSView.alloc().initWithFrame_(
-            NSMakeRect(0.0, 0.0, face_document_width, 78.0)
+            NSMakeRect(0.0, 0.0, face_document_width, 138.0)
         )
         face_scroll.setDocumentView_(face_document)
         for index, face in enumerate(display_faces):
             face_id = str(face.get("face_observation_id") or "")
             selected = face_id == self._selected_alias_face_id
-            button = NSButton.alloc().initWithFrame_(NSMakeRect(index * 110.0, 0.0, 102.0, 74.0))
             resolved_name = str(face.get("confirmed_display_name") or "")
-            button.setTitle_(
+            face_label = (
                 f"{resolved_name} ✓"
                 if resolved_only
                 else f"얼굴 {index + 1}" + (" ✓" if selected else "")
             )
-            button.setImagePosition_(NSImageAbove)
-            if not resolved_only:
-                button.setTarget_(self)
-                button.setAction_("selectAliasFace:")
-            button.setIdentifier_(face_id)
-            button.setAccessibilityLabel_(
-                f"{resolved_name}, 확인 완료"
-                if resolved_only
-                else f"얼굴 {index + 1}, {'선택됨' if selected else '선택 안 됨'}"
+            tile_x = index * (face_tile_width + face_tile_gap)
+            tile = self._card(
+                face_document,
+                tile_x,
+                0.0,
+                face_tile_width,
+                134.0,
+                selected=selected,
             )
+            portrait = NSImageView.alloc().initWithFrame_(
+                NSMakeRect(8.0, 28.0, face_tile_width - 16.0, 98.0)
+            )
+            portrait.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+            portrait.setImageAlignment_(0)
+            portrait.setAccessibilityLabel_(f"{face_label} 사진")
             try:
                 crop_path = workspace.artifact_path(str(face.get("review_crop_ref") or ""))
-                button.setImage_(cached_image(str(crop_path)))
+                portrait.setImage_(cached_image(str(crop_path)))
             except (ValueError, FileNotFoundError):
-                pass
-            face_document.addSubview_(button)
+                portrait.setImage_(
+                    NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                        "person.crop.square", "얼굴 사진을 불러올 수 없음"
+                    )
+                )
+                if hasattr(portrait, "setContentTintColor_"):
+                    portrait.setContentTintColor_(NSColor.tertiaryLabelColor())
+            tile.addSubview_(portrait)
+            if resolved_only:
+                self._label(
+                    tile,
+                    8.0,
+                    6.0,
+                    face_tile_width - 16.0,
+                    18.0,
+                    face_label,
+                    9.0,
+                    True,
+                    accent=True,
+                )
+                continue
+
+            # NSButton does not provide image scaling.  Put a borderless
+            # activation layer over the proportional image view so the whole
+            # visible portrait is selectable with a mouse or touchpad.
+            button = NSButton.alloc().initWithFrame_(
+                NSMakeRect(0.0, 0.0, face_tile_width, 134.0)
+            )
+            button.setTitle_("")
+            button.setBordered_(False)
+            button.setTarget_(self)
+            button.setAction_("selectAliasFace:")
+            button.setIdentifier_(face_id)
+            button.setAccessibilityLabel_(
+                f"얼굴 {index + 1}, {'선택됨' if selected else '선택 안 됨'}"
+            )
+            button.setToolTip_(f"얼굴 {index + 1} 선택")
+            tile.addSubview_(button)
+
+            # Keep an explicit titled button above the mouse activation layer.
+            # AppKit omits title-less borderless overlays from the accessibility
+            # tree, so this is the keyboard and VoiceOver equivalent of
+            # clicking the portrait itself.
+            caption = self._button(
+                tile,
+                4.0,
+                1.0,
+                face_tile_width - 8.0,
+                25.0,
+                face_label,
+                "selectAliasFace:",
+                identifier=face_id,
+            )
+            caption.setBordered_(False)
+            caption.setContentTintColor_(
+                accent_color() if selected else NSColor.secondaryLabelColor()
+            )
+            caption.setToolTip_(f"얼굴 {index + 1} 선택")
         card.addSubview_(face_scroll)
         if resolved_only:
             relationship = " · ".join(

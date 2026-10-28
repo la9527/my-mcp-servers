@@ -1,5 +1,7 @@
 # 활성 후보
 
+전반 재설계 검토: [2026-10-06 구조·UX·기기간·Story 감사와 개선 작업 계획](24-product-redesign-2026-10-06/README.md). 3개 에이전트의 독립 감사·설치 Mac 화면 관찰을 바탕으로 기존 구현을 유지하며 상태·선택 snapshot·Story 버전·정확한 공유 대상·복구·화면 구조를 보강한다. 조사·설계 단계이며 제품 수정·배포 완료를 뜻하지 않는다.
+
 구현 전 확인 대기: [PC·Android 기능 정합화와 완료 결과→Story 연결 계획](23-pc-mobile-feature-parity-and-result-to-story-plan-2026-09-24.md). 서로 다른 결과 projection을 공통 `StorySourceSnapshot`과 명령 서비스로 연결하고, macOS 완료 결과에서 재분석 없이 Story를 만들어 Android에서도 같은 결과를 보는 수직 기능을 우선한다.
 
 구현·검증 중: [Story 5종 확장 및 비율 모자이크 개선안](22-five-approved-story-themes-and-ratio-gallery-plan-2026-09-15.md). 스크롤 시네마 기본을 유지하며 5종 독립 테마, 물리적 책장·공간 무대, 비율 목록을 적용한다. 3개 에이전트의 반복 시각 검토와 통합 회귀 이후 운영에 반영한다.

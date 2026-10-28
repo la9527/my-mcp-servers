@@ -77,6 +77,7 @@
 
 ### UI, 보고서, 계획
 
+- [2026-10-06 전반 감사·제품 재설계·개선 작업 검토](09-roadmap/01-active/24-product-redesign-2026-10-06/README.md): 구조·UX·기기간 사용성·Story의 3개 에이전트 감사와 통합 설계안. 현행 기능의 구현 완료 선언이 아닌 개선 계획이다.
 - [AppKit 디자인 시스템](07-design-system/README.md)
 - [검증 보고서](08-reports/README.md)
 - [로드맵](09-roadmap/README.md)
@@ -104,7 +105,7 @@ MCP public tool은 다음 네 개다.
 - 구현되지 않은 내용은 현행 문서에 섞지 않고 `roadmap/active`에 둔다.
 - 실행 결과는 `reports`에 두며 일반 사용법과 섞지 않는다.
 - `archive` 문서는 역사 기록일 뿐 현재 사용법이 아니다.
-- MCP action 목록은 `src/photos_mcp/facade/action_options.py`와 일치해야 한다.
+- MCP action 목록은 `src/photos_mcp/application/action_options.py`와 일치해야 한다.
 
 ## 빠른 상태 확인
 
